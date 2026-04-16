@@ -1096,27 +1096,37 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     }
   }
 
+  let gatewayStoppedForUpdate = false;
   if (updateInstallKind === "git") {
     const gitUpdateRoot = switchToGit ? resolveGitInstallDir() : root;
     const runningGateway = await detectRunningGatewayForInstall(gitUpdateRoot);
     if (runningGateway.blocked) {
       const pidSuffix =
         typeof runningGateway.pid === "number" ? ` (pid ${runningGateway.pid})` : "";
-      defaultRuntime.error(
-        theme.error(`Update blocked: this install's gateway service is still running${pidSuffix}.`),
-      );
+      if (opts.restart === false) {
+        defaultRuntime.error(
+          theme.error(`Update blocked: this install's gateway service is still running${pidSuffix}.`),
+        );
+        defaultRuntime.log(
+          theme.warn(
+            "Git-based updates replace dist in place. Stop or restart the gateway first, then rerun `openclaw update`.",
+          ),
+        );
+        defaultRuntime.log(
+          theme.muted(
+            `If this install is service-managed, run \`${replaceCliName(formatCliCommand("openclaw gateway stop"), CLI_NAME)}\` or \`${replaceCliName(formatCliCommand("openclaw gateway restart"), CLI_NAME)}\` first.`,
+          ),
+        );
+        defaultRuntime.exit(1);
+        return;
+      }
       defaultRuntime.log(
         theme.warn(
-          "Git-based updates replace dist in place. Stop or restart the gateway first, then rerun `openclaw update`.",
+          `Stopping gateway service for in-place update${pidSuffix}...`,
         ),
       );
-      defaultRuntime.log(
-        theme.muted(
-          `If this install is service-managed, run \`${replaceCliName(formatCliCommand("openclaw gateway stop"), CLI_NAME)}\` or \`${replaceCliName(formatCliCommand("openclaw gateway restart"), CLI_NAME)}\` first.`,
-        ),
-      );
-      defaultRuntime.exit(1);
-      return;
+      await resolveGatewayService().stop({ stdout: defaultRuntime, env: process.env });
+      gatewayStoppedForUpdate = true;
     }
   }
 
