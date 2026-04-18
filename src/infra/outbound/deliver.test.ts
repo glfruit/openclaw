@@ -970,6 +970,31 @@ describe("deliverOutboundPayloads", () => {
     );
   });
 
+  it("passes threadId and sessionKey into message_sending metadata for direct delivery", async () => {
+    hookMocks.runner.hasHooks.mockReturnValue(true);
+    const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "w1", toJid: "jid" });
+
+    await deliverOutboundPayloads({
+      cfg: {},
+      channel: "whatsapp",
+      to: "+1555",
+      payloads: [{ text: "hello" }],
+      threadId: "77",
+      session: { key: "agent:main:telegram:group:-100123:topic:77", agentId: "main" },
+      deps: { whatsapp: sendWhatsApp },
+    });
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          threadId: "77",
+          sessionKey: "agent:main:telegram:group:-100123:topic:77",
+        }),
+      }),
+      expect.anything(),
+    );
+  });
+
   it("short-circuits lower-priority message_sending hooks after cancel=true", async () => {
     const hookRegistry = createEmptyPluginRegistry();
     const high = vi.fn().mockResolvedValue({ cancel: true, content: "blocked" });

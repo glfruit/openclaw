@@ -647,6 +647,10 @@ export async function deliverReplies(params: {
             channel: "telegram",
             mediaUrls: mediaList,
             threadId: params.thread?.id,
+            ...(typeof params.sessionKeyForInternalHooks === "string" &&
+            params.sessionKeyForInternalHooks.trim()
+              ? { sessionKey: params.sessionKeyForInternalHooks.trim() }
+              : {}),
           },
         },
         {

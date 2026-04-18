@@ -7,6 +7,11 @@ import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../../routing/se
 import { SESSION_LABEL_MAX_LENGTH } from "../../sessions/session-label.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import {
+  resolveToolResultCompatibilityMode,
+  shapeResult,
+  validateResultShape,
+} from "../../shared/tool-result-shape.js";
+import {
   type GatewayMessageChannel,
   INTERNAL_MESSAGE_CHANNEL,
 } from "../../utils/message-channel.js";
@@ -304,6 +309,33 @@ export function createSessionsSendTool(opts?: {
         });
       };
 
+      const compatibilityMode = resolveToolResultCompatibilityMode("sessions_send");
+      const shapeAcceptedResult = (payload: {
+        runId: string;
+        status: "accepted";
+        sessionKey: string;
+        delivery: { status: string; mode: "announce" | "direct" };
+        note?: string;
+      }) => {
+        const shaped = shapeResult(payload, "sessions_send", {
+          compatibilityMode,
+          producer: "agents:sessions_send",
+          consumer: "operator",
+          validationCommands: [
+            "pnpm exec vitest run src/src/agents/openclaw-tools.sessions.test.ts",
+          ],
+        });
+        if (compatibilityMode === "enforced" && !validateResultShape(shaped)) {
+          return jsonResult({
+            runId: payload.runId,
+            status: "error",
+            error: "sessions_send result shape validation failed",
+            sessionKey: payload.sessionKey,
+          });
+        }
+        return jsonResult(shaped);
+      };
+
       if (timeoutSeconds === 0) {
         const start = await startAgentRun({
           callGateway: gatewayCall,
@@ -316,7 +348,7 @@ export function createSessionsSendTool(opts?: {
         }
         runId = start.runId;
         startA2AFlow(undefined, runId);
-        return jsonResult({
+        return shapeAcceptedResult({
           runId,
           status: "accepted",
           sessionKey: displayKey,
@@ -362,7 +394,7 @@ export function createSessionsSendTool(opts?: {
           });
         }
         startA2AFlow(undefined, runId);
-        return jsonResult({
+        return shapeAcceptedResult({
           runId,
           status: "accepted",
           sessionKey: displayKey,

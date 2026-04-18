@@ -360,6 +360,73 @@ describe("qa cli runtime", () => {
     }
   });
 
+  it("writes a C1 review verdict summary in enforced mode", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "qa-parity-shape-"));
+    const previousMode = process.env.OPENCLAW_TOOL_RESULT_SHAPE_REVIEW_QA_MODE;
+    process.env.OPENCLAW_TOOL_RESULT_SHAPE_REVIEW_QA_MODE = "enforced";
+    const priorExitCode = process.exitCode;
+    process.exitCode = undefined;
+
+    try {
+      await fs.writeFile(
+        path.join(repoRoot, "candidate.json"),
+        JSON.stringify({
+          run: { primaryProvider: "openai", primaryModel: "gpt-5.4" },
+          scenarios: [],
+        }),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(repoRoot, "baseline.json"),
+        JSON.stringify({
+          run: { primaryProvider: "anthropic", primaryModel: "claude-opus-4-6" },
+          scenarios: [],
+        }),
+        "utf8",
+      );
+
+      await runQaParityReportCommand({
+        repoRoot,
+        candidateSummary: "candidate.json",
+        baselineSummary: "baseline.json",
+        outputDir: ".artifacts/qa/parity-shaped",
+      });
+
+      const summary = JSON.parse(
+        await fs.readFile(
+          path.join(repoRoot, ".artifacts/qa/parity-shaped/qa-agentic-parity-summary.json"),
+          "utf8",
+        ),
+      ) as Record<string, unknown>;
+      expect(summary).toMatchObject({
+        artifact_type: "review_verdict",
+        schema_version: 1,
+        producer: "qa-lab:parity-report",
+        consumer: "decision-owner",
+        result_status: "blocked",
+        failure_semantics: "blocked",
+        verdict: "fail",
+        gate_decision: "blocked",
+      });
+      expect(summary.evidence_pointers).toEqual(
+        expect.arrayContaining([
+          path.join(repoRoot, "candidate.json"),
+          path.join(repoRoot, "baseline.json"),
+        ]),
+      );
+      expect(summary.top_blockers).toEqual(expect.any(Array));
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = priorExitCode;
+      if (previousMode === undefined) {
+        delete process.env.OPENCLAW_TOOL_RESULT_SHAPE_REVIEW_QA_MODE;
+      } else {
+        process.env.OPENCLAW_TOOL_RESULT_SHAPE_REVIEW_QA_MODE = previousMode;
+      }
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("resolves character eval paths and passes model refs through", async () => {
     await runQaCharacterEvalCommand({
       repoRoot: "/tmp/openclaw-repo",

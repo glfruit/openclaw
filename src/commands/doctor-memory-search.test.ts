@@ -12,6 +12,9 @@ const resolveMemorySearchConfig = vi.hoisted(() => vi.fn());
 const resolveApiKeyForProvider = vi.hoisted(() => vi.fn());
 const resolveActiveMemoryBackendConfig = vi.hoisted(() => vi.fn());
 const getActiveMemorySearchManager = vi.hoisted(() => vi.fn());
+const getMemoryCapabilityRegistration = vi.hoisted(() =>
+  vi.fn(() => ({ pluginId: "memory-core" })),
+);
 type CheckQmdBinaryAvailability = typeof checkQmdBinaryAvailabilityFn;
 const checkQmdBinaryAvailability = vi.hoisted(() =>
   vi.fn<CheckQmdBinaryAvailability>(async () => ({ available: true })),
@@ -42,6 +45,10 @@ vi.mock("../agents/model-auth.js", () => ({
 vi.mock("../plugins/memory-runtime.js", () => ({
   resolveActiveMemoryBackendConfig,
   getActiveMemorySearchManager,
+}));
+
+vi.mock("../plugins/memory-state.js", () => ({
+  getMemoryCapabilityRegistration,
 }));
 
 vi.mock("../memory-host-sdk/engine-qmd.js", () => ({
@@ -143,6 +150,8 @@ describe("noteMemorySearchHealth", () => {
     resolveAgentDir.mockClear();
     resolveAgentWorkspaceDir.mockClear();
     resolveMemorySearchConfig.mockReset();
+    getMemoryCapabilityRegistration.mockReset();
+    getMemoryCapabilityRegistration.mockReturnValue({ pluginId: "memory-core" });
     resolveApiKeyForProvider.mockReset();
     resolveApiKeyForProvider.mockRejectedValue(new Error("missing key"));
     resolveActiveMemoryBackendConfig.mockReset();
@@ -264,6 +273,25 @@ describe("noteMemorySearchHealth", () => {
 
   it("does not warn when remote apiKey is configured for explicit provider", async () => {
     await expectNoWarningWithConfiguredRemoteApiKey("openai");
+  });
+
+  it("falls back to provider id auth hints when memory-core capability is inactive", async () => {
+    getMemoryCapabilityRegistration.mockReturnValue({ pluginId: "openclaw-nowledge-mem" });
+    resolveMemorySearchConfig.mockReturnValue({
+      provider: "gemini",
+      local: {},
+      remote: {},
+    });
+
+    await noteMemorySearchHealth(cfg);
+
+    expect(resolveApiKeyForProvider).toHaveBeenCalledWith({
+      provider: "gemini",
+      cfg,
+      agentDir: "/tmp/agent-default",
+    });
+    const message = String(note.mock.calls[0]?.[0] ?? "");
+    expect(message).toContain("GEMINI_API_KEY");
   });
 
   it("treats SecretRef remote apiKey as configured for explicit provider", async () => {
@@ -503,6 +531,8 @@ describe("memory recall doctor integration", () => {
 
   beforeEach(() => {
     note.mockClear();
+    getMemoryCapabilityRegistration.mockReset();
+    getMemoryCapabilityRegistration.mockReturnValue({ pluginId: "memory-core" });
     resetMemoryRecallMocks();
   });
 
@@ -525,6 +555,16 @@ describe("memory recall doctor integration", () => {
       ...overrides,
     };
   }
+
+  it("skips recall and dreaming audits when memory-core capability is inactive", async () => {
+    getMemoryCapabilityRegistration.mockReturnValue({ pluginId: "openclaw-nowledge-mem" });
+
+    await noteMemoryRecallHealth(cfg);
+
+    expect(auditShortTermPromotionArtifacts).not.toHaveBeenCalled();
+    expect(auditDreamingArtifacts).not.toHaveBeenCalled();
+    expect(note).not.toHaveBeenCalled();
+  });
 
   it("notes recall-store audit problems with doctor guidance", async () => {
     auditShortTermPromotionArtifacts.mockResolvedValueOnce({
@@ -563,6 +603,17 @@ describe("memory recall doctor integration", () => {
     expect(message).toContain("Memory recall artifacts need attention:");
     expect(message).toContain("doctor --fix");
     expect(message).toContain("memory status --fix");
+  });
+
+  it("skips recall repairs when memory-core capability is inactive", async () => {
+    getMemoryCapabilityRegistration.mockReturnValue({ pluginId: "openclaw-nowledge-mem" });
+    const prompter = createPrompter();
+
+    await maybeRepairMemoryRecallHealth({ cfg, prompter });
+
+    expect(prompter.confirmRuntimeRepair).not.toHaveBeenCalled();
+    expect(repairShortTermPromotionArtifacts).not.toHaveBeenCalled();
+    expect(repairDreamingArtifacts).not.toHaveBeenCalled();
   });
 
   it("runs memory recall repair during doctor --fix", async () => {

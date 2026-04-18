@@ -799,6 +799,100 @@ describe("sessions tools", () => {
     expect(sendCallCount).toBe(0);
   });
 
+  it("sessions_send emits a C1 result shape for accepted receipts in enforced mode", async () => {
+    const previousMode = process.env.OPENCLAW_TOOL_RESULT_SHAPE_SESSIONS_SEND_MODE;
+    process.env.OPENCLAW_TOOL_RESULT_SHAPE_SESSIONS_SEND_MODE = "enforced";
+    try {
+      callGatewayMock.mockImplementation(async (opts: unknown) => {
+        const request = opts as { method?: string; params?: Record<string, unknown> };
+        if (request.method === "agent") {
+          return { runId: "run-shaped", acceptedAt: 123 };
+        }
+        return {};
+      });
+
+      const tool = createSessionsSendTool({
+        agentSessionKey: "main",
+        agentChannel: "discord",
+        callGateway: callGatewayMock,
+      });
+
+      const result = await tool.execute("call-shaped", {
+        sessionKey: "main",
+        message: "ping",
+        timeoutSeconds: 0,
+      });
+      expect(result.details).toMatchObject({
+        artifact_type: "sessions_send_result",
+        schema_version: 1,
+        producer: "agents:sessions_send",
+        consumer: "operator",
+        result_status: "accepted",
+        failure_semantics: null,
+        delivery_status: "pending",
+        reply_window_status: "not_waited",
+        run_id: "run-shaped",
+        session_key: "main",
+      });
+      expect((result.details as { validation_commands?: unknown[] }).validation_commands).toContain(
+        "pnpm exec vitest run src/src/agents/openclaw-tools.sessions.test.ts",
+      );
+    } finally {
+      if (previousMode === undefined) {
+        delete process.env.OPENCLAW_TOOL_RESULT_SHAPE_SESSIONS_SEND_MODE;
+      } else {
+        process.env.OPENCLAW_TOOL_RESULT_SHAPE_SESSIONS_SEND_MODE = previousMode;
+      }
+    }
+  });
+
+  it("sessions_send marks timeout accepted receipts as requires_human in enforced mode", async () => {
+    const previousMode = process.env.OPENCLAW_TOOL_RESULT_SHAPE_SESSIONS_SEND_MODE;
+    process.env.OPENCLAW_TOOL_RESULT_SHAPE_SESSIONS_SEND_MODE = "enforced";
+    try {
+      callGatewayMock.mockImplementation(async (opts: unknown) => {
+        const request = opts as { method?: string; params?: Record<string, unknown> };
+        if (request.method === "agent") {
+          return { runId: "run-timeout", acceptedAt: 123 };
+        }
+        if (request.method === "agent.wait") {
+          return { runId: "run-timeout", status: "pending" };
+        }
+        if (request.method === "chat.history") {
+          return { messages: [] };
+        }
+        return {};
+      });
+
+      const tool = createSessionsSendTool({
+        agentSessionKey: "main",
+        agentChannel: "discord",
+        callGateway: callGatewayMock,
+      });
+
+      const result = await tool.execute("call-timeout", {
+        sessionKey: "main",
+        message: "ping",
+        timeoutSeconds: 1,
+      });
+      expect(result.details).toMatchObject({
+        artifact_type: "sessions_send_result",
+        result_status: "accepted",
+        failure_semantics: "requires_human",
+        delivery_status: "accepted",
+        reply_window_status: "pending",
+        run_id: "run-timeout",
+        session_key: "main",
+      });
+    } finally {
+      if (previousMode === undefined) {
+        delete process.env.OPENCLAW_TOOL_RESULT_SHAPE_SESSIONS_SEND_MODE;
+      } else {
+        process.env.OPENCLAW_TOOL_RESULT_SHAPE_SESSIONS_SEND_MODE = previousMode;
+      }
+    }
+  });
+
   it("sessions_send resolves sessionId inputs", async () => {
     const sessionId = "sess-send";
     const targetKey = "agent:main:discord:channel:123";

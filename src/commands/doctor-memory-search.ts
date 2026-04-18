@@ -26,13 +26,21 @@ import {
   getActiveMemorySearchManager,
   resolveActiveMemoryBackendConfig,
 } from "../plugins/memory-runtime.js";
+import { getMemoryCapabilityRegistration } from "../plugins/memory-state.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { note } from "../terminal/note.js";
 import { resolveUserPath } from "../utils.js";
 import type { DoctorPrompter } from "./doctor-prompter.js";
 import { isRecord } from "./doctor/shared/legacy-config-record-shared.js";
 
+function isMemoryCoreCapabilityActive(): boolean {
+  return getMemoryCapabilityRegistration()?.pluginId === "memory-core";
+}
+
 function resolveSuggestedRemoteMemoryProvider(): string | undefined {
+  if (!isMemoryCoreCapabilityActive()) {
+    return undefined;
+  }
   return listBuiltinAutoSelectMemoryEmbeddingProviderDoctorMetadata().find(
     (provider) => provider.transport === "remote",
   )?.providerId;
@@ -108,6 +116,9 @@ function buildDreamingArtifactIssueNote(audit: DreamingArtifactsAuditSummary): s
 }
 
 export async function noteMemoryRecallHealth(cfg: OpenClawConfig): Promise<void> {
+  if (!isMemoryCoreCapabilityActive()) {
+    return;
+  }
   try {
     const context = await resolveRuntimeMemoryAuditContext(cfg);
     const workspaceDir = context?.workspaceDir?.trim();
@@ -142,6 +153,9 @@ export async function maybeRepairMemoryRecallHealth(params: {
   cfg: OpenClawConfig;
   prompter: DoctorPrompter;
 }): Promise<void> {
+  if (!isMemoryCoreCapabilityActive()) {
+    return;
+  }
   try {
     const context = await resolveRuntimeMemoryAuditContext(params.cfg);
     const workspaceDir = context?.workspaceDir?.trim();
@@ -373,9 +387,11 @@ export async function noteMemorySearchHealth(
   if (hasLocalEmbeddings(resolved.local)) {
     return;
   }
-  const autoSelectProviders = listBuiltinAutoSelectMemoryEmbeddingProviderDoctorMetadata().filter(
-    (provider) => provider.transport === "remote",
-  );
+  const autoSelectProviders = isMemoryCoreCapabilityActive()
+    ? listBuiltinAutoSelectMemoryEmbeddingProviderDoctorMetadata().filter(
+        (provider) => provider.transport === "remote",
+      )
+    : [];
   for (const provider of autoSelectProviders) {
     if (hasRemoteApiKey || (await hasApiKeyForProvider(provider.authProviderId, cfg, agentDir))) {
       return;
@@ -450,7 +466,9 @@ async function hasApiKeyForProvider(
   cfg: OpenClawConfig,
   agentDir: string,
 ): Promise<boolean> {
-  const metadata = getBuiltinMemoryEmbeddingProviderDoctorMetadata(provider);
+  const metadata = isMemoryCoreCapabilityActive()
+    ? getBuiltinMemoryEmbeddingProviderDoctorMetadata(provider)
+    : null;
   try {
     await resolveApiKeyForProvider({
       provider: metadata?.authProviderId ?? provider,
@@ -464,8 +482,12 @@ async function hasApiKeyForProvider(
 }
 
 function resolvePrimaryMemoryProviderEnvVar(provider: string): string {
-  const metadata = getBuiltinMemoryEmbeddingProviderDoctorMetadata(provider);
-  return metadata?.envVars[0] ?? `${provider.toUpperCase()}_API_KEY`;
+  return (
+    (isMemoryCoreCapabilityActive()
+      ? getBuiltinMemoryEmbeddingProviderDoctorMetadata(provider)
+      : null
+    )?.envVars[0] ?? `${provider.toUpperCase()}_API_KEY`
+  );
 }
 
 function formatMemoryProviderEnvVarList(providers: Array<{ envVars: string[] }>): string {

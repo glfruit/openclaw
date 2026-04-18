@@ -2,6 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
+  resolveToolResultCompatibilityMode,
+  shapeResult,
+  validateResultShape,
+} from "../../../src/shared/tool-result-shape.js";
+import {
   buildQaAgenticParityComparison,
   renderQaAgenticParityMarkdownReport,
   type QaParitySuiteSummary,
@@ -427,8 +432,22 @@ export async function runQaParityReportCommand(opts: {
   const report = renderQaAgenticParityMarkdownReport(comparison);
   const reportPath = path.join(outputDir, "qa-agentic-parity-report.md");
   const summaryPath = path.join(outputDir, "qa-agentic-parity-summary.json");
+  const compatibilityMode = resolveToolResultCompatibilityMode("review_qa");
+  const shapedSummary = shapeResult(comparison, "review_qa", {
+    compatibilityMode,
+    producer: "qa-lab:parity-report",
+    consumer: "decision-owner",
+    evidencePointers: [candidateSummaryPath, baselineSummaryPath, reportPath, summaryPath],
+    validationCommands: [
+      "pnpm exec vitest run src/extensions/qa-lab/src/cli.runtime.test.ts",
+      "pnpm exec vitest run src/extensions/qa-lab/src/agentic-parity-report.test.ts",
+    ],
+  });
+  if (compatibilityMode === "enforced" && !validateResultShape(shapedSummary)) {
+    throw new Error("QA parity result shape validation failed");
+  }
   await fs.writeFile(reportPath, report, "utf8");
-  await fs.writeFile(summaryPath, `${JSON.stringify(comparison, null, 2)}\n`, "utf8");
+  await fs.writeFile(summaryPath, `${JSON.stringify(shapedSummary, null, 2)}\n`, "utf8");
 
   process.stdout.write(`QA parity report: ${reportPath}\n`);
   process.stdout.write(`QA parity summary: ${summaryPath}\n`);

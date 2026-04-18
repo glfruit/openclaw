@@ -353,6 +353,33 @@ describe("deliverReplies", () => {
     );
   });
 
+  it("passes session identity metadata to reply-path message_sending hooks", async () => {
+    messageHookRunner.hasHooks.mockImplementation((name: string) => name === "message_sending");
+
+    const runtime = createRuntime(false);
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 12, chat: { id: "123" } });
+    const bot = createBot({ sendMessage });
+
+    await deliverWith({
+      sessionKeyForInternalHooks: "agent:research-tl:telegram:group:-1003896323748",
+      replies: [{ text: "hello" }],
+      runtime,
+      bot,
+    });
+
+    expect(messageHookRunner.runMessageSending).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "123",
+        content: "hello",
+        metadata: expect.objectContaining({
+          channel: "telegram",
+          sessionKey: "agent:research-tl:telegram:group:-1003896323748",
+        }),
+      }),
+      expect.objectContaining({ channelId: "telegram", conversationId: "123" }),
+    );
+  });
+
   it("invokes onVoiceRecording before sending a voice note", async () => {
     const events: string[] = [];
     const runtime = createRuntime(false);
