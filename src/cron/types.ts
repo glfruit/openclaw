@@ -44,6 +44,12 @@ export type CronFailureDestination = {
 export type CronDeliveryPatch = Partial<CronDelivery>;
 
 export type CronRunStatus = "ok" | "error" | "skipped";
+/**
+ * delivered: a user-visible payload reached the configured destination.
+ * not-delivered: delivery was requested/attempted but did not complete.
+ * unknown: delivery was requested, but the runner omitted a final ack signal.
+ * not-requested: the job had no delivery plan, so no delivery should be inferred.
+ */
 export type CronDeliveryStatus = "delivered" | "not-delivered" | "unknown" | "not-requested";
 
 export type CronUsageSummary = {

@@ -256,14 +256,21 @@ function resolveRetryConfig(cronConfig?: CronConfig) {
   };
 }
 
-function resolveDeliveryStatus(params: { job: CronJob; delivered?: boolean }): CronDeliveryStatus {
+function resolveDeliveryStatus(params: {
+  job: CronJob;
+  delivered?: boolean;
+  deliveryAttempted?: boolean;
+}): CronDeliveryStatus {
+  const deliveryRequested = resolveCronDeliveryPlan(params.job).requested;
   if (params.delivered === true) {
     return "delivered";
   }
   if (params.delivered === false) {
-    return "not-delivered";
+    return params.deliveryAttempted === false && !deliveryRequested
+      ? "not-requested"
+      : "not-delivered";
   }
-  return resolveCronDeliveryPlan(params.job).requested ? "unknown" : "not-requested";
+  return deliveryRequested ? "unknown" : "not-requested";
 }
 
 function normalizeCronMessageChannel(input: unknown): CronMessageChannel | undefined {
@@ -391,6 +398,7 @@ export function applyJobResult(
     status: CronRunStatus;
     error?: string;
     delivered?: boolean;
+    deliveryAttempted?: boolean;
     startedAt: number;
     endedAt: number;
   },
@@ -420,7 +428,11 @@ export function applyJobResult(
       ? (resolveFailoverReasonFromError(result.error) ?? undefined)
       : undefined;
   job.state.lastDelivered = result.delivered;
-  const deliveryStatus = resolveDeliveryStatus({ job, delivered: result.delivered });
+  const deliveryStatus = resolveDeliveryStatus({
+    job,
+    delivered: result.delivered,
+    deliveryAttempted: result.deliveryAttempted,
+  });
   job.state.lastDeliveryStatus = deliveryStatus;
   job.state.lastDeliveryError =
     deliveryStatus === "not-delivered" && result.error ? result.error : undefined;
@@ -599,6 +611,7 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
     status: result.status,
     error: result.error,
     delivered: result.delivered,
+    deliveryAttempted: result.deliveryAttempted,
     startedAt: result.startedAt,
     endedAt: result.endedAt,
   });
@@ -1337,6 +1350,7 @@ export async function executeJob(
     status: coreResult.status,
     error: coreResult.error,
     delivered: coreResult.delivered,
+    deliveryAttempted: coreResult.deliveryAttempted,
     startedAt,
     endedAt,
   });
