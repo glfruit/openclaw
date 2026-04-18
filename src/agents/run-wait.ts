@@ -182,6 +182,28 @@ export async function waitForAgentRunAndReadUpdatedAssistantReply(params: {
   };
 }
 
+export async function compensateAfterWaitTimeout(params: {
+  runId: string;
+  sessionKey: string;
+  limit?: number;
+  baseline?: AssistantReplySnapshot;
+  callGateway?: GatewayCaller;
+}): Promise<{ status: "accepted"; replyText?: string } | { status: "pending" }> {
+  const latestReply = await readLatestAssistantReplySnapshot({
+    sessionKey: params.sessionKey,
+    limit: params.limit,
+    callGateway: params.callGateway,
+  });
+  const baselineFingerprint = params.baseline?.fingerprint;
+  if (
+    latestReply.text &&
+    (!baselineFingerprint || latestReply.fingerprint !== baselineFingerprint)
+  ) {
+    return { status: "accepted", replyText: latestReply.text };
+  }
+  return { status: "pending" };
+}
+
 export async function waitForAgentRunsToDrain(params: {
   getPendingRunIds: () => Iterable<string>;
   initialPendingRunIds?: Iterable<string>;

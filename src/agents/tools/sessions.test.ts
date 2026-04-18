@@ -658,6 +658,42 @@ describe("sessions_send gating", () => {
     expect(result.details).toMatchObject({ status: "forbidden" });
   });
 
+  it("returns accepted pending announce delivery for timeoutSeconds 0 without waiting", async () => {
+    const tool = createMainSessionsSendTool();
+
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "sessions.list") {
+        return {
+          path: "/tmp/sessions.json",
+          sessions: [{ key: MAIN_AGENT_SESSION_KEY, kind: "direct" }],
+        };
+      }
+      if (request.method === "agent") {
+        return { runId: "run-fire-and-forget-ok", acceptedAt: 456 };
+      }
+      return {};
+    });
+
+    const result = await tool.execute("call-fire-and-forget-ok", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "ping",
+      timeoutSeconds: 0,
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      delivery: { status: "pending", mode: "announce" },
+    });
+    expect(callGatewayMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "agent.wait" }),
+    );
+    expect(callGatewayMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "chat.history" }),
+    );
+  });
+
   it("does not reuse a stale assistant reply when no new reply appears", async () => {
     const tool = createMainSessionsSendTool();
     let historyCalls = 0;
@@ -699,6 +735,48 @@ describe("sessions_send gating", () => {
       status: "ok",
       reply: undefined,
       sessionKey: MAIN_AGENT_SESSION_KEY,
+    });
+  });
+
+  it("maps explicit agent.wait pending to accepted instead of ok", async () => {
+    const tool = createMainSessionsSendTool();
+    const staleAssistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "older reply from a previous run" }],
+      timestamp: 20,
+    };
+
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string; params?: Record<string, unknown> };
+      if (request.method === "sessions.list") {
+        return {
+          path: "/tmp/sessions.json",
+          sessions: [{ key: MAIN_AGENT_SESSION_KEY, kind: "direct" }],
+        };
+      }
+      if (request.method === "agent") {
+        return { runId: "run-pending-send", acceptedAt: 123 };
+      }
+      if (request.method === "agent.wait") {
+        return { runId: "run-pending-send", status: "pending" };
+      }
+      if (request.method === "chat.history") {
+        return { messages: [staleAssistantMessage] };
+      }
+      return {};
+    });
+
+    const result = await tool.execute("call-pending-send", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "ping",
+      timeoutSeconds: 1,
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      delivery: { status: "accepted", mode: "direct" },
+      note: "target session accepted message but reply is still pending",
     });
   });
 });

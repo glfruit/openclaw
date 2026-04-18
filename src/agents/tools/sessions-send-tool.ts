@@ -12,6 +12,7 @@ import {
 } from "../../utils/message-channel.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
 import {
+  compensateAfterWaitTimeout,
   readLatestAssistantReplySnapshot,
   waitForAgentRunAndReadUpdatedAssistantReply,
 } from "../run-wait.js";
@@ -342,12 +343,34 @@ export function createSessionsSendTool(opts?: {
         callGateway: gatewayCall,
       });
 
-      if (result.status === "timeout") {
+      if (result.status === "timeout" || result.status === "pending") {
+        const compensation = await compensateAfterWaitTimeout({
+          runId,
+          sessionKey: resolvedKey,
+          baseline: baselineReply,
+          limit: SESSIONS_SEND_REPLY_HISTORY_LIMIT,
+          callGateway: gatewayCall,
+        });
+        if (compensation.status === "accepted") {
+          startA2AFlow(compensation.replyText ?? undefined);
+          return jsonResult({
+            runId,
+            status: "ok",
+            reply: compensation.replyText,
+            sessionKey: displayKey,
+            delivery,
+          });
+        }
+        startA2AFlow(undefined, runId);
         return jsonResult({
           runId,
-          status: "timeout",
-          error: result.error,
+          status: "accepted",
           sessionKey: displayKey,
+          delivery: { status: "accepted", mode: "direct" as const },
+          note:
+            result.status === "pending"
+              ? "target session accepted message but reply is still pending"
+              : "target session accepted message but reply was not ready before timeout",
         });
       }
       if (result.status === "error") {

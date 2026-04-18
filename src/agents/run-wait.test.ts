@@ -7,6 +7,7 @@ vi.mock("../gateway/call.js", () => ({
 
 import {
   __testing,
+  compensateAfterWaitTimeout,
   readLatestAssistantReply,
   readLatestAssistantReplySnapshot,
   waitForAgentRun,
@@ -243,6 +244,66 @@ describe("waitForAgentRunAndReadUpdatedAssistantReply", () => {
       status: "ok",
       replyText: "fresh reply",
     });
+  });
+});
+
+describe("compensateAfterWaitTimeout", () => {
+  beforeEach(() => {
+    callGatewayMock.mockClear();
+    __testing.setDepsForTest({
+      callGateway: async (opts) => await callGatewayMock(opts),
+    });
+  });
+
+  it("returns accepted when new reply appeared after timeout", async () => {
+    callGatewayMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "new reply after wait" }],
+          timestamp: 99,
+        },
+      ],
+    });
+
+    const result = await compensateAfterWaitTimeout({
+      runId: "run-1",
+      sessionKey: "agent:main:child",
+      baseline: { text: "old reply", fingerprint: "old-fp" },
+      callGateway: async (opts) => await callGatewayMock(opts),
+    });
+
+    expect(result).toEqual({ status: "accepted", replyText: "new reply after wait" });
+  });
+
+  it("returns pending when reply unchanged from baseline", async () => {
+    const sameMsg = {
+      role: "assistant",
+      content: [{ type: "text", text: "same reply" }],
+      timestamp: 42,
+    };
+    callGatewayMock.mockResolvedValueOnce({ messages: [sameMsg] });
+
+    const result = await compensateAfterWaitTimeout({
+      runId: "run-1",
+      sessionKey: "agent:main:child",
+      baseline: { text: "same reply", fingerprint: JSON.stringify(sameMsg) },
+      callGateway: async (opts) => await callGatewayMock(opts),
+    });
+
+    expect(result).toEqual({ status: "pending" });
+  });
+
+  it("returns pending when no baseline and no assistant messages", async () => {
+    callGatewayMock.mockResolvedValueOnce({ messages: [] });
+
+    const result = await compensateAfterWaitTimeout({
+      runId: "run-1",
+      sessionKey: "agent:main:child",
+      callGateway: async (opts) => await callGatewayMock(opts),
+    });
+
+    expect(result).toEqual({ status: "pending" });
   });
 });
 

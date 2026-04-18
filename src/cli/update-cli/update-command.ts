@@ -1096,7 +1096,6 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     }
   }
 
-  let gatewayStoppedForUpdate = false;
   if (updateInstallKind === "git") {
     const gitUpdateRoot = switchToGit ? resolveGitInstallDir() : root;
     const runningGateway = await detectRunningGatewayForInstall(gitUpdateRoot);
@@ -1105,7 +1104,9 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
         typeof runningGateway.pid === "number" ? ` (pid ${runningGateway.pid})` : "";
       if (opts.restart === false) {
         defaultRuntime.error(
-          theme.error(`Update blocked: this install's gateway service is still running${pidSuffix}.`),
+          theme.error(
+            `Update blocked: this install's gateway service is still running${pidSuffix}.`,
+          ),
         );
         defaultRuntime.log(
           theme.warn(
@@ -1120,13 +1121,8 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
         defaultRuntime.exit(1);
         return;
       }
-      defaultRuntime.log(
-        theme.warn(
-          `Stopping gateway service for in-place update${pidSuffix}...`,
-        ),
-      );
-      await resolveGatewayService().stop({ stdout: defaultRuntime, env: process.env });
-      gatewayStoppedForUpdate = true;
+      defaultRuntime.log(theme.warn(`Stopping gateway service for in-place update${pidSuffix}...`));
+      await resolveGatewayService().stop({ stdout: process.stdout, env: process.env });
     }
   }
 
