@@ -70,6 +70,8 @@ vi.mock("./targets.js", () => ({
 }));
 
 import type { OpenClawConfig } from "../../config/config.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
+import { resolveAgentGatewayDeliveryFlags } from "../../gateway/server-methods/agent.js";
 let resolveAgentDeliveryPlan: typeof import("./agent-delivery.js").resolveAgentDeliveryPlan;
 let resolveAgentOutboundTarget: typeof import("./agent-delivery.js").resolveAgentOutboundTarget;
 
@@ -87,6 +89,48 @@ function expectDeliveryPlan(params: Parameters<typeof resolveAgentDeliveryPlan>[
 }
 
 describe("agent delivery helpers", () => {
+  it("defaults telegram group sessions to external delivery", () => {
+    expect(
+      resolveAgentGatewayDeliveryFlags({
+        sessionKey: "agent:main:telegram:group:-100123",
+        resolvedChannel: "telegram",
+      }),
+    ).toEqual({ wantsDelivery: true, deliver: true });
+  });
+
+  it("defaults telegram group topic sessions to external delivery", () => {
+    expect(
+      resolveAgentGatewayDeliveryFlags({
+        sessionKey: "agent:main:telegram:group:-100123:topic:20",
+        resolvedChannel: "telegram",
+      }),
+    ).toEqual({ wantsDelivery: true, deliver: true });
+  });
+
+  it("keeps explicit deliver false as session-only for telegram group sessions", () => {
+    expect(
+      resolveAgentGatewayDeliveryFlags({
+        requestDeliver: false,
+        sessionKey: "agent:main:telegram:group:-100123",
+        resolvedChannel: "telegram",
+      }),
+    ).toEqual({ wantsDelivery: false, deliver: false });
+  });
+
+  it.each([
+    "agent:main:telegram:dm:12345",
+    "agent:main:main",
+    "agent:main:webchat:dm:user-123",
+    "agent:main:discord:group:12345",
+  ])("does not auto-upgrade non-telegram-group session %s", (sessionKey) => {
+    expect(
+      resolveAgentGatewayDeliveryFlags({
+        sessionKey,
+        resolvedChannel: INTERNAL_MESSAGE_CHANNEL,
+      }),
+    ).toEqual({ wantsDelivery: false, deliver: false });
+  });
+
   it.each([
     {
       params: {
