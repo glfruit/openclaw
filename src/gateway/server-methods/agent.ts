@@ -198,6 +198,23 @@ function emitSessionsChanged(
   );
 }
 
+function isTelegramGroupBoundAgentSessionKey(sessionKey?: string): boolean {
+  const raw = normalizeOptionalLowercaseString(sessionKey);
+  return Boolean(raw && /^agent:[^:]+:telegram:group:[^:]+(?::topic:[^:]+)?$/.test(raw));
+}
+
+export function resolveAgentGatewayDeliveryFlags(params: {
+  requestDeliver?: boolean;
+  sessionKey?: string;
+  resolvedChannel?: string;
+}): { wantsDelivery: boolean; deliver: boolean } {
+  const defaultVisibleTelegramGroup =
+    params.requestDeliver !== false && isTelegramGroupBoundAgentSessionKey(params.sessionKey);
+  const wantsDelivery = params.requestDeliver === true || defaultVisibleTelegramGroup;
+  const deliver = wantsDelivery && params.resolvedChannel !== INTERNAL_MESSAGE_CHANNEL;
+  return { wantsDelivery, deliver };
+}
+
 function dispatchAgentRunFromGateway(params: {
   ingressOpts: Parameters<typeof agentCommandFromIngress>[0];
   runId: string;
@@ -685,7 +702,6 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
     }
 
-    const wantsDelivery = request.deliver === true;
     const explicitTo =
       normalizeOptionalString(request.replyTo) ?? normalizeOptionalString(request.to);
     const explicitThreadId = normalizeOptionalString(request.threadId);
@@ -786,7 +802,11 @@ export const agentHandlers: GatewayRequestHandlers = {
         ? INTERNAL_MESSAGE_CHANNEL
         : resolvedChannel);
 
-    const deliver = request.deliver === true && resolvedChannel !== INTERNAL_MESSAGE_CHANNEL;
+    const { wantsDelivery, deliver } = resolveAgentGatewayDeliveryFlags({
+      requestDeliver: request.deliver,
+      sessionKey: resolvedSessionKey,
+      resolvedChannel,
+    });
 
     const accepted = {
       runId,
