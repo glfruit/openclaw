@@ -8,7 +8,7 @@ import {
 import { createServer as createHttpsServer } from "node:https";
 import type { TlsOptions } from "node:tls";
 import type { WebSocketServer } from "ws";
-import { A2UI_PATH, CANVAS_WS_PATH, handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
+import { A2UI_PATH, CANVAS_WS_PATH } from "../canvas-host/paths.js";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import { loadConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -91,6 +91,7 @@ let sessionHistoryHttpModulePromise:
   | undefined;
 let sessionKillHttpModulePromise: Promise<typeof import("./session-kill-http.js")> | undefined;
 let toolsInvokeHttpModulePromise: Promise<typeof import("./tools-invoke-http.js")> | undefined;
+let a2uiModulePromise: Promise<typeof import("../canvas-host/a2ui.js")> | undefined;
 
 function getBundledChannelsModule() {
   bundledChannelsModulePromise ??= import("../channels/plugins/bundled.js");
@@ -140,6 +141,11 @@ function getSessionKillHttpModule() {
 function getToolsInvokeHttpModule() {
   toolsInvokeHttpModulePromise ??= import("./tools-invoke-http.js");
   return toolsInvokeHttpModulePromise;
+}
+
+function getA2uiModule() {
+  a2uiModulePromise ??= import("../canvas-host/a2ui.js");
+  return a2uiModulePromise;
 }
 
 type HookDispatchers = {
@@ -1017,7 +1023,10 @@ export function createGatewayHttpServer(opts: {
         });
         requestStages.push({
           name: "a2ui",
-          run: () => (isA2uiPath(requestPath) ? handleA2uiHttpRequest(req, res) : false),
+          run: async () =>
+            isA2uiPath(requestPath)
+              ? (await getA2uiModule()).handleA2uiHttpRequest(req, res)
+              : false,
         });
         requestStages.push({
           name: "canvas-http",

@@ -13,11 +13,10 @@ import {
   DEFAULT_INPUT_IMAGE_MIMES,
   DEFAULT_INPUT_MAX_REDIRECTS,
   DEFAULT_INPUT_TIMEOUT_MS,
-  extractImageContentFromSource,
   normalizeMimeList,
-  type InputImageLimits,
-  type InputImageSource,
-} from "../media/input-files.js";
+} from "../media/input-files-config.js";
+import type { InputImageLimits } from "../media/input-files-config.js";
+import type { InputImageSource } from "../media/input-files.js";
 import { defaultRuntime } from "../runtime.js";
 import {
   normalizeLowercaseStringOrEmpty,
@@ -82,6 +81,13 @@ type ResolvedOpenAiChatCompletionsLimits = {
   maxTotalImageBytes: number;
   images: InputImageLimits;
 };
+
+let inputFilesModulePromise: Promise<typeof import("../media/input-files.js")> | undefined;
+
+function getInputFilesModule() {
+  inputFilesModulePromise ??= import("../media/input-files.js");
+  return inputFilesModulePromise;
+}
 
 function resolveOpenAiChatCompletionsLimits(
   config: GatewayHttpChatCompletionsConfig | undefined,
@@ -354,6 +360,7 @@ async function resolveImagesForRequest(
       }
     }
 
+    const { extractImageContentFromSource } = await getInputFilesModule();
     const image = await extractImageContentFromSource(source, limits.images);
     totalBytes += estimateBase64DecodedBytes(image.data);
     if (totalBytes > limits.maxTotalImageBytes) {

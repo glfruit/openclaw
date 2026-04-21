@@ -1,5 +1,9 @@
 export { truncateCloseReason } from "./server/close-reason.js";
-export type { GatewayServer, GatewayServerOptions } from "./server.impl.js";
+export type {
+  GatewayBuiltInCompatPayload,
+  GatewayServer,
+  GatewayServerOptions,
+} from "./server.impl.js";
 async function loadServerImpl() {
   return await import("./server.impl.js");
 }

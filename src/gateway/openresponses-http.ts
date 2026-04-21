@@ -23,14 +23,11 @@ import {
   DEFAULT_INPUT_IMAGE_MIMES,
   DEFAULT_INPUT_MAX_REDIRECTS,
   DEFAULT_INPUT_TIMEOUT_MS,
-  extractFileContentFromSource,
-  extractImageContentFromSource,
   normalizeMimeList,
   resolveInputFileLimits,
-  type InputFileLimits,
-  type InputImageLimits,
-  type InputImageSource,
-} from "../media/input-files.js";
+} from "../media/input-files-config.js";
+import type { InputFileLimits, InputImageLimits } from "../media/input-files-config.js";
+import type { InputImageSource } from "../media/input-files.js";
 import { defaultRuntime } from "../runtime.js";
 import { resolveAssistantStreamDeltaText } from "./agent-event-assistant-text.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
@@ -87,6 +84,13 @@ type ResponseSessionEntry = ResponseSessionScope & {
 };
 
 const responseSessionMap = new Map<string, ResponseSessionEntry>();
+
+let inputFilesModulePromise: Promise<typeof import("../media/input-files.js")> | undefined;
+
+function getInputFilesModule() {
+  inputFilesModulePromise ??= import("../media/input-files.js");
+  return inputFilesModulePromise;
+}
 
 function normalizeResponseSessionScope(scope: ResponseSessionScope): ResponseSessionScope {
   const authSubject = scope.authSubject.trim();
@@ -531,6 +535,7 @@ export async function handleOpenResponsesHttpRequest(
                       data: source.data ?? "",
                       mediaType: source.media_type,
                     };
+              const { extractImageContentFromSource } = await getInputFilesModule();
               const image = await extractImageContentFromSource(imageSource, limits.images);
               images.push(image);
               continue;
@@ -552,6 +557,7 @@ export async function handleOpenResponsesHttpRequest(
               if (sourceType === "url") {
                 markUrlPart();
               }
+              const { extractFileContentFromSource } = await getInputFilesModule();
               const file = await extractFileContentFromSource({
                 source:
                   sourceType === "url"

@@ -134,17 +134,18 @@ type ChannelManagerOptions = {
    *
    * This field is optional - omitting it maintains backward compatibility
    * with existing channels. When provided, it must be a real
-   * `createPluginRuntime().channel` surface; partial stubs are not supported.
+   * `createPluginChannelRuntime()` (or `createPluginRuntime().channel`) surface;
+   * partial stubs are not supported.
    *
    * @example
    * ```typescript
-   * import { createPluginRuntime } from "../plugins/runtime/index.js";
+   * import { createPluginChannelRuntime } from "../plugins/runtime/gateway-channel-runtime.js";
    *
    * const channelManager = createChannelManager({
    *   loadConfig,
    *   channelLogs,
    *   channelRuntimeEnvs,
-   *   channelRuntime: createPluginRuntime().channel,
+   *   channelRuntime: createPluginChannelRuntime(),
    * });
    * ```
    *
@@ -158,7 +159,7 @@ type ChannelManagerOptions = {
    * Use this when the caller wants to avoid instantiating the full plugin channel
    * runtime during gateway startup. The manager only needs the runtime surface once
    * a channel account actually starts. The resolved value must be a real
-   * `createPluginRuntime().channel` surface.
+   * `createPluginChannelRuntime()` (or `createPluginRuntime().channel`) surface.
    */
   resolveChannelRuntime?: () => ChannelRuntimeSurface;
 };

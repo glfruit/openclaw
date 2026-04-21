@@ -25,7 +25,7 @@ import { enqueueSystemEvent } from "../infra/system-events.js";
 import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
 import { runGlobalGatewayStopSafely } from "../plugins/hook-runner-global.js";
-import { createPluginRuntime } from "../plugins/runtime/index.js";
+import { createPluginChannelRuntime } from "../plugins/runtime/gateway-channel-runtime.js";
 import { getTotalQueueSize } from "../process/command-queue.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
@@ -49,6 +49,7 @@ import { applyGatewayLaneConcurrency } from "./server-lanes.js";
 import { createGatewayServerLiveState, type GatewayServerLiveState } from "./server-live-state.js";
 import { GATEWAY_EVENTS } from "./server-methods-list.js";
 import { coreGatewayHandlers } from "./server-methods.js";
+import type { GatewayRequestHandlers } from "./server-methods/types.js";
 import { loadGatewayModelCatalog } from "./server-model-catalog.js";
 import { createGatewayNodeSessionRuntime } from "./server-node-session-runtime.js";
 import { reloadDeferredGatewayPlugins } from "./server-plugin-bootstrap.js";
@@ -112,10 +113,10 @@ const logDiscovery = log.child("discovery");
 const logTailscale = log.child("tailscale");
 const logChannels = log.child("channels");
 
-let cachedChannelRuntime: ReturnType<typeof createPluginRuntime>["channel"] | null = null;
+let cachedChannelRuntime: ReturnType<typeof createPluginChannelRuntime> | null = null;
 
 function getChannelRuntime() {
-  cachedChannelRuntime ??= createPluginRuntime().channel;
+  cachedChannelRuntime ??= createPluginChannelRuntime();
   return cachedChannelRuntime;
 }
 
@@ -146,6 +147,11 @@ function createGatewayAuthRateLimiters(rateLimitConfig: AuthRateLimitConfig | un
 
 export type GatewayServer = {
   close: (opts?: { reason?: string; restartExpectedMs?: number | null }) => Promise<void>;
+};
+
+export type GatewayBuiltInCompatPayload = {
+  handlers: GatewayRequestHandlers;
+  methodNames?: string[];
 };
 
 export type GatewayServerOptions = {
@@ -201,6 +207,11 @@ export type GatewayServerOptions = {
    * Optional startup timestamp used for concise readiness logging.
    */
   startupStartedAt?: number;
+  /**
+   * Explicit additive built-in gateway handlers for compat/runtime-specific assemblies.
+   * Default core startup stays core-only unless a caller provides this payload.
+   */
+  compatBuiltIns?: GatewayBuiltInCompatPayload;
 };
 
 export async function startGatewayServer(
@@ -300,8 +311,13 @@ export async function startGatewayServer(
     deferredConfiguredChannelPluginIds,
     startupPluginIds,
     baseMethods,
+    builtInGatewayMethodNames,
   } = pluginBootstrap;
   let { pluginRegistry, baseGatewayMethods } = pluginBootstrap;
+  const compatBuiltInHandlers = opts.compatBuiltIns?.handlers ?? {};
+  const compatBuiltInMethodNames = Array.from(
+    new Set([...(opts.compatBuiltIns?.methodNames ?? []), ...Object.keys(compatBuiltInHandlers)]),
+  );
   const channelLogs = Object.fromEntries(
     listChannelPlugins().map((plugin) => [plugin.id, logChannels.child(plugin.id)]),
   ) as Record<ChannelId, ReturnType<typeof createSubsystemLogger>>;
@@ -312,6 +328,7 @@ export async function startGatewayServer(
     Array.from(
       new Set([
         ...nextBaseGatewayMethods,
+        ...compatBuiltInMethodNames,
         ...listChannelPlugins().flatMap((plugin) => plugin.gatewayMethods ?? []),
       ]),
     );
@@ -700,6 +717,7 @@ export async function startGatewayServer(
           workspaceDir: defaultWorkspaceDir,
           log,
           coreGatewayHandlers,
+          builtInGatewayMethodNames,
           baseMethods,
           pluginIds: startupPluginIds,
           logDiagnostics: false,
@@ -727,7 +745,11 @@ export async function startGatewayServer(
       logGateway: log,
       logHealth,
       logWsControl,
-      extraHandlers: { ...pluginRegistry.gatewayHandlers, ...extraHandlers },
+      extraHandlers: {
+        ...pluginRegistry.gatewayHandlers,
+        ...extraHandlers,
+        ...compatBuiltInHandlers,
+      },
       broadcast,
       context: gatewayRequestContext,
     });

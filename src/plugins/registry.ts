@@ -175,7 +175,10 @@ const activePluginHookRegistrations = resolveGlobalSingleton<
 
 export function createPluginRegistry(registryParams: PluginRegistryParams) {
   const registry = createEmptyPluginRegistry();
-  const coreGatewayMethods = new Set(Object.keys(registryParams.coreGatewayHandlers ?? {}));
+  const coreGatewayMethods = new Set(
+    registryParams.builtInGatewayMethodNames ??
+      Object.keys(registryParams.coreGatewayHandlers ?? {}),
+  );
 
   const pushDiagnostic = (diag: PluginDiagnostic) => {
     registry.diagnostics.push(diag);

@@ -112,6 +112,7 @@ export type PluginLoadOptions = {
   env?: NodeJS.ProcessEnv;
   logger?: PluginLogger;
   coreGatewayHandlers?: Record<string, GatewayRequestHandler>;
+  builtInGatewayMethodNames?: string[];
   runtimeOptions?: CreatePluginRuntimeOptions;
   pluginSdkResolution?: PluginSdkResolutionPreference;
   cache?: boolean;
@@ -364,7 +365,7 @@ function buildCacheKey(params: {
   loadModules?: boolean;
   runtimeSubagentMode?: "default" | "explicit" | "gateway-bindable";
   pluginSdkResolution?: PluginSdkResolutionPreference;
-  coreGatewayMethodNames?: string[];
+  builtInGatewayMethodNames?: string[];
 }): string {
   const { roots, loadPaths } = resolvePluginCacheInputs({
     workspaceDir: params.workspaceDir,
@@ -393,7 +394,7 @@ function buildCacheKey(params: {
     params.preferSetupRuntimeForChannelPlugins === true ? "prefer-setup" : "full";
   const moduleLoadMode = params.loadModules === false ? "manifest-only" : "load-modules";
   const runtimeSubagentMode = params.runtimeSubagentMode ?? "default";
-  const gatewayMethodsKey = JSON.stringify(params.coreGatewayMethodNames ?? []);
+  const gatewayMethodsKey = JSON.stringify(params.builtInGatewayMethodNames ?? []);
   return `${roots.workspace ?? ""}::${roots.global ?? ""}::${roots.stock ?? ""}::${JSON.stringify({
     ...params.plugins,
     installs,
@@ -473,6 +474,7 @@ function hasExplicitCompatibilityInputs(options: PluginLoadOptions): boolean {
     options.runtimeOptions !== undefined ||
     options.pluginSdkResolution !== undefined ||
     options.coreGatewayHandlers !== undefined ||
+    options.builtInGatewayMethodNames !== undefined ||
     options.includeSetupOnlyChannelPlugins === true ||
     options.preferSetupRuntimeForChannelPlugins === true ||
     options.loadModules === false
@@ -491,7 +493,9 @@ function resolvePluginLoadCacheContext(options: PluginLoadOptions = {}) {
   const includeSetupOnlyChannelPlugins = options.includeSetupOnlyChannelPlugins === true;
   const preferSetupRuntimeForChannelPlugins = options.preferSetupRuntimeForChannelPlugins === true;
   const runtimeSubagentMode = resolveRuntimeSubagentMode(options.runtimeOptions);
-  const coreGatewayMethodNames = Object.keys(options.coreGatewayHandlers ?? {}).toSorted();
+  const builtInGatewayMethodNames = (
+    options.builtInGatewayMethodNames ?? Object.keys(options.coreGatewayHandlers ?? {})
+  ).toSorted();
   const cacheKey = buildCacheKey({
     workspaceDir: options.workspaceDir,
     plugins: normalized,
@@ -507,7 +511,7 @@ function resolvePluginLoadCacheContext(options: PluginLoadOptions = {}) {
     loadModules: options.loadModules,
     runtimeSubagentMode,
     pluginSdkResolution: options.pluginSdkResolution,
-    coreGatewayMethodNames,
+    builtInGatewayMethodNames,
   });
   return {
     env,
@@ -1408,6 +1412,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       logger,
       runtime,
       coreGatewayHandlers: options.coreGatewayHandlers as Record<string, GatewayRequestHandler>,
+      builtInGatewayMethodNames: options.builtInGatewayMethodNames,
       activateGlobalSideEffects: shouldActivate,
     });
 
@@ -2177,6 +2182,7 @@ export async function loadOpenClawPluginCliRegistry(
     logger,
     runtime: {} as PluginRuntime,
     coreGatewayHandlers: options.coreGatewayHandlers as Record<string, GatewayRequestHandler>,
+    builtInGatewayMethodNames: options.builtInGatewayMethodNames,
     activateGlobalSideEffects: false,
   });
 

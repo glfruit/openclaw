@@ -508,7 +508,7 @@ export async function deliverOutboundPayloads(
         to,
         accountId: params.accountId,
         payloads,
-        threadId: params.threadId,
+        threadId: params.threadId ?? undefined,
         replyToId: params.replyToId,
         bestEffort: params.bestEffort,
         gifPlayback: params.gifPlayback,
@@ -683,7 +683,7 @@ async function deliverOutboundPayloadsCore(
         to,
         channel,
         accountId,
-        threadId: params.threadId,
+        threadId: params.threadId ?? undefined,
         sessionKey: params.session?.key,
       });
       if (hookResult.cancelled) {
@@ -697,7 +697,6 @@ async function deliverOutboundPayloadsCore(
         replyToId: effectivePayload.replyToId ?? params.replyToId ?? undefined,
         threadId: params.threadId ?? undefined,
         audioAsVoice: effectivePayload.audioAsVoice === true ? true : undefined,
-        forceDocument: params.forceDocument,
       };
       if (
         handler.sendPayload &&

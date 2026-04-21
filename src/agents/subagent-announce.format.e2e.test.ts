@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import {
@@ -50,7 +53,11 @@ type MockSubagentRun = {
     error?: string;
   };
 };
-type SessionEntryFixture = Omit<SessionEntry, "updatedAt"> & { updatedAt?: number };
+type SessionEntryFixture = Omit<SessionEntry, "updatedAt"> & {
+  updatedAt?: number;
+  workspaceDir?: string;
+  channelTarget?: string;
+};
 type SessionStoreFixture = Record<string, SessionEntryFixture | undefined>;
 
 const agentSpy = vi.fn(async (_req: AgentCallRequest) => ({ runId: "run-main", status: "ok" }));
@@ -711,7 +718,1145 @@ describe("subagent announce formatting", () => {
     expect(sessionsDeleteSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("suppresses completion delivery when subagent reply is NO_REPLY", async () => {
+  it("turns edu-tl milestone completions with artifact or verdict evidence into visible updates", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "第3章首稿完成，artifact: courses/nosql/chapter-03/output/ch03-draft.md，critic verdict: 通过。",
+              "current_total_progress: 第3章初稿已完成，整书进入章节串联阶段。",
+              "state_layering: 章节首稿完成，结构审校待开始，终稿未完成。",
+              "next_stage: 进入结构审校。",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-completion-no-reply-milestone",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call?.params?.message).toContain("第3章首稿完成");
+    expect(call?.params?.message).toContain("ch03-draft.md");
+    expect(call?.params?.message).toContain("通过");
+  });
+
+  it("blocks outward edu-tl milestone broadcasts when required progress fields are missing", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "project4 textbook milestone reached, artifact: courses/nosql/manuscript/project4-draft.md, critic verdict: passed.",
+              "state_layering: chapter drafts complete, editorial review pending.",
+              "next_stage: editorial review queue.",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-missing-required-milestone-fields",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call?.params?.message).toContain(
+      "Repair needed before sending this edu-tl textbook/course milestone update",
+    );
+    expect(call?.params?.message).toContain("current_total_progress");
+    expect(call?.params?.message).toContain("Original report");
+  });
+
+  it("forces explicit non-final wording on edu-tl draft-complete milestone broadcasts", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "project4 draft-complete milestone reached, artifact: courses/nosql/manuscript/project4-draft.md, critic verdict: passed.",
+              "current_total_progress: 78%.",
+              "state_layering: full draft landed, editorial review pending.",
+              "next_stage: editorial review queue.",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-draft-complete-wording-guard",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call?.params?.message).toContain("draft-complete");
+    expect(call?.params?.message).toContain("not final");
+    expect(call?.params?.message).toContain("not deliverable");
+  });
+
+  it("delivers edu-tl textbook milestone updates when all required fields are present", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "completed_items: 项目四《智慧校园课程资源管理》正文首稿已落盘，artifact: courses/nosql/manuscript/project04-course-resource-management.md",
+              "key_pass_points: GridFS 正式主任务已写入，任务1-3正文齐备，结构骨架对齐。",
+              "current_total_progress: 项目1-3已过 TL 结构验收，项目4仅完成正文首稿，整本教材仍在正文推进阶段。",
+              "state_layering: 已过审/强制门通过=项目1-3；editorial精修中或未完成=项目4正文首稿；终稿可交付=暂无。",
+              "next_stage: 进入项目4结构审校与 editorial 精修。",
+              "major_risks: 项目4当前仅完成正文首稿，不是终稿，不可交付。",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-textbook-milestone-valid",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call?.params?.message).toContain("current_total_progress");
+    expect(call?.params?.message).toContain("state_layering");
+    expect(call?.params?.message).toContain("不是终稿");
+    expect(call?.params?.message).toContain("不可交付");
+  });
+
+  it("keeps battle-style narration before the edu-tl milestone compliance block", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "Battle update: 项目四主线拿下，正文首稿已经顶到里程碑，artifact: courses/nosql/manuscript/project04-course-resource-management.md。",
+              "TL 已经把结构主筋摸清，下一波是结构审校，不是终稿，不可交付。",
+              "completed_items: 项目四《智慧校园课程资源管理》正文首稿已落盘，artifact: courses/nosql/manuscript/project04-course-resource-management.md",
+              "key_pass_points: GridFS 正式主任务已写入，任务1-3正文齐备，结构骨架对齐。",
+              "current_total_progress: 项目1-3已过 TL 结构验收，项目4仅完成正文首稿，整本教材仍在正文推进阶段。",
+              "state_layering: 已过审/强制门通过=项目1-3；editorial精修中或未完成=项目4正文首稿；终稿可交付=暂无。",
+              "next_stage: 进入项目4结构审校与 editorial 精修。",
+              "major_risks: 项目4当前仅完成正文首稿，不是终稿，不可交付。",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-textbook-milestone-hybrid-order",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    const message = call?.params?.message ?? "";
+    const narrationIndex = message.indexOf("Battle update: 项目四主线拿下");
+    const complianceIndex = message.indexOf("completed_items:");
+    expect(narrationIndex).toBeGreaterThanOrEqual(0);
+    expect(complianceIndex).toBeGreaterThanOrEqual(0);
+    expect(narrationIndex).toBeLessThan(complianceIndex);
+    expect(message).toContain("TL 已经把结构主筋摸清");
+  });
+
+  it("adds a battle-style lead before field-only edu-tl milestone compliance blocks", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "completed_items: 项目四《智慧校园课程资源管理》正文首稿已落盘，artifact: courses/nosql/manuscript/project04-course-resource-management.md",
+              "key_pass_points: GridFS 正式主任务已写入，任务1-3正文齐备，结构骨架对齐。",
+              "current_total_progress: 项目1-3已过 TL 结构验收，项目4仅完成正文首稿，整本教材仍在正文推进阶段。",
+              "state_layering: 已过审/强制门通过=项目1-3；editorial精修中或未完成=项目4正文首稿；终稿可交付=暂无。",
+              "next_stage: 进入项目4结构审校与 editorial 精修。",
+              "major_risks: 项目4当前仅完成正文首稿，不是终稿，不可交付。",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-textbook-milestone-synthesized-lead",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    const message = call?.params?.message ?? "";
+    const leadIndex = message.indexOf("战况更新：");
+    const complianceIndex = message.indexOf("completed_items:");
+    expect(leadIndex).toBeGreaterThanOrEqual(0);
+    expect(complianceIndex).toBeGreaterThanOrEqual(0);
+    expect(leadIndex).toBeLessThan(complianceIndex);
+  });
+
+  it("blocks edu-tl textbook milestone delivery when current_total_progress is missing", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "completed_items: 项目四《智慧校园课程资源管理》正文首稿已落盘，artifact: courses/nosql/manuscript/project04-course-resource-management.md",
+              "key_pass_points: GridFS 正式主任务已写入，任务1-3正文齐备，结构骨架对齐。",
+              "state_layering: 已过审/强制门通过=项目1-3；editorial精修中或未完成=项目4正文首稿；终稿可交付=暂无。",
+              "next_stage: 进入项目4结构审校与 editorial 精修。",
+              "major_risks: 项目4当前只有正文首稿，not final，not deliverable。",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-textbook-milestone-missing-progress",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call?.params?.message).toContain(
+      "Repair needed before sending this edu-tl textbook/course milestone update",
+    );
+    expect(call?.params?.message).toContain("current_total_progress");
+    expect(call?.params?.message).toContain("Original report");
+  });
+
+  it("blocks edu-tl textbook draft milestone delivery when state_layering is missing", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "completed_items: 项目四《智慧校园课程资源管理》正文首稿已落盘，artifact: courses/nosql/manuscript/project04-course-resource-management.md",
+              "key_pass_points: GridFS 正式主任务已写入，任务1-3正文齐备，结构骨架对齐。",
+              "current_total_progress: 项目1-3已过 TL 结构验收，项目4仅完成正文首稿，整本教材仍在正文推进阶段。",
+              "next_stage: 进入项目4结构审校与 editorial 精修。",
+              "major_risks: 项目4当前只有正文首稿，not final，not deliverable。",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-textbook-milestone-missing-layering",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call?.params?.message).toContain(
+      "Repair needed before sending this edu-tl textbook/course milestone update",
+    );
+    expect(call?.params?.message).toContain("state_layering");
+    expect(call?.params?.message).toContain("Original report");
+  });
+
+  it("auto-appends non-final wording before delivering edu-tl textbook draft milestones", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "completed_items: 项目四《智慧校园课程资源管理》正文首稿已落盘，artifact: courses/nosql/manuscript/project04-course-resource-management.md",
+              "key_pass_points: GridFS 正式主任务已写入，任务1-3正文齐备，结构骨架对齐。",
+              "current_total_progress: 项目1-3已过 TL 结构验收，项目4仅完成正文首稿，整本教材仍在正文推进阶段。",
+              "state_layering: 已过审/强制门通过=项目1-3；editorial精修中或未完成=项目4正文首稿；终稿可交付=暂无。",
+              "next_stage: 进入项目4结构审校与 editorial 精修。",
+              "major_risks: 项目4仍需结构审校与 editorial 精修。",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-textbook-milestone-missing-draft-guard",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call?.params?.message).toContain("正文首稿已落盘");
+    expect(call?.params?.message).toContain("不是终稿");
+    expect(call?.params?.message).toContain("尚不可交付");
+  });
+
+  it.each([
+    {
+      title: "when the child explicitly returns NO_REPLY",
+      messages: (workspaceDir: string) => [
+        {
+          role: "toolResult",
+          content: {
+            text: `Wrote ${path.join(workspaceDir, "standing-orders.json")}`,
+          },
+        },
+        {
+          role: "toolResult",
+          content: {
+            text: `Wrote ${path.join(workspaceDir, "artifacts", "current-checkpoint.md")}`,
+          },
+        },
+        {
+          role: "toolResult",
+          content: {
+            text: "STANDING_ORDER_READY agent=edu-tl source=standing_order status=active phase=dispatching owner=agent:edu-tl pending_action=dispatch_project6_rewrite unfinished=1 updated_at=2026-04-19T09:10:30+08:00 checkpoint=present",
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+      roundOneReply: " NO_REPLY ",
+      childRunId: "run-direct-standing-order-review-to-dispatch-no-reply",
+    },
+    {
+      title: "when silent completion only leaves control-plane READY output",
+      messages: (workspaceDir: string) => [
+        {
+          role: "toolResult",
+          content: {
+            text: `Wrote ${path.join(workspaceDir, "standing-orders.json")}`,
+          },
+        },
+        {
+          role: "toolResult",
+          content: {
+            text: `Wrote ${path.join(workspaceDir, "artifacts", "current-checkpoint.md")}`,
+          },
+        },
+        {
+          role: "toolResult",
+          content: {
+            text: "STANDING_ORDER_READY agent=edu-tl source=standing_order status=active phase=dispatching owner=agent:edu-tl pending_action=dispatch_project6_rewrite unfinished=1 updated_at=2026-04-19T09:10:30+08:00 checkpoint=present",
+          },
+        },
+      ],
+      roundOneReply: undefined,
+      childRunId: "run-direct-standing-order-review-to-dispatch-ready-only",
+    },
+  ])(
+    "recovers edu-tl review-pass plus next-dispatch milestones from standing-order control output, $title",
+    async (testCase) => {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "edu-tl-announce-"));
+      const workspaceDir = path.join(tempRoot, "workspace-edu-tl");
+      try {
+        await mkdir(path.join(workspaceDir, "artifacts"), { recursive: true });
+        await writeFile(
+          path.join(workspaceDir, "standing-orders.json"),
+          JSON.stringify(
+            {
+              status: "active",
+              updated_at: "2026-04-19T09:10:30+08:00",
+              waiting_on: "项目六《智慧校园社交网络分析》正文重写产物落盘",
+              stop_gate: "项目六正文首稿落盘并完成TL验收后，才能继续推进项目七或切换owner",
+              task: {
+                current_phase: "dispatching",
+                pending_action: "dispatch_project6_rewrite",
+                next_actions: [
+                  {
+                    id: "review_project5_structure",
+                    title: "验收项目5正文结构与体例",
+                    status: "completed",
+                    completed_at: "2026-04-19T09:10:30+08:00",
+                    artifact: "courses/nosql/manuscript/project05-graph-modeling.md",
+                    verdict: "passed",
+                    notes:
+                      "任务1-3按统一结构落盘，智慧校园社交网络场景连续，Neo4j 与 Cypher 主线清晰，并已与项目六图分析任务顺畅衔接",
+                  },
+                  {
+                    id: "dispatch_project6_rewrite",
+                    title: "派发项目六正文重写",
+                    status: "in_progress",
+                    started_at: "2026-04-19T09:10:30+08:00",
+                    artifact: "courses/nosql/manuscript/project06-graph-analysis.md",
+                    notes:
+                      "已派发项目六《智慧校园社交网络分析》正文重写，要求覆盖任务1-3，补足GDS算法结果解释、伦理边界与Bloom图可视化表达",
+                  },
+                ],
+              },
+            },
+            null,
+            2,
+          ),
+          "utf-8",
+        );
+
+        sessionStore = {
+          "agent:main:main": {
+            sessionId: "main-session",
+            workspaceDir,
+            channel: "slack",
+            channelTarget: "channel:C123",
+          },
+          "agent:main:subagent:test": {
+            sessionId: "child-session",
+            workspaceDir,
+          },
+        };
+        chatHistoryMock.mockResolvedValue({
+          messages: testCase.messages(workspaceDir),
+        });
+
+        const didAnnounce = await runSubagentAnnounceFlow({
+          childSessionKey: "agent:main:subagent:test",
+          childRunId: testCase.childRunId,
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+          ...defaultOutcomeAnnounce,
+          expectsCompletionMessage: true,
+          roundOneReply: testCase.roundOneReply,
+        });
+
+        expect(didAnnounce).toBe(true);
+        expect(agentSpy).toHaveBeenCalledTimes(1);
+        const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+        const message = call?.params?.message ?? "";
+        expect(message).toContain("验收项目5正文结构与体例");
+        expect(message).toContain("project05-graph-modeling.md");
+        expect(message).toContain("派发项目六正文重写");
+        expect(message).toContain("project06-graph-analysis.md");
+        expect(message).toContain("current_total_progress");
+        expect(message).toContain("state_layering");
+        expect(message).toContain("next_stage");
+        expect(message).toContain("战况更新：");
+        expect(message.indexOf("战况更新：")).toBeLessThan(message.indexOf("completed_items:"));
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("prefers STANDING_ORDER_MILESTONE over READY when recovering edu-tl milestone announcements", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: "Wrote /Users/gorin/.openclaw/workspace-edu-tl/standing-orders.json",
+          },
+        },
+        {
+          role: "toolResult",
+          content: {
+            text: "Wrote /Users/gorin/.openclaw/workspace-edu-tl/artifacts/current-checkpoint.md",
+          },
+        },
+        {
+          role: "toolResult",
+          content: {
+            text: 'STANDING_ORDER_MILESTONE agent=edu-tl event_type=phase_change event_key=phase_change|reviewing|dispatching|2026-04-19t10:10:30+08:00 phase=dispatching pending_action=dispatch_project6_rewrite status=active cached_status=active status_drift=false updated_at=2026-04-19t10:10:30+08:00 payload={"completed_items":"项目六正文派发已切到 dispatching，artifact: courses/nosql/manuscript/project06-graph-analysis.md。","key_pass_points":"review gate passed and dispatch entered.","current_total_progress":"项目五已过 TL 结构验收，项目六进入正文重写派发。","state_layering":"已过审/强制门通过=项目五；editorial精修中或未完成=项目六正文首稿；终稿可交付=暂无。","next_stage":"继续推进项目六正文重写。","major_risks":"项目六当前仅完成派发，不是终稿，不可交付。"}',
+          },
+        },
+        {
+          role: "toolResult",
+          content: {
+            text: "STANDING_ORDER_READY agent=edu-tl source=standing_order status=active phase=dispatching owner=agent:edu-tl pending_action=dispatch_project6_rewrite unfinished=1 updated_at=2026-04-19T10:10:30+08:00 checkpoint=present",
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-standing-order-milestone-preferred",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply:
+        "STANDING_ORDER_READY agent=edu-tl source=standing_order status=active phase=dispatching owner=agent:edu-tl pending_action=dispatch_project6_rewrite unfinished=1 updated_at=2026-04-19T10:10:30+08:00 checkpoint=present",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    const message = call?.params?.message ?? "";
+    expect(message).toContain("战况更新：");
+    expect(message).toContain("completed_items:");
+    expect(message).toContain("project06-graph-analysis.md");
+    expect(message).not.toContain("STANDING_ORDER_MILESTONE");
+    expect(message).not.toContain("STANDING_ORDER_READY");
+  });
+
+  it("recovers draft from a raw STANDING_ORDER_MILESTONE-only reply", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    const rawMilestone =
+      'STANDING_ORDER_MILESTONE agent=edu-tl event_type=silent_progress event_key=silent_progress|dispatch_project6_rewrite|2026-04-19t10:20:30+08:00 phase=dispatching pending_action=dispatch_project6_rewrite status=active cached_status=active status_drift=false updated_at=2026-04-19t10:20:30+08:00 payload={"completed_items":"项目六正文静默推进，artifact: courses/nosql/manuscript/project06-graph-analysis.md。","key_pass_points":"dispatch still active.","current_total_progress":"项目六仍在正文推进阶段。","state_layering":"已过审/强制门通过=项目五；editorial精修中或未完成=项目六正文首稿；终稿可交付=暂无。","next_stage":"继续推进项目六正文重写。","major_risks":"项目六当前不是终稿，不可交付。"}';
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: "Wrote /Users/gorin/.openclaw/workspace-edu-tl/standing-orders.json",
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: rawMilestone }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-standing-order-milestone-only-reply",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: rawMilestone,
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    const message = call?.params?.message ?? "";
+    expect(message).toContain("战况更新：");
+    expect(message).toContain("current_total_progress:");
+    expect(message).toContain("project06-graph-analysis.md");
+    expect(message).not.toContain("STANDING_ORDER_MILESTONE");
+  });
+
+  it.each([
+    [
+      "action-id drift",
+      {
+        pending_action: "dispatch_project6_redraft",
+        task: {
+          current_phase: "dispatching",
+          pending_action: "dispatch_project6_redraft",
+          next_actions: [
+            {
+              id: "review_project5_structure",
+              title: "验收项目5正文结构与体例",
+              status: "completed",
+              completed_at: "2026-04-19T09:10:30+08:00",
+              verdict: "passed",
+            },
+            {
+              id: "dispatch_project6_redraft",
+              title: "派发项目六正文重写",
+              status: "in_progress",
+              started_at: "2026-04-19T09:10:30+08:00",
+            },
+          ],
+        },
+      },
+      "action_id_drift",
+    ],
+    [
+      "phase drift",
+      {
+        task: {
+          current_phase: "reviewing",
+          pending_action: "dispatch_project6_rewrite",
+          next_actions: [
+            {
+              id: "review_project5_structure",
+              title: "验收项目5正文结构与体例",
+              status: "completed",
+              completed_at: "2026-04-19T09:10:30+08:00",
+              verdict: "passed",
+            },
+            {
+              id: "dispatch_project6_rewrite",
+              title: "派发项目六正文重写",
+              status: "in_progress",
+              started_at: "2026-04-19T09:10:30+08:00",
+            },
+          ],
+        },
+      },
+      "phase_drift",
+    ],
+    [
+      "timestamp misalignment",
+      {
+        updated_at: "2026-04-19T09:20:31+08:00",
+        task: {
+          current_phase: "dispatching",
+          pending_action: "dispatch_project6_rewrite",
+          updated_at: "2026-04-19T09:20:31+08:00",
+          next_actions: [
+            {
+              id: "review_project5_structure",
+              title: "验收项目5正文结构与体例",
+              status: "completed",
+              completed_at: "2026-04-19T09:10:30+08:00",
+              verdict: "passed",
+            },
+            {
+              id: "dispatch_project6_rewrite",
+              title: "派发项目六正文重写",
+              status: "in_progress",
+              started_at: "2026-04-19T09:16:31+08:00",
+            },
+          ],
+        },
+      },
+      "timestamp_misalignment",
+    ],
+    [
+      "missing required fields",
+      {
+        task: {
+          current_phase: "dispatching",
+          pending_action: "dispatch_project6_rewrite",
+          next_actions: [
+            {
+              id: "review_project5_structure",
+              title: "验收项目5正文结构与体例",
+              status: "completed",
+              verdict: "passed",
+            },
+            {
+              id: "dispatch_project6_rewrite",
+              title: "派发项目六正文重写",
+              status: "in_progress",
+            },
+          ],
+        },
+      },
+      "missing_required_fields",
+    ],
+  ])(
+    "surfaces standing-order contract drift as repair-needed, %s",
+    async (_title, orderOverrides, expectedReason) => {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "edu-tl-announce-"));
+      const workspaceDir = path.join(tempRoot, "workspace-edu-tl");
+      try {
+        await mkdir(path.join(workspaceDir, "artifacts"), { recursive: true });
+        const order = {
+          status: "active",
+          updated_at: "2026-04-19T09:10:30+08:00",
+          task: {
+            current_phase: "dispatching",
+            pending_action: "dispatch_project6_rewrite",
+            updated_at: "2026-04-19T09:10:30+08:00",
+            next_actions: [
+              {
+                id: "review_project5_structure",
+                title: "验收项目5正文结构与体例",
+                status: "completed",
+                completed_at: "2026-04-19T09:10:30+08:00",
+                verdict: "passed",
+              },
+              {
+                id: "dispatch_project6_rewrite",
+                title: "派发项目六正文重写",
+                status: "in_progress",
+                started_at: "2026-04-19T09:10:30+08:00",
+              },
+            ],
+          },
+        } as Record<string, unknown>;
+        Object.assign(order, orderOverrides);
+        Object.assign(
+          order.task as Record<string, unknown>,
+          (orderOverrides as { task?: Record<string, unknown> }).task ?? {},
+        );
+        await writeFile(
+          path.join(workspaceDir, "standing-orders.json"),
+          JSON.stringify(order, null, 2),
+          "utf-8",
+        );
+
+        sessionStore = {
+          "agent:main:main": {
+            sessionId: "main-session",
+            workspaceDir,
+            channel: "slack",
+            channelTarget: "channel:C123",
+          },
+          "agent:main:subagent:test": {
+            sessionId: "child-session",
+            workspaceDir,
+          },
+        };
+        chatHistoryMock.mockResolvedValue({
+          messages: [
+            {
+              role: "toolResult",
+              content: {
+                text: `Wrote ${path.join(workspaceDir, "standing-orders.json")}`,
+              },
+            },
+            {
+              role: "toolResult",
+              content: {
+                text: `Wrote ${path.join(workspaceDir, "artifacts", "current-checkpoint.md")}`,
+              },
+            },
+            {
+              role: "toolResult",
+              content: {
+                text: `STANDING_ORDER_READY agent=edu-tl source=standing_order status=active phase=${JSON.stringify((order.task as Record<string, unknown>).current_phase ?? "dispatching")} owner=agent:edu-tl pending_action=${String((order.task as Record<string, unknown>).pending_action ?? order.pending_action)} unfinished=1 updated_at=${JSON.stringify((order.task as Record<string, unknown>).updated_at ?? order.updated_at ?? "2026-04-19T09:10:30+08:00")} checkpoint=present`,
+              },
+            },
+          ],
+        });
+
+        const didAnnounce = await runSubagentAnnounceFlow({
+          childSessionKey: "agent:main:subagent:test",
+          childRunId: `run-direct-standing-order-contract-drift-${expectedReason}`,
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+          ...defaultOutcomeAnnounce,
+          expectsCompletionMessage: true,
+          roundOneReply: " NO_REPLY ",
+        });
+
+        expect(didAnnounce).toBe(true);
+        const agentCall = agentSpy.mock.calls[0]?.[0] as
+          | { params?: { message?: string } }
+          | undefined;
+        const sendCall = sendSpy.mock.calls[0]?.[0] as { message?: string } | undefined;
+        const deliveredMessage = agentCall?.params?.message ?? sendCall?.message;
+        expect(deliveredMessage).toContain(
+          "Repair needed before sending this edu-tl textbook/course milestone update",
+        );
+        expect(deliveredMessage).toContain(expectedReason);
+        expect(deliveredMessage).toContain("STANDING_ORDER_READY");
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("keeps malformed review-pass plus next-dispatch milestones visible as repair-needed", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: {
+            text: [
+              "project5 review-passed, next-stage dispatch queued for project6 textbook course milestone, artifact: courses/nosql/manuscript/project05-graph-modeling.md.",
+              "current_total_progress: 项目5结构验收通过，项目6进入正文重写派发。",
+              "next_stage: 继续推进项目六正文重写与下一阶段派发。",
+            ].join("\n"),
+          },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-review-pass-next-stage-malformed",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      roundOneReply: " NO_REPLY ",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call?.params?.message).toContain(
+      "Repair needed before sending this edu-tl textbook/course milestone update",
+    );
+    expect(call?.params?.message).toContain("state_layering");
+    expect(call?.params?.message).toContain("project5 review-passed");
+    expect(call?.params?.message).toContain("next-stage dispatch queued");
+  });
+
+  it("does not rebroadcast standing-order ready status without same-run control-plane writes", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "edu-tl-announce-"));
+    const workspaceDir = path.join(tempRoot, "workspace-edu-tl");
+    try {
+      await mkdir(workspaceDir, { recursive: true });
+      await writeFile(
+        path.join(workspaceDir, "standing-orders.json"),
+        JSON.stringify(
+          {
+            status: "active",
+            updated_at: "2026-04-19T09:10:30+08:00",
+            task: {
+              current_phase: "dispatching",
+              pending_action: "dispatch_project6_rewrite",
+              next_actions: [
+                {
+                  id: "review_project5_structure",
+                  title: "验收项目5正文结构与体例",
+                  status: "completed",
+                  completed_at: "2026-04-19T09:10:30+08:00",
+                  verdict: "passed",
+                },
+                {
+                  id: "dispatch_project6_rewrite",
+                  title: "派发项目六正文重写",
+                  status: "in_progress",
+                  started_at: "2026-04-19T09:10:30+08:00",
+                },
+              ],
+            },
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+
+      sessionStore = {
+        "agent:main:main": {
+          sessionId: "main-session",
+          workspaceDir,
+          channel: "slack",
+          channelTarget: "channel:C123",
+        },
+        "agent:main:subagent:test": {
+          sessionId: "child-session",
+          workspaceDir,
+        },
+      };
+      chatHistoryMock.mockResolvedValue({
+        messages: [
+          {
+            role: "toolResult",
+            content: {
+              text: "STANDING_ORDER_READY agent=edu-tl source=standing_order status=active phase=dispatching owner=agent:edu-tl pending_action=dispatch_project6_rewrite unfinished=1 updated_at=2026-04-19T09:10:30+08:00 checkpoint=present",
+            },
+          },
+          { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+        ],
+      });
+
+      const didAnnounce = await runSubagentAnnounceFlow({
+        childSessionKey: "agent:main:subagent:test",
+        childRunId: "run-direct-standing-order-no-write-evidence",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+        ...defaultOutcomeAnnounce,
+        expectsCompletionMessage: true,
+        roundOneReply: " NO_REPLY ",
+      });
+
+      expect(didAnnounce).toBe(true);
+      expect(agentSpy).not.toHaveBeenCalled();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "project6 update: 项目六已进入资料整理阶段，review passed for internal notes, waiting on next meeting sync.",
+    "project6 update: artifact courses/nosql/manuscript/project06-graph-analysis.md, course review passed for internal notes cleanup, next sync tomorrow.",
+  ])(
+    "keeps ordinary edu-tl project updates out of the strict textbook milestone guard, %s",
+    async (rawUpdate) => {
+      sessionStore = {
+        "agent:main:main": {
+          sessionId: "main-session",
+          workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+          channel: "slack",
+          channelTarget: "channel:C123",
+        },
+        "agent:main:subagent:test": {
+          sessionId: "child-session",
+          workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        },
+      };
+      chatHistoryMock.mockResolvedValueOnce({
+        messages: [
+          {
+            role: "toolResult",
+            content: {
+              text: rawUpdate,
+            },
+          },
+          { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+        ],
+      });
+
+      const didAnnounce = await runSubagentAnnounceFlow({
+        childSessionKey: "agent:main:subagent:test",
+        childRunId: "run-direct-ordinary-project-update-no-milestone-guard",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        requesterOrigin: { channel: "slack", to: "channel:C123", accountId: "acct-1" },
+        ...defaultOutcomeAnnounce,
+        expectsCompletionMessage: true,
+        roundOneReply: " NO_REPLY ",
+      });
+
+      expect(didAnnounce).toBe(true);
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(agentSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("suppresses ordinary internal completion delivery when subagent reply is NO_REPLY", async () => {
+    sessionStore = {
+      "agent:main:main": {
+        sessionId: "main-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+        channel: "slack",
+        channelTarget: "channel:C123",
+      },
+      "agent:main:subagent:test": {
+        sessionId: "child-session",
+        workspaceDir: "/Users/gorin/.openclaw/workspace-edu-tl",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "toolResult",
+          content: { text: "内部缓存已刷新，等待下一轮派发。" },
+        },
+        { role: "assistant", content: [{ type: "text", text: "NO_REPLY" }] },
+      ],
+    });
+
     const didAnnounce = await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:test",
       childRunId: "run-direct-completion-no-reply",

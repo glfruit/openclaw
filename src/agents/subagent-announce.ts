@@ -1,6 +1,9 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { defaultRuntime } from "../runtime.js";
 import { isCronSessionKey } from "../sessions/session-key-utils.js";
+import { extractTextFromChatContent } from "../shared/chat-content.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
@@ -8,6 +11,11 @@ import {
   buildAnnounceIdFromChildRun,
   buildAnnounceIdempotencyKey,
 } from "./announce-idempotency.js";
+import {
+  buildEduTlStandingOrderRecoveredMilestone,
+  buildEduTlStandingOrderRepairNeededMessage,
+  inspectEduTlTextbookProgressionContract,
+} from "./edu-tl-textbook-progression-contract.js";
 import { formatAgentInternalEventsForPrompt, type AgentInternalEvent } from "./internal-events.js";
 import {
   deliverSubagentAnnouncement,
@@ -37,6 +45,7 @@ import {
 } from "./subagent-announce.runtime.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import type { SpawnSubagentMode } from "./subagent-spawn.types.js";
+import { extractAssistantText, sanitizeTextContent } from "./tools/session-message-text.js";
 import { isAnnounceSkip } from "./tools/sessions-send-tokens.js";
 
 type SubagentAnnounceDeps = {
@@ -107,6 +116,494 @@ function buildDescendantWakeMessage(params: { findings: string; taskLabel: strin
     "",
     params.findings,
   ].join("\n");
+}
+
+function isEduTlWorkspaceDir(workspaceDir: unknown): boolean {
+  return (
+    typeof workspaceDir === "string" &&
+    /(?:^|[\\/])workspace-edu-tl(?:[\\/]|$)/u.test(workspaceDir.trim())
+  );
+}
+
+function hasEduTlMilestoneSemantics(text: string, taskLabel: string): boolean {
+  const combined = `${taskLabel}\n${text}`;
+  const hasArtifactPath =
+    /(?:^|[\s(])(?:~\/|\.\.?\/|\/)[^\s)]+\.(?:md|docx?|pptx?|xlsx?|pdf|html|txt|json)\b/iu.test(
+      combined,
+    ) ||
+    /(?:^|[\s(])(?:courses|artifacts)\/[^\s)]+\.(?:md|docx?|pptx?|xlsx?|pdf|html|txt|json)\b/iu.test(
+      combined,
+    );
+  const hasMilestoneFieldLabel = EDU_TL_TEXTBOOK_MILESTONE_REQUIRED_FIELDS.some((field) =>
+    new RegExp(`(?:^|\\n)(?:[-*]\\s*)?(?:["'])?${field}(?:["'])?\\s*[：:=]`, "iu").test(combined),
+  );
+  const hasStructuredMilestoneField =
+    /(?:^|\n)(?:[-*]\s*)?(?:["'])?(?:completed_items|key_pass_points|major_risks)(?:["'])?\s*[：:=]/iu.test(
+      combined,
+    );
+  const hasExplicitMilestoneCue =
+    /\b(?:textbook|course)\b[^\n]{0,40}\bmilestone\b/iu.test(combined) ||
+    /\bmilestone\b[^\n]{0,40}\b(?:textbook|course)\b/iu.test(combined) ||
+    /(?:教材|课程)(?:[^\n]{0,20})里程碑/u.test(combined) ||
+    /里程碑(?:[^\n]{0,20})(?:教材|课程)/u.test(combined);
+  return (
+    hasArtifactPath &&
+    (hasMilestoneFieldLabel || hasStructuredMilestoneField || hasExplicitMilestoneCue)
+  );
+}
+
+function shouldRecoverEduTlMilestoneReply(params: {
+  childEntry: unknown;
+  requesterEntry: unknown;
+  taskLabel: string;
+  rawText: string;
+}): boolean {
+  const childWorkspaceDir = (params.childEntry as { workspaceDir?: unknown } | undefined)
+    ?.workspaceDir;
+  const requesterWorkspaceDir = (params.requesterEntry as { workspaceDir?: unknown } | undefined)
+    ?.workspaceDir;
+  if (!isEduTlWorkspaceDir(childWorkspaceDir) && !isEduTlWorkspaceDir(requesterWorkspaceDir)) {
+    return false;
+  }
+  return hasEduTlMilestoneSemantics(params.rawText, params.taskLabel);
+}
+
+const EDU_TL_TEXTBOOK_MILESTONE_REQUIRED_FIELDS = [
+  "current_total_progress",
+  "state_layering",
+  "next_stage",
+] as const;
+
+const EDU_TL_TEXTBOOK_MILESTONE_OPTIONAL_FIELDS = [
+  "completed_items",
+  "key_pass_points",
+  "major_risks",
+] as const;
+
+const EDU_TL_TEXTBOOK_MILESTONE_COMPLIANCE_FIELDS = [
+  ...EDU_TL_TEXTBOOK_MILESTONE_OPTIONAL_FIELDS,
+  ...EDU_TL_TEXTBOOK_MILESTONE_REQUIRED_FIELDS,
+] as const;
+
+type EduTlTextbookMilestoneField = (typeof EDU_TL_TEXTBOOK_MILESTONE_REQUIRED_FIELDS)[number];
+type EduTlTextbookMilestoneComplianceField =
+  (typeof EDU_TL_TEXTBOOK_MILESTONE_COMPLIANCE_FIELDS)[number];
+
+function hasEduTlTextbookCourseMilestoneScope(text: string, taskLabel: string): boolean {
+  const combined = `${taskLabel}\n${text}`;
+  const hasCourseArtifactPath =
+    /(?:^|[\s(])courses\/[^\s)]+\/(?:manuscript|output)\/[^\s)]+\.(?:md|docx?|pdf|html|txt|json)\b/iu.test(
+      combined,
+    );
+  const hasRequiredFieldLabel = EDU_TL_TEXTBOOK_MILESTONE_REQUIRED_FIELDS.some((field) =>
+    new RegExp(`(?:^|\\n)(?:[-*]\\s*)?(?:["'])?${field}(?:["'])?\\s*[：:=]`, "iu").test(combined),
+  );
+  const hasStructuredMilestoneField =
+    /(?:^|\n)(?:[-*]\s*)?(?:["'])?(?:completed_items|key_pass_points|major_risks)(?:["'])?\s*[：:=]/iu.test(
+      combined,
+    );
+  const hasExplicitMilestoneCue =
+    /\b(?:textbook|course)\b[^\n]{0,40}\bmilestone\b/iu.test(combined) ||
+    /\bmilestone\b[^\n]{0,40}\b(?:textbook|course)\b/iu.test(combined) ||
+    /(?:教材|课程)(?:[^\n]{0,20})里程碑/u.test(combined) ||
+    /里程碑(?:[^\n]{0,20})(?:教材|课程)/u.test(combined);
+  return (
+    hasCourseArtifactPath &&
+    (hasRequiredFieldLabel || hasStructuredMilestoneField || hasExplicitMilestoneCue)
+  );
+}
+
+function isEduTlTextbookCourseMilestone(params: {
+  childEntry: unknown;
+  requesterEntry: unknown;
+  taskLabel: string;
+  rawText: string;
+}): boolean {
+  if (
+    !shouldRecoverEduTlMilestoneReply({
+      childEntry: params.childEntry,
+      requesterEntry: params.requesterEntry,
+      taskLabel: params.taskLabel,
+      rawText: params.rawText,
+    })
+  ) {
+    return false;
+  }
+  return hasEduTlTextbookCourseMilestoneScope(params.rawText, params.taskLabel);
+}
+
+function extractEduTlTextbookLabeledField(
+  text: string,
+  field: EduTlTextbookMilestoneComplianceField,
+): string | undefined {
+  const lines = text.split(/\r?\n/u);
+  const pattern = new RegExp(`^(?:[-*]\\s*)?(?:["'])?${field}(?:["'])?\\s*[：:=]\\s*(.+)$`, "iu");
+  for (const line of lines) {
+    const match = line.match(pattern);
+    const value = normalizeOptionalString(match?.[1]);
+    if (value) {
+      return value;
+    }
+  }
+
+  const inlinePattern = new RegExp(`(?:["'])?${field}(?:["'])?\\s*[：:=]\\s*([^,;\\n}]+)`, "iu");
+  return normalizeOptionalString(text.match(inlinePattern)?.[1]) ?? undefined;
+}
+
+function listMissingEduTlTextbookMilestoneFields(text: string): EduTlTextbookMilestoneField[] {
+  return EDU_TL_TEXTBOOK_MILESTONE_REQUIRED_FIELDS.filter(
+    (field) => !extractEduTlTextbookLabeledField(text, field),
+  );
+}
+
+function parseEduTlTextbookComplianceFields(
+  text: string,
+): Partial<Record<EduTlTextbookMilestoneComplianceField, string>> {
+  const entries = EDU_TL_TEXTBOOK_MILESTONE_COMPLIANCE_FIELDS.flatMap((field) => {
+    const value = extractEduTlTextbookLabeledField(text, field);
+    return value ? ([[field, value]] as const) : [];
+  });
+  return Object.fromEntries(entries) as Partial<
+    Record<EduTlTextbookMilestoneComplianceField, string>
+  >;
+}
+
+function isEduTlTextbookComplianceFieldLine(line: string): boolean {
+  return EDU_TL_TEXTBOOK_MILESTONE_COMPLIANCE_FIELDS.some((field) =>
+    new RegExp(`^(?:[-*]\\s*)?(?:["'])?${field}(?:["'])?\\s*[：:=]`, "iu").test(line.trim()),
+  );
+}
+
+function buildEduTlTextbookMilestoneNarrationLead(
+  fields: Partial<Record<EduTlTextbookMilestoneComplianceField, string>>,
+): string {
+  const leadSource =
+    fields.completed_items ??
+    fields.key_pass_points ??
+    fields.current_total_progress ??
+    fields.next_stage;
+  const trimmedLead = normalizeOptionalString(leadSource)?.replace(/[。.!?；;]+$/u, "") ?? "";
+  return trimmedLead
+    ? `战况更新：${trimmedLead}。`
+    : "战况更新：里程碑推进已完成，详细合规进展如下。";
+}
+
+function isEduTlDraftCompleteGuardNoticeLine(line: string): boolean {
+  return (
+    /当前仅为正文首稿已落盘，不是终稿，尚不可交付/u.test(line) ||
+    /This is first-draft landed only, not final, and not deliverable until editorial or publisher gate passes\./iu.test(
+      line,
+    )
+  );
+}
+
+function formatEduTlTextbookCourseMilestoneForOutwardDelivery(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return text;
+  }
+
+  const fields = parseEduTlTextbookComplianceFields(trimmed);
+  const complianceBlock = EDU_TL_TEXTBOOK_MILESTONE_COMPLIANCE_FIELDS.flatMap((field) => {
+    const value = normalizeOptionalString(fields[field]);
+    return value ? [`${field}: ${value}`] : [];
+  }).join("\n");
+  if (!complianceBlock) {
+    return trimmed;
+  }
+
+  const narrationLines = trimmed
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !isEduTlTextbookComplianceFieldLine(line));
+  const substantiveNarrationLines = narrationLines.filter(
+    (line) => !isEduTlDraftCompleteGuardNoticeLine(line),
+  );
+  const lead =
+    substantiveNarrationLines.length > 0
+      ? narrationLines.join("\n")
+      : [buildEduTlTextbookMilestoneNarrationLead(fields), ...narrationLines].join("\n");
+
+  return `${lead}\n\n${complianceBlock}`.trim();
+}
+
+function isEduTlDraftCompleteMilestone(text: string): boolean {
+  return (
+    /\b(?:draft-complete|draft\s+complete|first\s+draft|body\s+draft|draft\s+landed)\b/iu.test(
+      text,
+    ) || /(?:首稿|初稿|正文首稿|正文初稿|落盘)/u.test(text)
+  );
+}
+
+function hasEduTlEditorialOrPublisherGatePassed(text: string): boolean {
+  return (
+    /\b(?:editorial|publisher)\b[^\n]{0,40}\b(?:passed|approved|accepted|cleared|signed\s+off)\b/iu.test(
+      text,
+    ) || /(?:编辑|审校|出版社|出版)(?:[^\n]{0,20})(?:通过|已过|已批准|已验收)/u.test(text)
+  );
+}
+
+function hasEduTlExplicitDraftLanding(text: string): boolean {
+  return (
+    /\b(?:first\s+draft|body\s+draft|draft\s+landed|draft\s+complete)\b/iu.test(text) ||
+    /(?:首稿已落盘|正文首稿已落盘|首稿完成|正文初稿完成|仅完成首稿|仅完成正文首稿)/u.test(text)
+  );
+}
+
+function hasEduTlExplicitNotFinal(text: string): boolean {
+  return /\bnot\s+final\b/iu.test(text) || /(?:不是终稿|非终稿|尚未终稿|未到终稿)/u.test(text);
+}
+
+function hasEduTlExplicitNotDeliverable(text: string): boolean {
+  return (
+    /\bnot\s+deliverable\b/iu.test(text) ||
+    /(?:不可交付|尚不可交付|未达交付|不能交付|未到可交付)/u.test(text)
+  );
+}
+
+function enforceEduTlDraftCompleteMilestoneWording(text: string): string {
+  if (!isEduTlDraftCompleteMilestone(text) || hasEduTlEditorialOrPublisherGatePassed(text)) {
+    return text;
+  }
+
+  if (
+    hasEduTlExplicitDraftLanding(text) &&
+    hasEduTlExplicitNotFinal(text) &&
+    hasEduTlExplicitNotDeliverable(text)
+  ) {
+    return text;
+  }
+
+  const notice = [
+    "当前仅为正文首稿已落盘，不是终稿，尚不可交付，仍需编辑审校或出版社流程通过。",
+    "This is first-draft landed only, not final, and not deliverable until editorial or publisher gate passes.",
+  ].join(" ");
+  return `${text.trim()}\n\n${notice}`.trim();
+}
+
+function validateEduTlTextbookCourseMilestone(text: string): {
+  ok: boolean;
+  missingFields: EduTlTextbookMilestoneField[];
+} {
+  const missingFields = listMissingEduTlTextbookMilestoneFields(text);
+  return {
+    ok: missingFields.length === 0,
+    missingFields,
+  };
+}
+
+function buildEduTlTextbookMilestoneRepairNeededMessage(params: {
+  missingFields: EduTlTextbookMilestoneField[];
+  findings: string;
+}): string {
+  const missing = params.missingFields.join(", ");
+  return [
+    `Repair needed before sending this edu-tl textbook/course milestone update: missing required field(s): ${missing}.`,
+    "Please resend with explicit labeled values for current_total_progress, state_layering, and next_stage as applicable.",
+    "Original report:",
+    params.findings.trim(),
+  ].join("\n\n");
+}
+
+function extractSubagentHistoryText(message: unknown): string {
+  if (!message || typeof message !== "object") {
+    return "";
+  }
+  const role = (message as { role?: unknown }).role;
+  const content = (message as { content?: unknown }).content;
+  if (role === "assistant") {
+    return extractAssistantText(message) ?? "";
+  }
+  if (typeof content === "string") {
+    return sanitizeTextContent(content);
+  }
+  if (content && typeof content === "object" && !Array.isArray(content)) {
+    const text = (content as { text?: unknown }).text;
+    if (typeof text === "string") {
+      return sanitizeTextContent(text);
+    }
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return (
+    extractTextFromChatContent(content, {
+      sanitizeText: sanitizeTextContent,
+      normalizeText: (text) => text,
+      joinWith: "\n",
+    }) ?? ""
+  );
+}
+
+function resolveEduTlWorkspaceDir(params: {
+  childEntry: unknown;
+  requesterEntry: unknown;
+}): string | null {
+  const childWorkspaceDir = normalizeOptionalString(
+    (params.childEntry as { workspaceDir?: unknown } | undefined)?.workspaceDir,
+  );
+  if (childWorkspaceDir && isEduTlWorkspaceDir(childWorkspaceDir)) {
+    return childWorkspaceDir;
+  }
+  const requesterWorkspaceDir = normalizeOptionalString(
+    (params.requesterEntry as { workspaceDir?: unknown } | undefined)?.workspaceDir,
+  );
+  if (requesterWorkspaceDir && isEduTlWorkspaceDir(requesterWorkspaceDir)) {
+    return requesterWorkspaceDir;
+  }
+  return null;
+}
+
+function parseStandingOrderLineField(line: string, field: string): string | undefined {
+  const match = line.match(new RegExp(`(?:^|\\s)${field}=([^\\s]+)`, "u"));
+  return normalizeOptionalString(match?.[1]) ?? undefined;
+}
+
+function parseStandingOrderMilestoneField(line: string, field: string): string | undefined {
+  if (field === "payload") {
+    const match = line.match(/(?:^|\s)payload=(\{.*\})$/u);
+    return normalizeOptionalString(match?.[1]) ?? undefined;
+  }
+  return parseStandingOrderLineField(line, field);
+}
+
+function extractLatestStandingOrderMilestoneLine(texts: string[]): string | undefined {
+  return [...texts].toReversed().find((text) => /^STANDING_ORDER_MILESTONE\b/u.test(text));
+}
+
+function isStandingOrderMilestoneOnlyReply(text: string | undefined): boolean {
+  const normalized = normalizeOptionalString(text);
+  return typeof normalized === "string" && /^STANDING_ORDER_MILESTONE\b/u.test(normalized);
+}
+
+function isStandingOrderControlOnlyReply(text: string | undefined): boolean {
+  const normalized = normalizeOptionalString(text);
+  return typeof normalized === "string" && /^STANDING_ORDER_READY\b/u.test(normalized);
+}
+
+function buildStandingOrderMilestoneDraft(line: string): string | undefined {
+  const payloadRaw = parseStandingOrderMilestoneField(line, "payload");
+  if (!payloadRaw) {
+    return undefined;
+  }
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(payloadRaw) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const fieldOrder = [
+    "completed_items",
+    "key_pass_points",
+    "current_total_progress",
+    "state_layering",
+    "next_stage",
+    "major_risks",
+  ] as const;
+  const lines = fieldOrder.flatMap((field) => {
+    const value = normalizeOptionalString(payload[field]);
+    return value ? [`${field}: ${value}`] : [];
+  });
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
+async function maybeRecoverStandingOrderMilestoneAnnouncement(params: {
+  sessionKey: string;
+}): Promise<string | undefined> {
+  const history = await subagentAnnounceDeps.callGateway({
+    method: "chat.history",
+    params: { sessionKey: params.sessionKey, limit: 100 },
+  });
+  const messages = Array.isArray(history?.messages) ? history.messages : [];
+  const texts = messages
+    .map((message) => extractSubagentHistoryText(message).trim())
+    .filter((text) => text.length > 0);
+  const latestMilestoneLine = extractLatestStandingOrderMilestoneLine(texts);
+  if (!latestMilestoneLine) {
+    return undefined;
+  }
+  return buildStandingOrderMilestoneDraft(latestMilestoneLine);
+}
+
+async function maybeRecoverEduTlStandingOrderProgressMilestone(params: {
+  sessionKey: string;
+  childEntry: unknown;
+  requesterEntry: unknown;
+}): Promise<string | undefined> {
+  const workspaceDir = resolveEduTlWorkspaceDir(params);
+  if (!workspaceDir) {
+    return undefined;
+  }
+
+  const history = await subagentAnnounceDeps.callGateway({
+    method: "chat.history",
+    params: { sessionKey: params.sessionKey, limit: 100 },
+  });
+  const messages = Array.isArray(history?.messages) ? history.messages : [];
+  const texts = messages
+    .map((message) => extractSubagentHistoryText(message).trim())
+    .filter((text) => text.length > 0);
+  const latestReadyLine = [...texts]
+    .toReversed()
+    .find((text) => /^STANDING_ORDER_READY\b/u.test(text));
+  if (!latestReadyLine) {
+    return undefined;
+  }
+  const wroteStandingOrderThisRun = texts.some((text) =>
+    /(?:standing-orders\.json|current-checkpoint\.md)/iu.test(text),
+  );
+  if (!wroteStandingOrderThisRun) {
+    return undefined;
+  }
+  const pendingAction = parseStandingOrderLineField(latestReadyLine, "pending_action");
+  const phase = parseStandingOrderLineField(latestReadyLine, "phase");
+  const updatedAt = parseStandingOrderLineField(latestReadyLine, "updated_at");
+  if (!pendingAction || !updatedAt) {
+    return undefined;
+  }
+
+  let order: Record<string, unknown>;
+  try {
+    order = JSON.parse(
+      await readFile(path.join(workspaceDir, "standing-orders.json"), "utf-8"),
+    ) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+
+  const task = order.task;
+  if (!task || typeof task !== "object") {
+    return undefined;
+  }
+  const taskData = task as Record<string, unknown>;
+  const currentPendingAction = normalizeOptionalString(taskData.pending_action);
+  const currentPhase = normalizeOptionalString(taskData.current_phase);
+  if (currentPendingAction !== pendingAction || currentPhase !== phase) {
+    return buildEduTlStandingOrderRepairNeededMessage({
+      inspection: {
+        status: "repair_needed",
+        contractId: "edu_tl_textbook_progression_v1",
+        reason: "control_line_drift",
+        diagnostics: [
+          `ready_pending_action=${pendingAction}`,
+          `order_pending_action=${currentPendingAction ?? "missing"}`,
+          `ready_phase=${phase}`,
+          `order_phase=${currentPhase ?? "missing"}`,
+        ],
+        pendingAction,
+      },
+      readyLine: latestReadyLine,
+    });
+  }
+
+  const inspection = await inspectEduTlTextbookProgressionContract(order);
+  if (inspection.status === "matched") {
+    return buildEduTlStandingOrderRecoveredMilestone(inspection);
+  }
+  if (inspection.status === "repair_needed") {
+    return buildEduTlStandingOrderRepairNeededMessage({ inspection, readyLine: latestReadyLine });
+  }
+  return undefined;
 }
 
 const WAKE_RUN_SUFFIX = ":wake";
@@ -232,6 +729,7 @@ export async function runSubagentAnnounceFlow(params: {
         : undefined;
     })();
     const settleTimeoutMs = Math.min(Math.max(params.timeoutMs, 1), 120_000);
+    const childEntry = loadSessionEntryByKey(params.childSessionKey);
     let reply = params.roundOneReply;
     let outcome: SubagentRunOutcome | undefined = params.outcome;
     if (childSessionId && isEmbeddedPiRunActive(childSessionId)) {
@@ -340,13 +838,38 @@ export async function runSubagentAnnounceFlow(params: {
     }
 
     if (!childCompletionFindings) {
+      if (isAnnounceSkip(reply)) {
+        return true;
+      }
       const fallbackReply = normalizeOptionalString(params.fallbackReply);
       const fallbackIsSilent =
         Boolean(fallbackReply) &&
         (isAnnounceSkip(fallbackReply) || isSilentReplyText(fallbackReply, SILENT_REPLY_TOKEN));
+      const requesterEntry = loadSessionEntryByKey(targetRequesterSessionKey);
+      const taskLabel = params.label || params.task || "task";
+      const preferEduTlMilestoneRawOnSilent = (rawText: string) =>
+        shouldRecoverEduTlMilestoneReply({
+          childEntry,
+          requesterEntry,
+          taskLabel,
+          rawText,
+        });
 
-      if (!reply) {
-        reply = await readSubagentOutput(params.childSessionKey, outcome);
+      if (
+        fallbackReply &&
+        isWakeContinuationRun(params.childRunId) &&
+        reply &&
+        isSilentReplyText(reply, SILENT_REPLY_TOKEN) &&
+        !fallbackIsSilent
+      ) {
+        reply = fallbackReply;
+      } else if (!reply || isSilentReplyText(reply, SILENT_REPLY_TOKEN)) {
+        const recoveredReply = await readSubagentOutput(params.childSessionKey, outcome, {
+          preferLatestRawOnSilent: preferEduTlMilestoneRawOnSilent,
+        });
+        if (recoveredReply?.trim()) {
+          reply = recoveredReply;
+        }
       }
 
       if (!reply?.trim()) {
@@ -354,6 +877,7 @@ export async function runSubagentAnnounceFlow(params: {
           sessionKey: params.childSessionKey,
           maxWaitMs: params.timeoutMs,
           outcome,
+          preferLatestRawOnSilent: preferEduTlMilestoneRawOnSilent,
         });
       }
 
@@ -383,11 +907,31 @@ export async function runSubagentAnnounceFlow(params: {
         }
       }
 
-      if (isAnnounceSkip(reply) || isSilentReplyText(reply, SILENT_REPLY_TOKEN)) {
-        if (fallbackReply && !fallbackIsSilent) {
-          reply = fallbackReply;
+      if (
+        isAnnounceSkip(reply) ||
+        isSilentReplyText(reply, SILENT_REPLY_TOKEN) ||
+        isStandingOrderMilestoneOnlyReply(reply) ||
+        isStandingOrderControlOnlyReply(reply)
+      ) {
+        const recoveredStandingOrderMilestone =
+          await maybeRecoverStandingOrderMilestoneAnnouncement({
+            sessionKey: params.childSessionKey,
+          });
+        if (recoveredStandingOrderMilestone) {
+          reply = recoveredStandingOrderMilestone;
         } else {
-          return true;
+          const recoveredReadyMilestone = await maybeRecoverEduTlStandingOrderProgressMilestone({
+            sessionKey: params.childSessionKey,
+            childEntry,
+            requesterEntry,
+          });
+          if (recoveredReadyMilestone) {
+            reply = recoveredReadyMilestone;
+          } else if (fallbackReply && !fallbackIsSilent) {
+            reply = fallbackReply;
+          } else {
+            return true;
+          }
         }
       }
     }
@@ -408,7 +952,7 @@ export async function runSubagentAnnounceFlow(params: {
 
     const taskLabel = params.label || params.task || "task";
     const announceSessionId = childSessionId || "unknown";
-    const findings = childCompletionFindings || reply || "(no output)";
+    let findings = childCompletionFindings || reply || "(no output)";
 
     let requesterIsSubagent = requesterIsInternalSession();
     if (requesterIsSubagent) {
@@ -436,6 +980,32 @@ export async function runSubagentAnnounceFlow(params: {
           requesterDepth = getSubagentDepthFromSessionStore(targetRequesterSessionKey);
           requesterIsSubagent = requesterIsInternalSession();
         }
+      }
+    }
+
+    const requesterEntry = loadSessionEntryByKey(targetRequesterSessionKey);
+    if (
+      expectsCompletionMessage &&
+      !requesterIsSubagent &&
+      isEduTlTextbookCourseMilestone({
+        childEntry,
+        requesterEntry,
+        taskLabel,
+        rawText: findings,
+      })
+    ) {
+      findings = enforceEduTlDraftCompleteMilestoneWording(findings);
+      const validation = validateEduTlTextbookCourseMilestone(findings);
+      if (!validation.ok) {
+        defaultRuntime.error?.(
+          `Blocked edu-tl milestone outward announce for run ${params.childRunId}: missing ${validation.missingFields.join(", ")}`,
+        );
+        findings = buildEduTlTextbookMilestoneRepairNeededMessage({
+          missingFields: validation.missingFields,
+          findings,
+        });
+      } else {
+        findings = formatEduTlTextbookCourseMilestoneForOutwardDelivery(findings);
       }
     }
 
@@ -551,6 +1121,11 @@ export async function runSubagentAnnounceFlow(params: {
 }
 
 export const __testing = {
+  enforceEduTlDraftCompleteMilestoneWording,
+  buildEduTlTextbookMilestoneRepairNeededMessage,
+  formatEduTlTextbookCourseMilestoneForOutwardDelivery,
+  hasEduTlTextbookCourseMilestoneScope,
+  validateEduTlTextbookCourseMilestone,
   setDepsForTest(overrides?: Partial<SubagentAnnounceDeps>) {
     subagentAnnounceDeps = overrides
       ? {

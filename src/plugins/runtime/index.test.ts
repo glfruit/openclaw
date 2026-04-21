@@ -5,8 +5,10 @@ import { requestHeartbeatNow } from "../../infra/heartbeat-wake.js";
 import * as execModule from "../../process/exec.js";
 import { onSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { VERSION } from "../../version.js";
+import { createPluginChannelRuntime } from "./gateway-channel-runtime.js";
 import {
   clearGatewaySubagentRuntime,
+  createPluginChannelRuntime as createCompatPluginChannelRuntime,
   createPluginRuntime,
   setGatewaySubagentRuntime,
 } from "./index.js";
@@ -154,6 +156,19 @@ describe("plugin runtime command execution", () => {
     },
   ] as const)("$name", ({ readValue, expected }) => {
     expectRuntimeValue(readValue, expected);
+  });
+
+  it("creates a channel-only runtime surface without needing the full media wrapper", () => {
+    const channelRuntime = createPluginChannelRuntime();
+    const compatRuntime = createCompatPluginChannelRuntime();
+
+    expect(channelRuntime.reply).toBeDefined();
+    expect(channelRuntime.routing).toBeDefined();
+    expect(channelRuntime.runtimeContexts).toBeDefined();
+    expect(typeof channelRuntime.runtimeContexts.register).toBe("function");
+    expect(compatRuntime.runtimeContexts).toBeDefined();
+    expect(typeof compatRuntime.runtimeContexts.register).toBe("function");
+    expect(createPluginRuntime().media).toBeDefined();
   });
 
   it.each([

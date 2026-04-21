@@ -74,6 +74,38 @@ export function markCronSessionPreRun(params: {
   params.entry.systemSent = true;
 }
 
+export function markCronSessionRunStarted(params: {
+  entry: MutableCronSessionEntry;
+  startedAt?: number;
+}) {
+  const startedAt = params.startedAt ?? Date.now();
+  params.entry.updatedAt = startedAt;
+  params.entry.status = "running";
+  params.entry.startedAt = startedAt;
+  params.entry.endedAt = undefined;
+  params.entry.runtimeMs = undefined;
+  params.entry.abortedLastRun = false;
+}
+
+export function markCronSessionRunFinished(params: {
+  entry: MutableCronSessionEntry;
+  status: Exclude<NonNullable<MutableCronSessionEntry["status"]>, "running">;
+  startedAt?: number;
+  endedAt?: number;
+}) {
+  const endedAt = params.endedAt ?? Date.now();
+  const startedAt = params.startedAt ?? params.entry.startedAt;
+  params.entry.updatedAt = endedAt;
+  params.entry.status = params.status;
+  params.entry.startedAt = startedAt;
+  params.entry.endedAt = endedAt;
+  params.entry.runtimeMs =
+    typeof startedAt === "number" && Number.isFinite(startedAt)
+      ? Math.max(0, endedAt - startedAt)
+      : undefined;
+  params.entry.abortedLastRun = params.status === "killed";
+}
+
 export function syncCronSessionLiveSelection(params: {
   entry: MutableCronSessionEntry;
   liveSelection: CronLiveSelection;

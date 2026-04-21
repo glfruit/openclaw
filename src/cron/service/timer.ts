@@ -1337,6 +1337,7 @@ export async function executeJob(
   let coreResult: {
     status: CronRunStatus;
     delivered?: boolean;
+    deliveryAttempted?: boolean;
   } & CronRunOutcome &
     CronRunTelemetry;
   try {
@@ -1370,6 +1371,7 @@ function emitJobFinished(
   result: {
     status: CronRunStatus;
     delivered?: boolean;
+    deliveryAttempted?: boolean;
   } & CronRunOutcome &
     CronRunTelemetry,
   runAtMs: number,

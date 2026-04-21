@@ -16,6 +16,8 @@ import { buildCronAgentDefaultsConfig } from "./run-config.js";
 import {
   createPersistCronSessionEntry,
   markCronSessionPreRun,
+  markCronSessionRunFinished,
+  markCronSessionRunStarted,
   persistCronSkillsSnapshotIfChanged,
   type CronLiveSelection,
   type MutableCronSession,
@@ -111,6 +113,41 @@ function resolveNonNegativeNumber(value: number | undefined): number | undefined
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function resolveCronTerminalSessionStatus(params: {
+  resultStatus: RunCronAgentTurnResult["status"];
+  isAborted: boolean;
+}): CronPersistedRunStatus {
+  if (params.isAborted) {
+    return "timeout";
+  }
+  return params.resultStatus === "ok" ? "done" : "failed";
+}
+
+async function persistCronTerminalSessionState(params: {
+  prepared: PreparedCronRunContext;
+  result: RunCronAgentTurnResult;
+  isAborted: boolean;
+  startedAt?: number;
+  endedAt?: number;
+}) {
+  markCronSessionRunFinished({
+    entry: params.prepared.cronSession.sessionEntry,
+    status: resolveCronTerminalSessionStatus({
+      resultStatus: params.result.status,
+      isAborted: params.isAborted,
+    }),
+    startedAt: params.startedAt,
+    endedAt: params.endedAt,
+  });
+  try {
+    await params.prepared.persistSessionEntry();
+  } catch (err) {
+    logWarn(
+      `[cron:${params.prepared.input.job.id}] Failed to persist terminal session entry: ${String(err)}`,
+    );
+  }
+}
+
 export type { RunCronAgentTurnResult } from "./run.types.js";
 
 type CronExecutionRuntime = typeof import("./run-executor.runtime.js");
@@ -118,6 +155,8 @@ type CronExecutionResult = Awaited<ReturnType<CronExecutionRuntime["executeCronR
 type CronModelCatalogRuntime = typeof import("./run-model-catalog.runtime.js");
 type CronDeliveryRuntime = typeof import("./run-delivery.runtime.js");
 type ResolvedCronDeliveryTarget = Awaited<ReturnType<CronDeliveryRuntime["resolveDeliveryTarget"]>>;
+
+type CronPersistedRunStatus = "done" | "failed" | "killed" | "timeout";
 
 type IsolatedDeliveryContract = "cron-owned" | "shared";
 
@@ -457,6 +496,7 @@ async function prepareCronRunContext(params: {
   });
 
   markCronSessionPreRun({ entry: cronSession.sessionEntry, provider, model });
+  markCronSessionRunStarted({ entry: cronSession.sessionEntry });
   try {
     await persistSessionEntry();
   } catch (err) {
@@ -630,8 +670,11 @@ async function finalizeCronRun(params: {
     finalAssistantVisibleText: finalRunResult.meta?.finalAssistantVisibleText,
     preferFinalAssistantVisibleText: prepared.resolvedDelivery.channel === "telegram",
   });
-  const resolveRunOutcome = (result?: { delivered?: boolean; deliveryAttempted?: boolean }) =>
-    prepared.withRunSession({
+  const resolveRunOutcome = async (result?: {
+    delivered?: boolean;
+    deliveryAttempted?: boolean;
+  }) => {
+    const runOutcome = prepared.withRunSession({
       status: hasFatalErrorPayload ? "error" : "ok",
       ...(hasFatalErrorPayload
         ? { error: embeddedRunError ?? "cron isolated run returned an error payload" }
@@ -642,6 +685,15 @@ async function finalizeCronRun(params: {
       deliveryAttempted: result?.deliveryAttempted,
       ...telemetry,
     });
+    await persistCronTerminalSessionState({
+      prepared,
+      result: runOutcome,
+      isAborted: params.isAborted(),
+      startedAt: execution.runStartedAt,
+      endedAt: execution.runEndedAt,
+    });
+    return runOutcome;
+  };
 
   const skipHeartbeatDelivery =
     prepared.deliveryRequested &&
@@ -696,16 +748,23 @@ async function finalizeCronRun(params: {
         deliveryResult.result.deliveryAttempted ?? deliveryResult.deliveryAttempted,
     };
     if (!hasFatalErrorPayload || deliveryResult.result.status !== "ok") {
+      await persistCronTerminalSessionState({
+        prepared,
+        result: resultWithDeliveryMeta,
+        isAborted: params.isAborted(),
+        startedAt: execution.runStartedAt,
+        endedAt: execution.runEndedAt,
+      });
       return resultWithDeliveryMeta;
     }
-    return resolveRunOutcome({
+    return await resolveRunOutcome({
       delivered: deliveryResult.result.delivered,
       deliveryAttempted: resultWithDeliveryMeta.deliveryAttempted,
     });
   }
   summary = deliveryResult.summary;
   outputText = deliveryResult.outputText;
-  return resolveRunOutcome({
+  return await resolveRunOutcome({
     delivered: deliveryResult.delivered,
     deliveryAttempted: deliveryResult.deliveryAttempted,
   });
@@ -765,9 +824,21 @@ export async function runCronIsolatedAgentTurn(params: {
       isAborted,
       thinkLevel: prepared.context.thinkLevel,
       timeoutMs: prepared.context.timeoutMs,
+      runStartedAt: prepared.context.cronSession.sessionEntry.startedAt,
     });
     if (isAborted()) {
-      return prepared.context.withRunSession({ status: "error", error: abortReason() });
+      const abortedResult = prepared.context.withRunSession({
+        status: "error",
+        error: abortReason(),
+      });
+      await persistCronTerminalSessionState({
+        prepared: prepared.context,
+        result: abortedResult,
+        isAborted: true,
+        startedAt: execution.runStartedAt,
+        endedAt: execution.runEndedAt,
+      });
+      return abortedResult;
     }
     return await finalizeCronRun({
       prepared: prepared.context,
@@ -776,6 +847,13 @@ export async function runCronIsolatedAgentTurn(params: {
       isAborted,
     });
   } catch (err) {
-    return prepared.context.withRunSession({ status: "error", error: String(err) });
+    const failedResult = prepared.context.withRunSession({ status: "error", error: String(err) });
+    await persistCronTerminalSessionState({
+      prepared: prepared.context,
+      result: failedResult,
+      isAborted: isAborted(),
+      startedAt: prepared.context.cronSession.sessionEntry.startedAt,
+    });
+    return failedResult;
   }
 }

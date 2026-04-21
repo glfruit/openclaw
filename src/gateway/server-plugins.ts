@@ -411,6 +411,7 @@ export function loadGatewayPlugins(params: {
     debug: (msg: string) => void;
   };
   coreGatewayHandlers: Record<string, GatewayRequestHandler>;
+  builtInGatewayMethodNames?: string[];
   baseMethods: string[];
   pluginIds?: string[];
   preferSetupRuntimeForChannelPlugins?: boolean;
@@ -468,6 +469,7 @@ export function loadGatewayPlugins(params: {
       suppressInfoLogs: params.suppressPluginInfoLogs,
     }),
     coreGatewayHandlers: params.coreGatewayHandlers,
+    builtInGatewayMethodNames: params.builtInGatewayMethodNames,
     runtimeOptions: {
       allowGatewaySubagentBinding: true,
     },

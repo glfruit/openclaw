@@ -4,19 +4,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, type Mock } from
 import { resolveSessionTranscriptPath } from "../config/sessions.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { captureEnv } from "../test-utils/env.js";
-import {
-  agentCommand,
-  getFreePort,
-  installGatewayTestHooks,
-  startGatewayServer,
-  testState,
-} from "./test-helpers.js";
+import { agentCommand, getFreePort, installGatewayTestHooks, testState } from "./test-helpers.js";
+import { startAgentCompatGatewayServer } from "./test-helpers.server.agent-compat.js";
 
 const { createOpenClawTools } = await import("../agents/openclaw-tools.js");
 
 installGatewayTestHooks({ scope: "suite" });
 
-let server: Awaited<ReturnType<typeof startGatewayServer>>;
+let server: Awaited<ReturnType<typeof startAgentCompatGatewayServer>>;
 let gatewayPort: number;
 const gatewayToken = "test-gateway-token-1234567890";
 let envSnapshot: ReturnType<typeof captureEnv>;
@@ -97,7 +92,7 @@ beforeAll(async () => {
   testState.gatewayAuth = { mode: "token", token: gatewayToken };
   process.env.OPENCLAW_GATEWAY_PORT = String(gatewayPort);
   process.env.OPENCLAW_GATEWAY_TOKEN = gatewayToken;
-  server = await startGatewayServer(gatewayPort);
+  server = await startAgentCompatGatewayServer(gatewayPort);
 });
 
 beforeEach(() => {

@@ -1,7 +1,7 @@
 import type { Server as HttpServer } from "node:http";
 import { WebSocketServer } from "ws";
-import { CANVAS_HOST_PATH } from "../canvas-host/a2ui.js";
-import { type CanvasHostHandler, createCanvasHostHandler } from "../canvas-host/server.js";
+import { CANVAS_HOST_PATH } from "../canvas-host/paths.js";
+import type { CanvasHostHandler } from "../canvas-host/server.js";
 import type { CliDeps } from "../cli/deps.types.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import type { PluginRegistry } from "../plugins/registry.js";
@@ -47,6 +47,13 @@ import {
 import type { ReadinessChecker } from "./server/readiness.js";
 import type { GatewayTlsRuntime } from "./server/tls.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+
+let canvasHostModulePromise: Promise<typeof import("../canvas-host/server.js")> | undefined;
+
+function getCanvasHostModule() {
+  canvasHostModulePromise ??= import("../canvas-host/server.js");
+  return canvasHostModulePromise;
+}
 
 export async function createGatewayRuntimeState(params: {
   cfg: import("../config/config.js").OpenClawConfig;
@@ -114,6 +121,7 @@ export async function createGatewayRuntimeState(params: {
     let canvasHost: CanvasHostHandler | null = null;
     if (params.canvasHostEnabled) {
       try {
+        const { createCanvasHostHandler } = await getCanvasHostModule();
         const handler = await createCanvasHostHandler({
           runtime: params.canvasRuntime,
           rootDir: params.cfg.canvasHost?.root,

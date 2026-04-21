@@ -212,6 +212,9 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/auth-profiles.runtime": "src/agents/auth-profiles.runtime.ts",
     "agents/model-catalog.runtime": "src/agents/model-catalog.runtime.ts",
     "agents/models-config.runtime": "src/agents/models-config.runtime.ts",
+    "agents/openclaw-media-tools.runtime": "src/agents/openclaw-media-tools.runtime.ts",
+    "agents/openclaw-message-tools.runtime": "src/agents/openclaw-message-tools.runtime.ts",
+    "agents/openclaw-session-tools.runtime": "src/agents/openclaw-session-tools.runtime.ts",
     "subagent-registry.runtime": "src/agents/subagent-registry.runtime.ts",
     "agents/pi-model-discovery-runtime": "src/agents/pi-model-discovery-runtime.ts",
     "commands/status.summary.runtime": "src/commands/status.summary.runtime.ts",
@@ -226,13 +229,35 @@ function buildCoreDistEntries(): Record<string, string> {
     "telegram/audit": bundledPluginFile("telegram", "src/audit.ts"),
     "telegram/token": bundledPluginFile("telegram", "src/token.ts"),
     "plugins/build-smoke-entry": "src/plugins/build-smoke-entry.ts",
-    "plugins/runtime/index": "src/plugins/runtime/index.ts",
     "llm-slug-generator": "src/hooks/llm-slug-generator.ts",
     "mcp/plugin-tools-serve": "src/mcp/plugin-tools-serve.ts",
   };
 }
 
+function buildGatewayDistEntries(): Record<string, string> {
+  return {
+    "gateway/server": "src/gateway/server.ts",
+    "plugins/runtime/gateway-channel-runtime": "src/plugins/runtime/gateway-channel-runtime.ts",
+  };
+}
+
+function buildFullRuntimeDistEntries(): Record<string, string> {
+  return {
+    "plugins/runtime/index": "src/plugins/runtime/index.ts",
+  };
+}
+
+function buildCompatDistEntries(): Record<string, string> {
+  return {
+    "gateway/server.agent-compat": "src/gateway/server.agent-compat.ts",
+    "gateway/server.agent-compat.runtime": "src/gateway/server.agent-compat.runtime.ts",
+  };
+}
+
 const coreDistEntries = buildCoreDistEntries();
+const gatewayDistEntries = buildGatewayDistEntries();
+const fullRuntimeDistEntries = buildFullRuntimeDistEntries();
+const compatDistEntries = buildCompatDistEntries();
 const stagedBundledPluginBuildEntries = bundledPluginBuildEntries.filter(({ packageJson }) =>
   shouldStageBundledPluginRuntimeDependencies(packageJson),
 );
@@ -293,6 +318,32 @@ export default defineConfig([
     // and bundled hooks in one graph so runtime singletons are emitted once.
     clean: true,
     entry: buildUnifiedDistEntries(),
+    deps: {
+      neverBundle: shouldNeverBundleDependency,
+    },
+  }),
+  nodeBuildConfig({
+    // Keep the core gateway lane out of the unified core/runtime graph so it can
+    // share only a dedicated gateway/channel runtime surface.
+    clean: false,
+    entry: gatewayDistEntries,
+    deps: {
+      neverBundle: shouldNeverBundleDependency,
+    },
+  }),
+  nodeBuildConfig({
+    // Keep the full plugin runtime wrapper on its own emitted lane instead of
+    // letting gateway/server share the same commonized runtime carrier.
+    clean: false,
+    entry: fullRuntimeDistEntries,
+    deps: {
+      neverBundle: shouldNeverBundleDependency,
+    },
+  }),
+  nodeBuildConfig({
+    // Keep the agent compat gateway lane out of the unified core emitted graph.
+    clean: false,
+    entry: compatDistEntries,
     deps: {
       neverBundle: shouldNeverBundleDependency,
     },

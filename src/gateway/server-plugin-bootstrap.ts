@@ -3,7 +3,7 @@ import { applyPluginAutoEnable } from "../config/plugin-auto-enable.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginRegistry } from "../plugins/registry.js";
 import { pinActivePluginChannelRegistry } from "../plugins/runtime.js";
-import { setGatewaySubagentRuntime } from "../plugins/runtime/index.js";
+import { setGatewaySubagentRuntime } from "../plugins/runtime/gateway-channel-runtime.js";
 import type { GatewayRequestHandler } from "./server-methods/types.js";
 import {
   createGatewaySubagentRuntime,
@@ -24,6 +24,7 @@ type GatewayPluginBootstrapParams = {
   workspaceDir: string;
   log: GatewayPluginBootstrapLog;
   coreGatewayHandlers: Record<string, GatewayRequestHandler>;
+  builtInGatewayMethodNames?: string[];
   baseMethods: string[];
   pluginIds?: string[];
   preferSetupRuntimeForChannelPlugins?: boolean;
@@ -74,6 +75,7 @@ export function prepareGatewayPluginLoad(params: GatewayPluginBootstrapParams) {
     workspaceDir: params.workspaceDir,
     log: params.log,
     coreGatewayHandlers: params.coreGatewayHandlers,
+    builtInGatewayMethodNames: params.builtInGatewayMethodNames,
     baseMethods: params.baseMethods,
     pluginIds: params.pluginIds,
     preferSetupRuntimeForChannelPlugins: params.preferSetupRuntimeForChannelPlugins,

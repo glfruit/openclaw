@@ -694,9 +694,9 @@ export const zh_CN: TranslationMap = {
       runStatusSkipped: "已跳过",
       runStatusUnknown: "未知",
       deliveryDelivered: "已投递",
-      deliveryNotDelivered: "未投递",
-      deliveryUnknown: "未知",
-      deliveryNotRequested: "未请求",
+      deliveryNotDelivered: "投递未完成",
+      deliveryUnknown: "投递状态未知",
+      deliveryNotRequested: "未请求投递",
     },
     form: {
       editJob: "编辑任务",

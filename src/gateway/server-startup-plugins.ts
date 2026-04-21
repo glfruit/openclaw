@@ -9,7 +9,7 @@ import {
 } from "../plugins/channel-plugin-ids.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
-import { listGatewayMethods } from "./server-methods-list.js";
+import { BUILT_IN_GATEWAY_METHODS, listGatewayMethods } from "./server-methods-list.js";
 import { coreGatewayHandlers } from "./server-methods.js";
 import { loadGatewayStartupPlugins } from "./server-plugin-bootstrap.js";
 import { runStartupSessionMigration } from "./server-startup-session-migration.js";
@@ -86,6 +86,7 @@ export async function prepareGatewayPluginBootstrap(params: {
       workspaceDir: defaultWorkspaceDir,
       log: params.log,
       coreGatewayHandlers,
+      builtInGatewayMethodNames: BUILT_IN_GATEWAY_METHODS,
       baseMethods,
       pluginIds: startupPluginIds,
       preferSetupRuntimeForChannelPlugins: deferredConfiguredChannelPluginIds.length > 0,
@@ -102,6 +103,7 @@ export async function prepareGatewayPluginBootstrap(params: {
     deferredConfiguredChannelPluginIds,
     startupPluginIds,
     baseMethods,
+    builtInGatewayMethodNames: BUILT_IN_GATEWAY_METHODS,
     pluginRegistry,
     baseGatewayMethods,
   };

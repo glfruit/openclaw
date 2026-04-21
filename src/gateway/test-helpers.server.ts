@@ -34,7 +34,7 @@ import { getDeterministicFreePortBlock } from "../test-utils/ports.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
-import type { GatewayServerOptions } from "./server.js";
+import type { GatewayServer, GatewayServerOptions } from "./server.js";
 import { resetTestPluginRegistry } from "./test-helpers.plugin-registry.js";
 import {
   agentCommand,
@@ -50,6 +50,7 @@ import {
   testState,
   testTailnetIPv4,
 } from "./test-helpers.runtime-state.js";
+import { __setAgentCompatGatewayServerTrackerForTests } from "./test-helpers.server.agent-compat.js";
 
 // Import lazily after test env/home setup so config/session paths resolve to test dirs.
 // Keep one cached module per worker for speed.
@@ -85,6 +86,25 @@ let lastSyncedSessionStorePath: string | undefined;
 let lastSyncedSessionConfigJson: string | undefined;
 let activeSuiteGatewayServerCount = 0;
 let activeSuiteHookScopeCount = 0;
+
+function registerTrackedGatewayServer<T extends GatewayServer>(server: T): T {
+  activeSuiteGatewayServerCount += 1;
+  const originalClose = server.close.bind(server);
+  let closed = false;
+  server.close = (async (...args: Parameters<typeof originalClose>) => {
+    try {
+      return await originalClose(...args);
+    } finally {
+      if (!closed) {
+        closed = true;
+        activeSuiteGatewayServerCount = Math.max(0, activeSuiteGatewayServerCount - 1);
+      }
+    }
+  }) as typeof server.close;
+  return server;
+}
+
+__setAgentCompatGatewayServerTrackerForTests(registerTrackedGatewayServer);
 
 function resolveGatewayTestMainSessionKeys(): string[] {
   const resolved = resolveMainSessionKeyFromConfig();
@@ -591,20 +611,7 @@ export async function startGatewayServer(port: number, opts?: GatewayServerOptio
     };
   }
   const server = await mod.startGatewayServer(port, resolvedOpts);
-  activeSuiteGatewayServerCount += 1;
-  const originalClose = server.close.bind(server);
-  let closed = false;
-  server.close = (async (...args: Parameters<typeof originalClose>) => {
-    try {
-      return await originalClose(...args);
-    } finally {
-      if (!closed) {
-        closed = true;
-        activeSuiteGatewayServerCount = Math.max(0, activeSuiteGatewayServerCount - 1);
-      }
-    }
-  }) as typeof server.close;
-  return server;
+  return registerTrackedGatewayServer(server);
 }
 
 export async function startGatewayServerWithRetries(params: {

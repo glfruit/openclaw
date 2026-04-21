@@ -223,8 +223,15 @@ function formatSubagentPartialProgress(
 function selectSubagentOutputText(
   snapshot: SubagentOutputSnapshot,
   outcome?: SubagentRunOutcome,
+  options?: {
+    preferLatestRawOnSilent?: (rawText: string) => boolean;
+  },
 ): string | undefined {
   if (snapshot.latestSilentText) {
+    const rawText = snapshot.latestRawText?.trim();
+    if (rawText && options?.preferLatestRawOnSilent?.(rawText)) {
+      return rawText;
+    }
     return snapshot.latestSilentText;
   }
   if (snapshot.latestAssistantText) {
@@ -240,13 +247,20 @@ function selectSubagentOutputText(
 export async function readSubagentOutput(
   sessionKey: string,
   outcome?: SubagentRunOutcome,
+  options?: {
+    preferLatestRawOnSilent?: (rawText: string) => boolean;
+  },
 ): Promise<string | undefined> {
   const history = await subagentAnnounceOutputDeps.callGateway({
     method: "chat.history",
     params: { sessionKey, limit: 100 },
   });
   const messages = Array.isArray(history?.messages) ? history.messages : [];
-  const selected = selectSubagentOutputText(summarizeSubagentOutputHistory(messages), outcome);
+  const selected = selectSubagentOutputText(
+    summarizeSubagentOutputHistory(messages),
+    outcome,
+    options,
+  );
   if (selected?.trim()) {
     return selected;
   }
@@ -261,13 +275,17 @@ export async function readLatestSubagentOutputWithRetry(params: {
   sessionKey: string;
   maxWaitMs: number;
   outcome?: SubagentRunOutcome;
+  preferLatestRawOnSilent?: (rawText: string) => boolean;
 }): Promise<string | undefined> {
   return await readLatestSubagentOutputWithRetryUsing({
     sessionKey: params.sessionKey,
     maxWaitMs: params.maxWaitMs,
     outcome: params.outcome,
     retryIntervalMs: isFastTestMode() ? FAST_TEST_RETRY_INTERVAL_MS : 100,
-    readSubagentOutput,
+    readSubagentOutput: async (sessionKey, outcome) =>
+      await readSubagentOutput(sessionKey, outcome, {
+        preferLatestRawOnSilent: params.preferLatestRawOnSilent,
+      }),
   });
 }
 

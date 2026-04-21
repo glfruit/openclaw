@@ -82,7 +82,6 @@ import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 import { setGatewayDedupeEntry } from "./agent-wait-dedupe.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
 import { appendInjectedAssistantMessageToTranscript } from "./chat-transcript-inject.js";
-import { buildWebchatAudioContentBlocksFromReplyPayloads } from "./chat-webchat-media.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
@@ -111,6 +110,13 @@ type ChatAbortRequester = {
   isAdmin: boolean;
 };
 
+let chatWebchatMediaModulePromise: Promise<typeof import("./chat-webchat-media.js")> | undefined;
+
+function getChatWebchatMediaModule() {
+  chatWebchatMediaModulePromise ??= import("./chat-webchat-media.js");
+  return chatWebchatMediaModulePromise;
+}
+
 /** True when a reply payload carries at least one media reference (mediaUrl or mediaUrls). */
 function isMediaBearingPayload(payload: ReplyPayload): boolean {
   if (payload.mediaUrl?.trim()) {
@@ -129,6 +135,7 @@ async function buildWebchatAudioOnlyAssistantMessage(
     onLocalAudioAccessDenied?: (message: string) => void;
   },
 ): Promise<{ content: Array<Record<string, unknown>>; transcriptText: string } | null> {
+  const { buildWebchatAudioContentBlocksFromReplyPayloads } = await getChatWebchatMediaModule();
   const audioBlocks = await buildWebchatAudioContentBlocksFromReplyPayloads(payloads, {
     localRoots: options?.localRoots,
     onLocalAudioAccessDenied: (err) => {

@@ -130,7 +130,7 @@ describe("runCronIsolatedAgentTurn — cron model override (#21057)", () => {
     expect(cronSession.sessionEntry.systemSent).toBe(true);
   });
 
-  it("session entry already carries cron model at pre-run persist time (race condition)", async () => {
+  it("session entry already carries cron model and running lifecycle at pre-run persist time (race condition)", async () => {
     // Capture a deep snapshot of the session entry at each persist call so we
     // can inspect what sessions_list would see mid-run — before the post-run
     // persist overwrites the entry with the actual model from agentMeta.
@@ -138,13 +138,25 @@ describe("runCronIsolatedAgentTurn — cron model override (#21057)", () => {
       model?: string;
       modelProvider?: string;
       systemSent?: boolean;
+      status?: string;
+      startedAt?: number;
+      endedAt?: number;
+      runtimeMs?: number;
     }> = [];
     updateSessionStoreMock.mockImplementation(
       async (_path: string, cb: (s: Record<string, unknown>) => void) => {
         const store: Record<string, unknown> = {};
         cb(store);
         const entry = Object.values(store)[0] as
-          | { model?: string; modelProvider?: string; systemSent?: boolean }
+          | {
+              model?: string;
+              modelProvider?: string;
+              systemSent?: boolean;
+              status?: string;
+              startedAt?: number;
+              endedAt?: number;
+              runtimeMs?: number;
+            }
           | undefined;
         if (entry) {
           persistedSnapshots.push(JSON.parse(JSON.stringify(entry)));
@@ -164,6 +176,34 @@ describe("runCronIsolatedAgentTurn — cron model override (#21057)", () => {
     expect(preRunSnapshot.model).toBe("claude-sonnet-4-6");
     expect(preRunSnapshot.modelProvider).toBe("anthropic");
     expect(preRunSnapshot.systemSent).toBe(true);
+    expect(preRunSnapshot.status).toBe("running");
+    expect(preRunSnapshot.startedAt).toEqual(expect.any(Number));
+    expect(preRunSnapshot.endedAt).toBeUndefined();
+    expect(preRunSnapshot.runtimeMs).toBeUndefined();
+  });
+
+  it("persists completed lifecycle fields after a successful run", async () => {
+    runWithModelFallbackMock.mockResolvedValueOnce(makeSuccessfulRunResult());
+
+    await runCronIsolatedAgentTurn(makeParams());
+
+    expect(cronSession.sessionEntry.status).toBe("done");
+    expect(cronSession.sessionEntry.startedAt).toEqual(expect.any(Number));
+    expect(cronSession.sessionEntry.endedAt).toEqual(expect.any(Number));
+    expect(cronSession.sessionEntry.runtimeMs).toEqual(expect.any(Number));
+    expect(cronSession.sessionEntry.runtimeMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("persists failed lifecycle fields when the run throws", async () => {
+    runWithModelFallbackMock.mockRejectedValueOnce(new Error("LLM provider timeout"));
+
+    await runCronIsolatedAgentTurn(makeParams());
+
+    expect(cronSession.sessionEntry.status).toBe("failed");
+    expect(cronSession.sessionEntry.startedAt).toEqual(expect.any(Number));
+    expect(cronSession.sessionEntry.endedAt).toEqual(expect.any(Number));
+    expect(cronSession.sessionEntry.runtimeMs).toEqual(expect.any(Number));
+    expect(cronSession.sessionEntry.runtimeMs).toBeGreaterThanOrEqual(0);
   });
 
   it("returns error without persisting model when payload model is disallowed", async () => {

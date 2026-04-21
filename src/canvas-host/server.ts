@@ -17,13 +17,9 @@ import { detectMime } from "../media/mime.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { lowercasePreservingWhitespace, normalizeOptionalString } from "../shared/string-coerce.js";
 import { ensureDir, resolveUserPath } from "../utils.js";
-import {
-  CANVAS_HOST_PATH,
-  CANVAS_WS_PATH,
-  handleA2uiHttpRequest,
-  injectCanvasLiveReload,
-} from "./a2ui.js";
+import { handleA2uiHttpRequest, injectCanvasLiveReload } from "./a2ui.js";
 import { normalizeUrlPath, resolveFileWithinRoot } from "./file-resolver.js";
+import { CANVAS_HOST_PATH, CANVAS_WS_PATH } from "./paths.js";
 
 type ChokidarWatch = typeof import("chokidar").watch;
 

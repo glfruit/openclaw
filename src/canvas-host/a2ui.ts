@@ -5,12 +5,9 @@ import { fileURLToPath } from "node:url";
 import { detectMime } from "../media/mime.js";
 import { lowercasePreservingWhitespace } from "../shared/string-coerce.js";
 import { resolveFileWithinRoot } from "./file-resolver.js";
+import { A2UI_PATH, CANVAS_HOST_PATH, CANVAS_WS_PATH } from "./paths.js";
 
-export const A2UI_PATH = "/__openclaw__/a2ui";
-
-export const CANVAS_HOST_PATH = "/__openclaw__/canvas";
-
-export const CANVAS_WS_PATH = "/__openclaw__/ws";
+export { A2UI_PATH, CANVAS_HOST_PATH, CANVAS_WS_PATH };
 
 let cachedA2uiRootReal: string | null | undefined;
 let resolvingA2uiRoot: Promise<string | null> | null = null;
