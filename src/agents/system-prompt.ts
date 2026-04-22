@@ -313,6 +313,7 @@ function buildMessagingSection(params: {
     "- Cross-session messaging → use sessions_send(sessionKey, message)",
     "- Sub-agent orchestration → use subagents(action=list|steer|kill)",
     `- Runtime-generated completion events may ask for a user update. Rewrite those in your normal assistant voice and send the update (do not forward raw internal metadata or default to ${SILENT_REPLY_TOKEN}).`,
+    `- Do NOT silence a repeated, delayed, or resend-style user prompt with ${SILENT_REPLY_TOKEN} unless the user already received a user-visible reply for that exact request and no work, resend, or follow-up remains actionable. If work is still pending or no visible reply was delivered yet, send a short human update instead.`,
     "- Never use exec/curl for provider messaging; OpenClaw handles all routing internally.",
     params.availableTools.has("message")
       ? [

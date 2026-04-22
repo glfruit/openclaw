@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
@@ -545,6 +548,23 @@ function firstToolResultPayload(dispatcher: ReplyDispatcher): ReplyPayload | und
   return (dispatcher.sendToolResult as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as
     | ReplyPayload
     | undefined;
+}
+
+function writeTranscriptFixture(messages: Array<Record<string, unknown>>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-from-config-transcript-"));
+  const transcriptPath = path.join(dir, "session.jsonl");
+  const lines = [
+    JSON.stringify({
+      type: "session",
+      version: 1,
+      id: "test-session-id",
+      timestamp: new Date().toISOString(),
+      cwd: process.cwd(),
+    }),
+    ...messages.map((message) => JSON.stringify({ type: "message", message })),
+  ];
+  fs.writeFileSync(transcriptPath, `${lines.join("\n")}\n`, "utf-8");
+  return transcriptPath;
 }
 
 async function dispatchTwiceWithFreshDispatchers(params: Omit<DispatchReplyArgs, "dispatcher">) {
@@ -1162,6 +1182,80 @@ describe("dispatchReplyFromConfig", () => {
         },
       }),
     );
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "NO_REPLY" });
+  });
+
+  it("replaces silent NO_REPLY for repeated followups when the last user turn still has no visible assistant reply", async () => {
+    setNoAbort();
+    const transcriptPath = writeTranscriptFixture([
+      {
+        role: "user",
+        content: "please send the packet",
+        timestamp: 1,
+      },
+    ]);
+    sessionStoreMocks.currentEntry = {
+      sessionFile: transcriptPath,
+    };
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      ChatType: "direct",
+      SessionKey: "agent:main:telegram:direct:test",
+      Body: "please send the packet",
+      BodyForCommands: "please send the packet",
+    });
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher,
+      replyResolver: vi.fn(async () => ({ text: "NO_REPLY" }) as ReplyPayload),
+    });
+
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "I haven't sent the visible reply yet. I'm checking and will resend or update shortly.",
+      }),
+    );
+  });
+
+  it("keeps silent NO_REPLY when a visible assistant reply already exists after the prior user turn", async () => {
+    setNoAbort();
+    const transcriptPath = writeTranscriptFixture([
+      {
+        role: "user",
+        content: "please send the packet",
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Sent." }],
+        stopReason: "stop",
+        timestamp: 2,
+      },
+    ]);
+    sessionStoreMocks.currentEntry = {
+      sessionFile: transcriptPath,
+    };
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      ChatType: "direct",
+      SessionKey: "agent:main:telegram:direct:test",
+      Body: "please resend it",
+      BodyForCommands: "please resend it",
+    });
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher,
+      replyResolver: vi.fn(async () => ({ text: "NO_REPLY" }) as ReplyPayload),
+    });
+
     expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "NO_REPLY" });
   });
 

@@ -236,6 +236,18 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("do not forward raw internal metadata");
   });
 
+  it("forbids silencing repeated actionable user followups with NO_REPLY", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain(
+      "Do NOT silence a repeated, delayed, or resend-style user prompt with NO_REPLY",
+    );
+    expect(prompt).toContain("user already received a user-visible reply for that exact request");
+    expect(prompt).toContain("send a short human update instead");
+  });
+
   it("does not include embed guidance in the default global prompt", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",

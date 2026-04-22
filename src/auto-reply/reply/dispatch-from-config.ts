@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { isParentOwnedBackgroundAcpSession } from "../../acp/session-interaction-mode.js";
 import {
@@ -41,6 +42,10 @@ import {
 } from "../../plugins/conversation-binding.js";
 import { getGlobalHookRunner, getGlobalPluginRegistry } from "../../plugins/hook-runner-global.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import {
+  extractAssistantVisibleText,
+  extractFirstTextBlock,
+} from "../../shared/chat-message-content.js";
 import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
 import {
   normalizeOptionalLowercaseString,
@@ -56,6 +61,7 @@ import type { BlockReplyContext } from "../get-reply-options.types.js";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../reply-payload.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { normalizeVerboseLevel } from "../thinking.js";
+import { isSilentReplyPayloadText } from "../tokens.js";
 import {
   createInternalHookEvent,
   loadSessionStore,
@@ -149,6 +155,102 @@ const isInboundAudioContext = (ctx: FinalizedMsgContext): boolean => {
   }
   return AUDIO_HEADER_RE.test(trimmed);
 };
+
+const REPEATED_FOLLOWUP_VISIBLE_UPDATE_TEXT =
+  "I haven't sent the visible reply yet. I'm checking and will resend or update shortly.";
+const FOLLOWUP_OR_RESEND_PROMPT_RE = /^(?:[?？!！.。…]+|ping|bump)$/iu;
+const FOLLOWUP_OR_RESEND_PHRASE_RE =
+  /\b(?:again|resend|re-send|send again|follow up|follow-up|followup|retry|status|any update|still waiting|did you send)\b|(?:再发|重发|重新发|重新发送|补发|再来一次|发一下|没收到|还没|催一下|催下|催办|跟进|有进展)/iu;
+
+function normalizeFollowupPromptText(text: string): string {
+  return normalizeLowercaseStringOrEmpty(
+    text
+      .normalize("NFKC")
+      .replace(/[\p{P}\p{S}]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+}
+
+function isLikelyRepeatedFollowupPrompt(params: {
+  currentText: string;
+  priorUserText?: string;
+}): boolean {
+  const trimmed = params.currentText.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (FOLLOWUP_OR_RESEND_PROMPT_RE.test(trimmed) || FOLLOWUP_OR_RESEND_PHRASE_RE.test(trimmed)) {
+    return true;
+  }
+  const normalizedCurrent = normalizeFollowupPromptText(trimmed);
+  const normalizedPrior = params.priorUserText
+    ? normalizeFollowupPromptText(params.priorUserText)
+    : "";
+  return Boolean(normalizedCurrent && normalizedPrior && normalizedCurrent === normalizedPrior);
+}
+
+async function shouldOverrideSilentRepeatedFollowup(params: {
+  ctx: FinalizedMsgContext;
+  sessionEntry?: SessionEntry;
+}): Promise<boolean> {
+  const currentText =
+    normalizeOptionalString(params.ctx.BodyForCommands) ??
+    normalizeOptionalString(params.ctx.CommandBody) ??
+    normalizeOptionalString(params.ctx.RawBody) ??
+    normalizeOptionalString(params.ctx.Body);
+  if (!currentText) {
+    return false;
+  }
+  const sessionFile = normalizeOptionalString(params.sessionEntry?.sessionFile);
+  if (!sessionFile) {
+    return false;
+  }
+
+  let raw = "";
+  try {
+    raw = await fs.promises.readFile(sessionFile, "utf-8");
+  } catch {
+    return false;
+  }
+
+  let latestUserText: string | undefined;
+  let latestAssistantVisibleText: string | undefined;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(line) as { type?: unknown; message?: unknown };
+      if (parsed.type !== "message") {
+        continue;
+      }
+      const message = parsed.message;
+      if (!message || typeof message !== "object") {
+        continue;
+      }
+      const role = (message as { role?: unknown }).role;
+      if (role === "user") {
+        latestUserText = extractFirstTextBlock(message);
+        latestAssistantVisibleText = undefined;
+        continue;
+      }
+      if (role === "assistant") {
+        const visibleText = extractAssistantVisibleText(message);
+        if (visibleText?.trim()) {
+          latestAssistantVisibleText = visibleText;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  if (!latestUserText?.trim() || latestAssistantVisibleText?.trim()) {
+    return false;
+  }
+  return isLikelyRepeatedFollowupPrompt({ currentText, priorUserText: latestUserText });
+}
 
 const resolveSessionStoreLookup = (
   ctx: FinalizedMsgContext,
@@ -634,8 +736,24 @@ export async function dispatchReplyFromConfig(
     const sendFinalPayload = async (
       payload: ReplyPayload,
     ): Promise<{ queuedFinal: boolean; routedFinalCount: number }> => {
+      let effectivePayload = payload;
+      if (
+        isSilentReplyPayloadText(payload.text) &&
+        (await shouldOverrideSilentRepeatedFollowup({
+          ctx,
+          sessionEntry: sessionStoreEntry.entry,
+        }))
+      ) {
+        effectivePayload = {
+          ...payload,
+          text: REPEATED_FOLLOWUP_VISIBLE_UPDATE_TEXT,
+        };
+        logVerbose(
+          `dispatch-from-config: replaced silent final reply with repeated-followup visible update (session=${acpDispatchSessionKey ?? "unknown"})`,
+        );
+      }
       const ttsPayload = await maybeApplyTtsToReplyPayload({
-        payload,
+        payload: effectivePayload,
         cfg,
         channel: ttsChannel,
         kind: "final",
