@@ -3,12 +3,11 @@ import {
   analyzeBootstrapBudget,
   buildBootstrapInjectionStats,
   buildBootstrapPromptWarning,
-  prependBootstrapPromptWarning,
 } from "../../bootstrap-budget.js";
 import { composeSystemPromptWithHookContext } from "./attempt.thread-helpers.js";
 
 describe("runEmbeddedAttempt bootstrap warning prompt assembly", () => {
-  it("keeps bootstrap warnings in the sent prompt after hook prepend context", () => {
+  it("computes bootstrap truncation warnings without injecting them into the body prompt", () => {
     const analysis = analyzeBootstrapBudget({
       files: buildBootstrapInjectionStats({
         bootstrapFiles: [
@@ -28,15 +27,19 @@ describe("runEmbeddedAttempt bootstrap warning prompt assembly", () => {
       analysis,
       mode: "once",
     });
-    const promptWithWarning = prependBootstrapPromptWarning("hello", warning.lines);
+
+    // Warning is computed and available for telemetry/report.
+    expect(warning.warningShown).toBe(true);
+    expect(warning.lines.length).toBeGreaterThan(0);
+    expect(warning.lines[0]).toContain("AGENTS.md");
+
+    // Body prompt stays clean — warning is not injected.
     const systemPrompt = composeSystemPromptWithHookContext({
-      baseSystemPrompt: promptWithWarning,
+      baseSystemPrompt: "hello",
       prependSystemContext: "hook context",
     });
-
     expect(systemPrompt).toContain("hook context");
-    expect(systemPrompt).toContain("[Bootstrap truncation warning]");
-    expect(systemPrompt).toContain("- AGENTS.md: 200 raw -> 20 injected");
     expect(systemPrompt).toContain("hello");
+    expect(systemPrompt).not.toContain("[Bootstrap truncation warning]");
   });
 });

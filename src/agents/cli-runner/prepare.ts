@@ -111,6 +111,11 @@ export async function prepareCliRunContext(
     seenSignatures: params.bootstrapPromptWarningSignaturesSeen,
     previousSignature: params.bootstrapPromptWarningSignature,
   });
+  if (bootstrapPromptWarning.warningShown) {
+    cliBackendLog.warn(
+      `[bootstrap-budget] truncation warning emitted (mode=${bootstrapPromptWarningMode}): ${bootstrapPromptWarning.lines.length} line(s) — logged to report only, not injected into user prompt`,
+    );
+  }
   const { defaultAgentId, sessionAgentId } = resolveSessionAgentIds({
     sessionKey: params.sessionKey,
     config: params.config,

@@ -902,8 +902,9 @@ describe("runCliAgent spawn path", () => {
     };
     const promptCarrier = [input.input ?? "", ...(input.argv ?? [])].join("\n");
 
-    expect(promptCarrier).toContain("[Bootstrap truncation warning]");
-    expect(promptCarrier).toContain("- AGENTS.md: 200 raw -> 20 injected");
+    // Bootstrap truncation warnings are no longer injected into the user prompt;
+    // they are logged to telemetry and the system-prompt report only.
+    expect(promptCarrier).not.toContain("[Bootstrap truncation warning]");
     expect(promptCarrier).toContain("hi");
   });
 

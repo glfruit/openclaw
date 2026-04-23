@@ -38,7 +38,7 @@ describe("prompt composition invariants", () => {
     }
   });
 
-  it("keeps bootstrap warnings out of the system prompt and preserves the original user prompt prefix", () => {
+  it("keeps bootstrap warnings out of both system prompt and body prompt", () => {
     const scenario = fixture.scenarios.find((entry) => entry.scenario === "bootstrap-warning");
     expect(scenario).toBeDefined();
     const first = getTurn(scenario!, "t1");
@@ -47,12 +47,12 @@ describe("prompt composition invariants", () => {
 
     expect(first.systemPrompt).not.toContain("[Bootstrap truncation warning]");
     expect(first.systemPrompt).toContain("[...truncated, read AGENTS.md for full content...]");
-    expect(first.bodyPrompt.startsWith("hello")).toBe(true);
-    expect(first.bodyPrompt).toContain("[Bootstrap truncation warning]");
+    expect(first.bodyPrompt).toBe("hello");
+    expect(first.bodyPrompt).not.toContain("[Bootstrap truncation warning]");
 
     expect(deduped.bodyPrompt).toBe("hello again");
-    expect(always.bodyPrompt.startsWith("one more turn")).toBe(true);
-    expect(always.bodyPrompt).toContain("[Bootstrap truncation warning]");
+    expect(always.bodyPrompt).toBe("one more turn");
+    expect(always.bodyPrompt).not.toContain("[Bootstrap truncation warning]");
   });
 
   it("keeps the group auto-reply prompt dynamic only across the first-turn intro boundary", () => {

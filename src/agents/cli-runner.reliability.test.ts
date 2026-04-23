@@ -198,7 +198,7 @@ describe("runCliAgent reliability", () => {
       bootstrapPromptWarningLines: ["Warning: prompt budget low."],
     });
 
-    expect(result.meta.finalPromptText).toContain("Warning: prompt budget low.");
+    expect(result.meta.finalPromptText).not.toContain("Warning: prompt budget low.");
     expect(result.meta.finalPromptText).toContain("hi");
     expect(result.meta.finalAssistantRawText).toBe("hello from cli");
     expect(result.meta.executionTrace).toMatchObject({

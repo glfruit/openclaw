@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
-  appendBootstrapPromptWarning,
   analyzeBootstrapBudget,
   buildBootstrapInjectionStats,
   buildBootstrapPromptWarning,
@@ -494,13 +493,13 @@ async function createBootstrapWarningScenario(workspaceDir: string): Promise<Pro
     mode: "once",
     seenSignatures: [],
   });
-  const warningSeen = buildBootstrapPromptWarning({
+  buildBootstrapPromptWarning({
     analysis,
     mode: "once",
     seenSignatures: warningFirst.warningSignaturesSeen,
     previousSignature: warningFirst.signature,
   });
-  const warningAlways = buildBootstrapPromptWarning({
+  buildBootstrapPromptWarning({
     analysis,
     mode: "always",
     seenSignatures: warningFirst.warningSignaturesSeen,
@@ -508,7 +507,8 @@ async function createBootstrapWarningScenario(workspaceDir: string): Promise<Pro
   });
   return {
     scenario: "bootstrap-warning",
-    focus: "Workspace bootstrap truncation warnings inside # Project Context",
+    focus:
+      "Workspace bootstrap truncation warnings are computed for telemetry/report but not injected into body prompt",
     expectedStableSystemAfterTurnIds: ["t2", "t3"],
     turns: [
       {
@@ -518,8 +518,11 @@ async function createBootstrapWarningScenario(workspaceDir: string): Promise<Pro
           workspaceDir,
           contextFiles,
         }),
-        bodyPrompt: appendBootstrapPromptWarning("hello", warningFirst.lines),
-        notes: ["Warning is appended to the turn body", "System prompt should stay stable"],
+        bodyPrompt: "hello",
+        notes: [
+          "Warning is computed (warningShown=true) but not injected into the prompt",
+          "System prompt should stay stable",
+        ],
       },
       {
         id: "t2",
@@ -528,8 +531,11 @@ async function createBootstrapWarningScenario(workspaceDir: string): Promise<Pro
           workspaceDir,
           contextFiles,
         }),
-        bodyPrompt: appendBootstrapPromptWarning("hello again", warningSeen.lines),
-        notes: ["Once-mode removes warning lines", "Only the body tail changes now"],
+        bodyPrompt: "hello again",
+        notes: [
+          "Once-mode dedupes the signature but prompt stays clean regardless",
+          "Body is identical to the pure user input",
+        ],
       },
       {
         id: "t3",
@@ -538,9 +544,9 @@ async function createBootstrapWarningScenario(workspaceDir: string): Promise<Pro
           workspaceDir,
           contextFiles,
         }),
-        bodyPrompt: appendBootstrapPromptWarning("one more turn", warningAlways.lines),
+        bodyPrompt: "one more turn",
         notes: [
-          "Always-mode keeps warning in the body prompt tail",
+          "Always-mode keeps warningShown=true but prompt stays clean",
           "System prompt remains stable",
         ],
       },

@@ -6,7 +6,6 @@ import { sanitizeHostExecEnv } from "../../infra/host-env-security.js";
 import { enqueueSystemEvent as enqueueSystemEventImpl } from "../../infra/system-events.js";
 import { getProcessSupervisor as getProcessSupervisorImpl } from "../../process/supervisor/index.js";
 import { scopedHeartbeatWakeOptions } from "../../routing/session-key.js";
-import { prependBootstrapPromptWarning } from "../bootstrap-budget.js";
 import {
   createCliJsonlStreamingParser,
   extractCliErrorMessage,
@@ -194,9 +193,7 @@ export async function executePreparedCliRun(
       : undefined;
 
   let prompt = applyPluginTextReplacements(
-    prependBootstrapPromptWarning(params.prompt, context.bootstrapPromptWarningLines, {
-      preserveExactPrompt: context.heartbeatPrompt,
-    }),
+    params.prompt,
     context.backendResolved.textTransforms?.input,
   );
   const {
@@ -467,7 +464,10 @@ export async function executePreparedCliRun(
           ...parsed,
           rawText,
           finalPromptText: prompt,
-          text: applyPluginTextReplacements(rawText, context.backendResolved.textTransforms?.output),
+          text: applyPluginTextReplacements(
+            rawText,
+            context.backendResolved.textTransforms?.output,
+          ),
         };
       } finally {
         restoreSkillEnv?.();

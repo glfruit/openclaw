@@ -45,7 +45,6 @@ import {
   buildBootstrapPromptWarning,
   buildBootstrapTruncationReportMeta,
   buildBootstrapInjectionStats,
-  prependBootstrapPromptWarning,
 } from "../../bootstrap-budget.js";
 import {
   FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE,
@@ -474,6 +473,11 @@ export async function runEmbeddedAttempt(
       seenSignatures: params.bootstrapPromptWarningSignaturesSeen,
       previousSignature: params.bootstrapPromptWarningSignature,
     });
+    if (bootstrapPromptWarning.warningShown) {
+      log.warn(
+        `[bootstrap-budget] truncation warning emitted (mode=${bootstrapPromptWarningMode}): ${bootstrapPromptWarning.lines.length} line(s) — logged to report only, not injected into user prompt`,
+      );
+    }
     const workspaceNotes = hookAdjustedBootstrapFiles.some(
       (file) => file.name === DEFAULT_BOOTSTRAP_FILENAME && !file.missing,
     )
@@ -1714,13 +1718,7 @@ export async function runEmbeddedAttempt(
 
         // Run before_prompt_build hooks to allow plugins to inject prompt context.
         // Legacy compatibility: before_agent_start is also checked for context fields.
-        let effectivePrompt = prependBootstrapPromptWarning(
-          params.prompt,
-          bootstrapPromptWarning.lines,
-          {
-            preserveExactPrompt: heartbeatPrompt,
-          },
-        );
+        let effectivePrompt = params.prompt;
         const hookCtx = {
           runId: params.runId,
           agentId: hookAgentId,

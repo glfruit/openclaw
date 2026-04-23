@@ -1,7 +1,6 @@
 import { streamSimple } from "@mariozechner/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../../config/config.js";
-import { appendBootstrapPromptWarning } from "../../bootstrap-budget.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../../system-prompt-cache-boundary.js";
 import { buildAgentSystemPrompt } from "../../system-prompt.js";
 import {
@@ -187,27 +186,28 @@ describe("composeSystemPromptWithHookContext", () => {
     const turns = [
       {
         systemPrompt: composedSystemPrompt,
-        prompt: appendBootstrapPromptWarning("hello", ["AGENTS.md: 200 raw -> 0 injected"]),
+        prompt: "hello",
       },
       {
         systemPrompt: composedSystemPrompt,
-        prompt: appendBootstrapPromptWarning("hello again", []),
+        prompt: "hello again",
       },
       {
         systemPrompt: composedSystemPrompt,
-        prompt: appendBootstrapPromptWarning("hello once more", [
-          "AGENTS.md: 200 raw -> 0 injected",
-        ]),
+        prompt: "hello once more",
       },
     ];
 
     expect(turns[0]?.systemPrompt).toBe(turns[1]?.systemPrompt);
     expect(turns[1]?.systemPrompt).toBe(turns[2]?.systemPrompt);
-    expect(turns[0]?.prompt.startsWith("hello")).toBe(true);
+    expect(turns[0]?.prompt).toBe("hello");
     expect(turns[1]?.prompt).toBe("hello again");
-    expect(turns[2]?.prompt.startsWith("hello once more")).toBe(true);
-    expect(turns[0]?.prompt).toContain("[Bootstrap truncation warning]");
-    expect(turns[2]?.prompt).toContain("[Bootstrap truncation warning]");
+    expect(turns[2]?.prompt).toBe("hello once more");
+    // Warnings are logged to telemetry/report only — never injected into body prompt.
+    for (const turn of turns) {
+      expect(turn.prompt).not.toContain("[Bootstrap truncation warning]");
+      expect(turn.systemPrompt).not.toContain("[Bootstrap truncation warning]");
+    }
   });
 });
 
