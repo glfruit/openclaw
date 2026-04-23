@@ -87,9 +87,9 @@ class ForkReleaseScaffoldTests(unittest.TestCase):
     def test_build_help(self) -> None:
         proc = subprocess.run(["python3", str(BUILD_SCRIPT), "--help"], text=True, capture_output=True, check=True)
         self.assertIn("--dry-run", proc.stdout)
-        self.assertIn("example:", proc.stdout)
+        self.assertIn("examples:", proc.stdout)
 
-    def test_build_dry_run_emits_stable_json(self) -> None:
+    def test_build_dry_run_emits_stable_json_with_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / "package.json").write_text(
@@ -113,7 +113,14 @@ class ForkReleaseScaffoldTests(unittest.TestCase):
             self.assertEqual(payload["package_name"], "openclaw")
             self.assertEqual(payload["release_tag"], "v1.2.3")
             self.assertEqual(payload["tarball_path"], None)
+            expected_tarball_path = repo / "artifacts" / "fork-release" / "openclaw-1.2.3.tgz"
             self.assertIn("gh release create", payload["github_release_command"])
+            self.assertIn(str(expected_tarball_path.resolve()), payload["github_release_command"])
+            self.assertIn("version_contract", payload)
+            self.assertEqual(payload["version_contract"]["release_tag"], "v1.2.3")
+            self.assertEqual(payload["version_contract"]["package_version"], "1.2.3")
+            self.assertEqual(payload["version_contract"]["tarball_filename"], "openclaw-1.2.3.tgz")
+            self.assertEqual(payload["version_contract"]["github_asset_name"], "openclaw-1.2.3.tgz")
 
     def test_build_non_dry_run_accepts_array_output_with_relative_filename(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,6 +146,7 @@ class ForkReleaseScaffoldTests(unittest.TestCase):
             self.assertFalse(payload["dry_run"])
             self.assertEqual(payload["tarball_path"], str(tarball_path.resolve()))
             self.assertEqual(payload["tarball_sha256"], hashlib.sha256(b"fork-release-tarball\n").hexdigest())
+            self.assertIn(str(tarball_path.resolve()), payload["github_release_command"])
             self.assertTrue((repo / "build-ran.txt").exists())
             self.assertTrue((repo / "artifacts" / "fork-release" / "release-notes.md").exists())
 
@@ -166,7 +174,181 @@ class ForkReleaseScaffoldTests(unittest.TestCase):
             self.assertFalse(payload["dry_run"])
             self.assertEqual(payload["tarball_path"], str(tarball_path.resolve()))
             self.assertEqual(payload["tarball_sha256"], hashlib.sha256(b"fork-release-tarball\n").hexdigest())
+            self.assertIn(str(tarball_path.resolve()), payload["github_release_command"])
             self.assertFalse((repo / "build-ran.txt").exists())
+
+    def test_build_version_override_dry_run_emits_contract_with_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "openclaw",
+                        "version": "1.2.3",
+                        "packageManager": "pnpm@10.0.0",
+                    }
+                )
+            )
+            proc = subprocess.run(
+                ["python3", str(BUILD_SCRIPT), "--repo", str(repo), "--dry-run", "--version-override", "2.0.0"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            payload = json.loads(proc.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["package_version"], "2.0.0")
+            self.assertEqual(payload["release_tag"], "v2.0.0")
+            self.assertEqual(payload["version_contract"]["version_override"], "2.0.0")
+            self.assertEqual(payload["version_contract"]["original_package_version"], "1.2.3")
+            self.assertEqual(payload["version_contract"]["tarball_filename"], "openclaw-2.0.0.tgz")
+            self.assertIn("openclaw-2.0.0.tgz", payload["github_release_command"])
+
+    def test_build_rejects_tag_version_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "openclaw",
+                        "version": "1.2.3",
+                        "packageManager": "pnpm@10.0.0",
+                    }
+                )
+            )
+            proc = subprocess.run(
+                ["python3", str(BUILD_SCRIPT), "--repo", str(repo), "--dry-run", "--release-tag", "v9.9.9"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload = json.loads(proc.stdout)
+            self.assertFalse(payload["ok"])
+            self.assertIn("version contract mismatch", payload["guidance"])
+            self.assertIn("error", payload["version_contract"])
+
+    def test_build_normalizes_bare_release_tag_to_canonical_v_tag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "openclaw",
+                        "version": "1.2.3",
+                        "packageManager": "pnpm@10.0.0",
+                    }
+                )
+            )
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(BUILD_SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--dry-run",
+                    "--release-tag",
+                    "1.2.3",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            payload = json.loads(proc.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["release_tag"], "v1.2.3")
+            self.assertIn("gh release create v1.2.3", payload["github_release_command"])
+            self.assertEqual(payload["version_contract"]["release_tag"], "v1.2.3")
+
+    def test_build_rejects_invalid_explicit_release_tag_without_override_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "openclaw",
+                        "version": "1.2.3",
+                        "packageManager": "pnpm@10.0.0",
+                    }
+                )
+            )
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(BUILD_SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--dry-run",
+                    "--release-tag",
+                    "not-a-tag",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload = json.loads(proc.stdout)
+            self.assertEqual(proc.returncode, 1)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["release_tag"], "not-a-tag")
+            self.assertIn("release tag is not a valid semver tag: not-a-tag", payload["guidance"])
+            self.assertIn("error", payload["version_contract"])
+
+    def test_build_rejects_invalid_explicit_release_tag_with_override_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "openclaw",
+                        "version": "1.2.3",
+                        "packageManager": "pnpm@10.0.0",
+                    }
+                )
+            )
+            proc = subprocess.run(
+                [
+                    "python3",
+                    str(BUILD_SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--dry-run",
+                    "--release-tag",
+                    "not-a-tag",
+                    "--version-override",
+                    "2026.4.21",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload = json.loads(proc.stdout)
+            self.assertEqual(proc.returncode, 1)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["release_tag"], "not-a-tag")
+            self.assertIn("release tag is not a valid semver tag: not-a-tag", payload["guidance"])
+            self.assertIn("error", payload["version_contract"])
+
+    def test_build_version_override_allows_tag_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "openclaw",
+                        "version": "1.2.3",
+                        "packageManager": "pnpm@10.0.0",
+                    }
+                )
+            )
+            proc = subprocess.run(
+                ["python3", str(BUILD_SCRIPT), "--repo", str(repo), "--dry-run", "--release-tag", "v9.9.9", "--version-override", "9.9.9"],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            payload = json.loads(proc.stdout)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["package_version"], "9.9.9")
+            self.assertEqual(payload["version_contract"]["tarball_filename"], "openclaw-9.9.9.tgz")
 
     def test_sync_dry_run_plans_merge(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

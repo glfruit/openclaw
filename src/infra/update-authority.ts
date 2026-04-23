@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { deriveTagFromVersion, deriveTarballName, stripVPrefix } from "./fork-version-contract.js";
 import { parseSemver } from "./runtime-guard.js";
 
 export type UpdateReleaseSource = "upstream" | "fork";
@@ -58,7 +59,7 @@ export function normalizeReleaseVersionTarget(value: string): string | null {
   if (!trimmed) {
     return null;
   }
-  const cleaned = trimmed.startsWith("v") ? trimmed.slice(1) : trimmed;
+  const cleaned = stripVPrefix(trimmed);
   return parseSemver(cleaned) ? cleaned : null;
 }
 
@@ -108,5 +109,7 @@ export function buildForkReleaseAssetUrl(params: {
       `Fork release installs require an exact version tag (got ${params.version.trim() || "<empty>"}).`,
     );
   }
-  return `https://github.com/${params.authority.githubSlug}/releases/download/v${version}/${packageName}-${version}.tgz`;
+  const releaseTag = deriveTagFromVersion(version);
+  const tarballFilename = deriveTarballName(packageName, version);
+  return `https://github.com/${params.authority.githubSlug}/releases/download/${releaseTag}/${tarballFilename}`;
 }
