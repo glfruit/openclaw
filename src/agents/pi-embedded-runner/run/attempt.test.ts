@@ -76,6 +76,7 @@ describe("resolvePromptBuildHookResult", () => {
       hookCtx: {},
       hookRunner,
       legacyBeforeAgentStartResult: { prependContext: "from-cache", systemPrompt: "legacy-system" },
+      availableToolNames: ["read"],
     });
 
     expect(hookRunner.runBeforeAgentStart).not.toHaveBeenCalled();
@@ -95,10 +96,14 @@ describe("resolvePromptBuildHookResult", () => {
       messages,
       hookCtx: {},
       hookRunner,
+      availableToolNames: ["read", "write"],
     });
 
     expect(hookRunner.runBeforeAgentStart).toHaveBeenCalledTimes(1);
-    expect(hookRunner.runBeforeAgentStart).toHaveBeenCalledWith({ prompt: "hello", messages }, {});
+    expect(hookRunner.runBeforeAgentStart).toHaveBeenCalledWith(
+      { prompt: "hello", messages, availableToolNames: ["read", "write"] },
+      {},
+    );
     expect(result.prependContext).toBe("from-hook");
   });
 
@@ -122,8 +127,13 @@ describe("resolvePromptBuildHookResult", () => {
       messages: [],
       hookCtx: {},
       hookRunner,
+      availableToolNames: ["read"],
     });
 
+    expect(hookRunner.runBeforePromptBuild).toHaveBeenCalledWith(
+      { prompt: "hello", messages: [], availableToolNames: ["read"] },
+      {},
+    );
     expect(result.prependContext).toBe("prompt context\n\nlegacy context");
     expect(result.prependSystemContext).toBe("prompt prepend\n\nlegacy prepend");
     expect(result.appendSystemContext).toBe("prompt append\n\nlegacy append");
@@ -1725,9 +1735,11 @@ describe("wrapStreamFnSanitizeMalformedToolCalls", () => {
     );
 
     const wrapped = wrapStreamFnSanitizeMalformedToolCalls(baseFn as never, new Set(["read"]));
-    const stream = wrapped({ api: "google-gemini" } as never, { messages } as never, {} as never) as
-      | FakeWrappedStream
-      | Promise<FakeWrappedStream>;
+    const stream = wrapped(
+      { api: "google-gemini" } as never,
+      { messages } as never,
+      {} as never,
+    ) as FakeWrappedStream | Promise<FakeWrappedStream>;
     await Promise.resolve(stream);
 
     expect(baseFn).toHaveBeenCalledTimes(1);

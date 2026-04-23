@@ -1739,6 +1739,7 @@ export async function runEmbeddedAttempt(
           hookCtx,
           hookRunner,
           legacyBeforeAgentStartResult: params.legacyBeforeAgentStartResult,
+          availableToolNames: [...allowedToolNames].toSorted(),
         });
         {
           if (hookResult?.prependContext) {

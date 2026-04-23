@@ -78,7 +78,10 @@ describe("model override pipeline wiring", () => {
 
   async function runPromptBuildWithMessages(messages: unknown[]) {
     const runner = createHookRunner(registry);
-    return await runner.runBeforePromptBuild({ prompt: "test", messages }, stubCtx);
+    return await runner.runBeforePromptBuild(
+      { prompt: "test", messages, availableToolNames: ["read", "write"] },
+      stubCtx,
+    );
   }
 
   async function expectBeforeModelResolve(params: {
@@ -141,6 +144,10 @@ describe("model override pipeline wiring", () => {
     const result = await runPromptBuildWithMessages(params.messages);
 
     expect(handlerSpy).toHaveBeenCalledTimes(1);
+    expect(handlerSpy).toHaveBeenCalledWith(
+      { prompt: "test", messages: params.messages, availableToolNames: ["read", "write"] },
+      stubCtx,
+    );
     if (!params.legacyPrependContext) {
       expect(result?.prependContext).toBe(params.expectedPrependContext);
       return result;
@@ -148,7 +155,7 @@ describe("model override pipeline wiring", () => {
 
     const runner = createHookRunner(registry);
     const legacy = await runner.runBeforeAgentStart(
-      { prompt: "test", messages: params.messages },
+      { prompt: "test", messages: params.messages, availableToolNames: ["read", "write"] },
       stubCtx,
     );
     const prependContext = joinPresentTextSegments([

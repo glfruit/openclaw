@@ -16,6 +16,8 @@ export type PluginHookBeforePromptBuildEvent = {
   prompt: string;
   /** Session messages prepared for this run. */
   messages: unknown[];
+  /** Resolved/effective tool names available for this run after policy filtering. */
+  availableToolNames?: string[];
 };
 
 export type PluginHookBeforePromptBuildResult = {
@@ -54,6 +56,8 @@ export type PluginHookBeforeAgentStartEvent = {
   prompt: string;
   /** Optional because legacy hook can run in pre-session phase. */
   messages?: unknown[];
+  /** Optional because legacy hook can run before tool resolution in pre-session phase. */
+  availableToolNames?: string[];
 };
 
 export type PluginHookBeforeAgentStartResult = PluginHookBeforePromptBuildResult &

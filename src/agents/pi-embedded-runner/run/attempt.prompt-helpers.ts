@@ -23,11 +23,11 @@ import type { EmbeddedRunAttemptParams } from "./types.js";
 export type PromptBuildHookRunner = {
   hasHooks: (hookName: "before_prompt_build" | "before_agent_start") => boolean;
   runBeforePromptBuild: (
-    event: { prompt: string; messages: unknown[] },
+    event: { prompt: string; messages: unknown[]; availableToolNames?: string[] },
     ctx: PluginHookAgentContext,
   ) => Promise<PluginHookBeforePromptBuildResult | undefined>;
   runBeforeAgentStart: (
-    event: { prompt: string; messages: unknown[] },
+    event: { prompt: string; messages: unknown[]; availableToolNames?: string[] },
     ctx: PluginHookAgentContext,
   ) => Promise<PluginHookBeforeAgentStartResult | undefined>;
 };
@@ -38,6 +38,7 @@ export async function resolvePromptBuildHookResult(params: {
   hookCtx: PluginHookAgentContext;
   hookRunner?: PromptBuildHookRunner | null;
   legacyBeforeAgentStartResult?: PluginHookBeforeAgentStartResult;
+  availableToolNames?: string[];
 }): Promise<PluginHookBeforePromptBuildResult> {
   const promptBuildResult = params.hookRunner?.hasHooks("before_prompt_build")
     ? await params.hookRunner
@@ -45,6 +46,7 @@ export async function resolvePromptBuildHookResult(params: {
           {
             prompt: params.prompt,
             messages: params.messages,
+            availableToolNames: params.availableToolNames,
           },
           params.hookCtx,
         )
@@ -61,6 +63,7 @@ export async function resolvePromptBuildHookResult(params: {
             {
               prompt: params.prompt,
               messages: params.messages,
+              availableToolNames: params.availableToolNames,
             },
             params.hookCtx,
           )
@@ -255,13 +258,13 @@ export function buildAfterTurnRuntimeContext(params: {
       ownerNumbers: params.attempt.ownerNumbers,
     }),
     ...(typeof params.tokenBudget === "number" &&
-      Number.isFinite(params.tokenBudget) &&
-      params.tokenBudget > 0
+    Number.isFinite(params.tokenBudget) &&
+    params.tokenBudget > 0
       ? { tokenBudget: Math.floor(params.tokenBudget) }
       : {}),
     ...(typeof params.currentTokenCount === "number" &&
-      Number.isFinite(params.currentTokenCount) &&
-      params.currentTokenCount > 0
+    Number.isFinite(params.currentTokenCount) &&
+    params.currentTokenCount > 0
       ? { currentTokenCount: Math.floor(params.currentTokenCount) }
       : {}),
     ...(params.promptCache ? { promptCache: params.promptCache } : {}),
