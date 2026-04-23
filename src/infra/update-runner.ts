@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { readConfigFileSnapshot } from "../config/config.js";
 import { type CommandOptions, runCommandWithTimeout } from "../process/exec.js";
 import {
   resolveControlUiDistIndexHealth,
@@ -10,6 +11,7 @@ import { readPackageName, readPackageVersion } from "./package-json.js";
 import { normalizePackageTagInput } from "./package-tag.js";
 import { trimLogTail } from "./restart-sentinel.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
+import { resolveUpdateAuthority } from "./update-authority.js";
 import {
   channelToNpmTag,
   DEFAULT_PACKAGE_CHANNEL,
@@ -18,8 +20,9 @@ import {
   isStableTag,
   type UpdateChannel,
 } from "./update-channels.js";
-import { compareSemverStrings } from "./update-check.js";
+import { compareSemverStrings, fetchNpmTagVersion } from "./update-check.js";
 import {
+  canResolveRegistryVersionForPackageTarget,
   collectInstalledGlobalPackageErrors,
   cleanupGlobalRenameDirs,
   createGlobalInstallEnv,
@@ -1119,11 +1122,36 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
     const tag = normalizeTag(opts.tag ?? channelToNpmTag(channel));
     const steps: UpdateStepResult[] = [];
     const globalInstallEnv = await createGlobalInstallEnv();
-    const spec = resolveGlobalInstallSpec({
-      packageName,
-      tag,
+    const configSnapshot = await readConfigFileSnapshot().catch(() => null);
+    const authority = resolveUpdateAuthority({
       env: globalInstallEnv,
+      config: configSnapshot?.valid ? configSnapshot.config : undefined,
     });
+    let resolvedVersion: string | null = null;
+    if (authority.releaseSource === "fork" && canResolveRegistryVersionForPackageTarget(tag)) {
+      const tagResult = await fetchNpmTagVersion({ tag, timeoutMs });
+      resolvedVersion = tagResult.version;
+    }
+    let spec: string;
+    try {
+      spec = resolveGlobalInstallSpec({
+        packageName,
+        tag,
+        env: globalInstallEnv,
+        authority,
+        resolvedVersion,
+      });
+    } catch (error) {
+      return {
+        status: "error",
+        mode: globalManager,
+        root: pkgRoot,
+        reason: String(error),
+        before: { version: beforeVersion },
+        steps,
+        durationMs: Date.now() - startedAt,
+      };
+    }
     const updateStep = await runStep({
       runCommand,
       name: "global update",
@@ -1169,6 +1197,7 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
     const verificationErrors = await collectInstalledGlobalPackageErrors({
       packageRoot: verifiedPackageRoot,
       expectedVersion,
+      authority,
     });
     if (verificationErrors.length > 0) {
       steps.push({

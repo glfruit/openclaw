@@ -10,6 +10,7 @@ import {
   PACKAGE_DIST_INVENTORY_RELATIVE_PATH,
   writePackageDistInventory,
 } from "./package-dist-inventory.js";
+import { resolveUpdateAuthority } from "./update-authority.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   collectInstalledGlobalPackageErrors,
@@ -94,6 +95,30 @@ describe("update global helpers", () => {
         tag: "https://example.com/openclaw-main.tgz",
       }),
     ).toBe("https://example.com/openclaw-main.tgz");
+  });
+
+  it("builds fork release tarball specs from configured authority", () => {
+    const authority = resolveUpdateAuthority({
+      config: {
+        update: {
+          authority: {
+            repoUrl: "https://github.com/glfruit/openclaw.git",
+            releaseSource: "fork",
+          },
+        },
+      },
+    });
+
+    expect(
+      resolveGlobalInstallSpec({
+        packageName: "openclaw",
+        tag: "latest",
+        resolvedVersion: "2026.4.23",
+        authority,
+      }),
+    ).toBe(
+      "https://github.com/glfruit/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz",
+    );
   });
 
   it("defaults corepack download prompts off for global install env", async () => {
@@ -566,5 +591,128 @@ describe("update global helpers", () => {
         await expect(collectInstalledGlobalPackageErrors({ packageRoot })).resolves.toEqual([]);
       },
     );
+  });
+
+  it("accepts installed provenance that matches the configured fork authority", async () => {
+    await withTempDir({ prefix: "openclaw-update-global-fork-source-ok-" }, async (packageRoot) => {
+      await fs.writeFile(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "openclaw",
+          version: "1.0.0",
+          _resolved:
+            "https://github.com/glfruit/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz",
+        }),
+        "utf-8",
+      );
+      for (const relativePath of NPM_UPDATE_COMPAT_SIDECAR_PATHS) {
+        const absolutePath = path.join(packageRoot, relativePath);
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.writeFile(absolutePath, "export {};\n", "utf-8");
+      }
+
+      await expect(
+        collectInstalledGlobalPackageErrors({
+          packageRoot,
+          authority: resolveUpdateAuthority({
+            config: {
+              update: {
+                authority: {
+                  repoUrl: "https://github.com/glfruit/openclaw.git",
+                  releaseSource: "fork",
+                },
+              },
+            },
+          }),
+        }),
+      ).resolves.toEqual([]);
+    });
+  });
+
+  it("rejects installed provenance that does not match the configured fork authority", async () => {
+    await withTempDir(
+      { prefix: "openclaw-update-global-fork-source-mismatch-" },
+      async (packageRoot) => {
+        await fs.writeFile(
+          path.join(packageRoot, "package.json"),
+          JSON.stringify({
+            name: "openclaw",
+            version: "1.0.0",
+            _resolved:
+              "https://github.com/openclaw/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz",
+          }),
+          "utf-8",
+        );
+        for (const relativePath of NPM_UPDATE_COMPAT_SIDECAR_PATHS) {
+          const absolutePath = path.join(packageRoot, relativePath);
+          await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+          await fs.writeFile(absolutePath, "export {};\n", "utf-8");
+        }
+
+        await expect(
+          collectInstalledGlobalPackageErrors({
+            packageRoot,
+            authority: resolveUpdateAuthority({
+              config: {
+                update: {
+                  authority: {
+                    repoUrl: "https://github.com/glfruit/openclaw.git",
+                    releaseSource: "fork",
+                  },
+                },
+              },
+            }),
+          }),
+        ).resolves.toContain(
+          "installed package provenance does not match configured fork authority glfruit/openclaw",
+        );
+      },
+    );
+  });
+
+  describe("resolveUpdateAuthority precedence", () => {
+    it("env OPENCLAW_UPDATE_REPO_URL overrides config repoUrl", () => {
+      const authority = resolveUpdateAuthority({
+        env: { OPENCLAW_UPDATE_REPO_URL: "https://github.com/envuser/openclaw.git" },
+        config: {
+          update: {
+            authority: {
+              repoUrl: "https://github.com/configuser/openclaw.git",
+            },
+          },
+        },
+      });
+      expect(authority.repoUrl).toBe("https://github.com/envuser/openclaw.git");
+    });
+
+    it("env OPENCLAW_UPDATE_RELEASE_SOURCE overrides config releaseSource", () => {
+      const authority = resolveUpdateAuthority({
+        env: { OPENCLAW_UPDATE_RELEASE_SOURCE: "fork" },
+        config: {
+          update: {
+            authority: {
+              releaseSource: "upstream",
+            },
+          },
+        },
+      });
+      expect(authority.releaseSource).toBe("fork");
+    });
+
+    it("config is used when env vars are absent", () => {
+      const authority = resolveUpdateAuthority({
+        env: {},
+        config: {
+          update: {
+            authority: {
+              repoUrl: "https://github.com/configuser/openclaw.git",
+              releaseSource: "fork",
+            },
+          },
+        },
+      });
+      expect(authority.repoUrl).toBe("https://github.com/configuser/openclaw.git");
+      expect(authority.releaseSource).toBe("fork");
+    });
   });
 });

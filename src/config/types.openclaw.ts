@@ -67,6 +67,13 @@ export type OpenClawConfig = {
   update?: {
     /** Update channel for git + npm installs ("stable", "beta", or "dev"). */
     channel?: "stable" | "beta" | "dev";
+    /** Update authority overrides for fork-managed release pipelines. */
+    authority?: {
+      /** Git clone/bootstrap repo URL. Falls back to the official upstream repo. */
+      repoUrl?: string;
+      /** Release artifact source for package installs. */
+      releaseSource?: "upstream" | "fork";
+    };
     /** Check for updates on gateway start (npm installs only). */
     checkOnStart?: boolean;
     /** Core auto-update policy for package installs. */

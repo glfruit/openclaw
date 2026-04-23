@@ -340,6 +340,13 @@ export const OpenClawSchema = z
     update: z
       .object({
         channel: z.union([z.literal("stable"), z.literal("beta"), z.literal("dev")]).optional(),
+        authority: z
+          .object({
+            repoUrl: z.string().optional(),
+            releaseSource: z.union([z.literal("upstream"), z.literal("fork")]).optional(),
+          })
+          .strict()
+          .optional(),
         checkOnStart: z.boolean().optional(),
         auto: z
           .object({

@@ -54,6 +54,12 @@ export const FIELD_HELP: Record<string, string> = {
   update:
     "Update-channel and startup-check behavior for keeping OpenClaw runtime versions current. Use conservative channels in production and more experimental channels only in controlled environments.",
   "update.channel": 'Update channel for git + npm installs ("stable", "beta", or "dev").',
+  "update.authority":
+    "Fork-update authority overrides for clone/bootstrap repo and package-release source selection.",
+  "update.authority.repoUrl":
+    "Override the authoritative GitHub repo URL used for clone/bootstrap and fork release provenance.",
+  "update.authority.releaseSource":
+    'Select package install release source: "upstream" (default npm/upstream behavior) or "fork" (GitHub Releases from the configured authority repo).',
   "update.checkOnStart": "Check for npm updates when the gateway starts (default: true).",
   "update.auto.enabled": "Enable background auto-update for package installs (default: false).",
   "update.auto.stableDelayHours":

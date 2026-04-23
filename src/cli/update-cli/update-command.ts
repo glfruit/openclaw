@@ -14,9 +14,11 @@ import {
 } from "../../config/config.js";
 import { formatConfigIssueLines } from "../../config/issue-format.js";
 import { asResolvedSourceConfig, asRuntimeConfig } from "../../config/materialize.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
 import { resolveGatewayService } from "../../daemon/service.js";
 import { nodeVersionSatisfiesEngine } from "../../infra/runtime-guard.js";
+import { resolveUpdateAuthority } from "../../infra/update-authority.js";
 import {
   channelToNpmTag,
   DEFAULT_GIT_CHANNEL,
@@ -393,9 +395,11 @@ async function runPackageInstallUpdate(params: {
   root: string;
   installKind: "git" | "package" | "unknown";
   tag: string;
+  resolvedVersion?: string | null;
   timeoutMs: number;
   startedAt: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
+  config?: OpenClawConfig | null;
 }): Promise<UpdateRunResult> {
   const manager = await resolveGlobalManager({
     root: params.root,
@@ -414,11 +418,27 @@ async function runPackageInstallUpdate(params: {
   const packageName =
     (pkgRoot ? await readPackageName(pkgRoot) : await readPackageName(params.root)) ??
     DEFAULT_PACKAGE_NAME;
-  const installSpec = resolveGlobalInstallSpec({
-    packageName,
-    tag: params.tag,
-    env: installEnv,
-  });
+  const authority = resolveUpdateAuthority({ env: installEnv, config: params.config });
+  let installSpec: string;
+  try {
+    installSpec = resolveGlobalInstallSpec({
+      packageName,
+      tag: params.tag,
+      env: installEnv,
+      authority,
+      resolvedVersion: params.resolvedVersion,
+    });
+  } catch (error) {
+    return {
+      status: "error",
+      mode: manager,
+      root: pkgRoot ?? params.root,
+      reason: String(error),
+      before: { version: pkgRoot ? await readPackageVersion(pkgRoot) : null },
+      steps: [],
+      durationMs: Date.now() - params.startedAt,
+    };
+  }
 
   const beforeVersion = pkgRoot ? await readPackageVersion(pkgRoot) : null;
   if (pkgRoot) {
@@ -453,6 +473,7 @@ async function runPackageInstallUpdate(params: {
     const verificationErrors = await collectInstalledGlobalPackageErrors({
       packageRoot: verifiedPackageRoot,
       expectedVersion,
+      authority,
     });
     if (verificationErrors.length > 0) {
       steps.push({
@@ -502,6 +523,7 @@ async function runGitUpdate(params: {
   showProgress: boolean;
   opts: UpdateCommandOptions;
   stop: () => void;
+  config?: OpenClawConfig | null;
 }): Promise<UpdateRunResult> {
   const updateRoot = params.switchToGit ? resolveGitInstallDir() : params.root;
   const effectiveTimeout = params.timeoutMs ?? 20 * 60_000;
@@ -513,6 +535,7 @@ async function runGitUpdate(params: {
         env: installEnv,
         timeoutMs: effectiveTimeout,
         progress: params.progress,
+        config: params.config,
       })
     : null;
 
@@ -979,6 +1002,8 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
       packageName: DEFAULT_PACKAGE_NAME,
       tag,
       env: process.env,
+      authority: resolveUpdateAuthority({ env: process.env, config: configSnapshot.config }),
+      resolvedVersion: targetVersion,
     });
   }
 
@@ -1141,9 +1166,11 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
           root,
           installKind,
           tag,
+          resolvedVersion: targetVersion,
           timeoutMs: timeoutMs ?? 20 * 60_000,
           startedAt,
           progress,
+          config: configSnapshot.config,
         })
       : await runGitUpdate({
           root,
@@ -1157,6 +1184,7 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
           showProgress,
           opts,
           stop,
+          config: configSnapshot.config,
         });
 
   stop();

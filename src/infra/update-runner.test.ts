@@ -8,6 +8,13 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { pathExists } from "../utils.js";
 import { writePackageDistInventory } from "./package-dist-inventory.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
+
+const readConfigFileSnapshotMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../config/config.js", () => ({
+  readConfigFileSnapshot: (...args: unknown[]) => readConfigFileSnapshotMock(...args),
+}));
+
 import { runGatewayUpdate } from "./update-runner.js";
 
 type CommandResponse = { stdout?: string; stderr?: string; code?: number | null };
@@ -47,6 +54,8 @@ describe("runGatewayUpdate", () => {
   });
 
   beforeEach(async () => {
+    readConfigFileSnapshotMock.mockReset();
+    readConfigFileSnapshotMock.mockResolvedValue({ valid: false, config: {} });
     tempDir = await fixtureRootTracker.make("case");
     await fs.writeFile(path.join(tempDir, "openclaw.mjs"), "export {};\n", "utf-8");
   });
@@ -1080,6 +1089,101 @@ describe("runGatewayUpdate", () => {
     );
   });
 
+  it("updates global npm installs from fork release tarballs when configured", async () => {
+    readConfigFileSnapshotMock.mockResolvedValue({
+      valid: true,
+      config: {
+        update: {
+          authority: {
+            repoUrl: "https://github.com/glfruit/openclaw.git",
+            releaseSource: "fork",
+          },
+        },
+      },
+    });
+
+    const { nodeModules, pkgRoot } = await createGlobalPackageFixture(tempDir);
+    const expectedInstallCommand =
+      "npm i -g https://github.com/glfruit/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz --no-fund --no-audit --loglevel=error";
+    const { calls, runCommand } = createGlobalInstallHarness({
+      pkgRoot,
+      npmRootOutput: nodeModules,
+      installCommand: expectedInstallCommand,
+      onInstall: async () => {
+        await fs.writeFile(
+          path.join(pkgRoot, "package.json"),
+          JSON.stringify({
+            name: "openclaw",
+            version: "2026.4.23",
+            _resolved:
+              "https://github.com/glfruit/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz",
+          }),
+          "utf-8",
+        );
+        await writeBundledRuntimeSidecars(pkgRoot);
+        await writePackageDistInventory(pkgRoot);
+      },
+    });
+
+    const result = await runWithCommand(runCommand, { cwd: pkgRoot, tag: "2026.4.23" });
+
+    expect(result.status).toBe("ok");
+    expect(result.mode).toBe("npm");
+    expect(calls).toContain(expectedInstallCommand);
+  });
+
+  it("resolves implicit tags to exact versions for fork authority in gateway updates", async () => {
+    readConfigFileSnapshotMock.mockResolvedValue({
+      valid: true,
+      config: {
+        update: {
+          authority: {
+            repoUrl: "https://github.com/glfruit/openclaw.git",
+            releaseSource: "fork",
+          },
+        },
+      },
+    });
+
+    const { nodeModules, pkgRoot } = await createGlobalPackageFixture(tempDir);
+    const expectedInstallCommand =
+      "npm i -g https://github.com/glfruit/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz --no-fund --no-audit --loglevel=error";
+    const { calls, runCommand } = createGlobalInstallHarness({
+      pkgRoot,
+      npmRootOutput: nodeModules,
+      installCommand: expectedInstallCommand,
+      onInstall: async () => {
+        await fs.writeFile(
+          path.join(pkgRoot, "package.json"),
+          JSON.stringify({
+            name: "openclaw",
+            version: "2026.4.23",
+            _resolved:
+              "https://github.com/glfruit/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz",
+          }),
+          "utf-8",
+        );
+        await writeBundledRuntimeSidecars(pkgRoot);
+        await writePackageDistInventory(pkgRoot);
+      },
+    });
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ version: "2026.4.23" }), { status: 200 }));
+    try {
+      const result = await runWithCommand(runCommand, { cwd: pkgRoot });
+      expect(result.status).toBe("ok");
+      expect(calls).toContain(expectedInstallCommand);
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("registry.npmjs.org/openclaw/latest"),
+        expect.anything(),
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("falls back to global npm update when git is missing from PATH", async () => {
     const { nodeModules, pkgRoot } = await createGlobalPackageFixture(tempDir);
     const { calls, runCommand } = createGlobalInstallHarness({
@@ -1191,6 +1295,50 @@ describe("runGatewayUpdate", () => {
     expect(result.reason).toBe("global install verify");
     expect(result.steps.at(-1)?.stderrTail).toContain(
       `missing packaged dist file ${WHATSAPP_LIGHT_RUNTIME_API}`,
+    );
+  });
+
+  it("fails fork release installs when installed provenance points at upstream", async () => {
+    readConfigFileSnapshotMock.mockResolvedValue({
+      valid: true,
+      config: {
+        update: {
+          authority: {
+            repoUrl: "https://github.com/glfruit/openclaw.git",
+            releaseSource: "fork",
+          },
+        },
+      },
+    });
+    const { nodeModules, pkgRoot } = await createGlobalPackageFixture(tempDir);
+    const expectedInstallCommand =
+      "npm i -g https://github.com/glfruit/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz --no-fund --no-audit --loglevel=error";
+    const { runCommand } = createGlobalInstallHarness({
+      pkgRoot,
+      npmRootOutput: nodeModules,
+      installCommand: expectedInstallCommand,
+      onInstall: async () => {
+        await fs.writeFile(
+          path.join(pkgRoot, "package.json"),
+          JSON.stringify({
+            name: "openclaw",
+            version: "1.0.0",
+            _resolved:
+              "https://github.com/openclaw/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz",
+          }),
+          "utf-8",
+        );
+        await writeBundledRuntimeSidecars(pkgRoot);
+        await writePackageDistInventory(pkgRoot);
+      },
+    });
+
+    const result = await runWithCommand(runCommand, { cwd: pkgRoot, tag: "2026.4.23" });
+
+    expect(result.status).toBe("error");
+    expect(result.reason).toBe("global install verify");
+    expect(result.steps.at(-1)?.stderrTail).toContain(
+      "installed package provenance does not match configured fork authority glfruit/openclaw",
     );
   });
 

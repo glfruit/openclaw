@@ -17,6 +17,11 @@ import {
 import { readPackageVersion } from "./package-json.js";
 import { applyPathPrepend } from "./path-prepend.js";
 import { parseSemver } from "./runtime-guard.js";
+import {
+  buildForkReleaseAssetUrl,
+  resolveUpdateAuthority,
+  type ResolvedUpdateAuthority,
+} from "./update-authority.js";
 
 export type GlobalInstallManager = "npm" | "pnpm" | "bun";
 
@@ -92,6 +97,7 @@ export function resolveExpectedInstalledVersionFromSpec(
 export async function collectInstalledGlobalPackageErrors(params: {
   packageRoot: string;
   expectedVersion?: string | null;
+  authority?: ResolvedUpdateAuthority | null;
 }): Promise<string[]> {
   const errors: string[] = [];
   const installedVersion = await readPackageVersion(params.packageRoot);
@@ -106,6 +112,9 @@ export async function collectInstalledGlobalPackageErrors(params: {
       installedVersion,
       expectedVersion: params.expectedVersion,
     })),
+  );
+  errors.push(
+    ...(await collectInstalledPackageProvenanceErrors(params.packageRoot, params.authority)),
   );
   return errors;
 }
@@ -122,6 +131,67 @@ function shouldRequirePackagedDistInventory(version: string | null | undefined):
     return parsed.minor > FIRST_PACKAGED_DIST_INVENTORY_VERSION.minor;
   }
   return parsed.patch >= FIRST_PACKAGED_DIST_INVENTORY_VERSION.patch;
+}
+
+async function collectInstalledPackageProvenanceErrors(
+  packageRoot: string,
+  authority?: ResolvedUpdateAuthority | null,
+): Promise<string[]> {
+  if (!authority || authority.releaseSource !== "fork") {
+    return [];
+  }
+  const packageJsonPath = path.join(packageRoot, "package.json");
+  let raw = "";
+  try {
+    raw = await fs.readFile(packageJsonPath, "utf-8");
+  } catch {
+    return [`missing installed package metadata ${packageJsonPath}`];
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return [`invalid installed package metadata ${packageJsonPath}`];
+  }
+
+  const expectedSignals = new Set<string>([
+    authority.repoUrl,
+    authority.githubSlug ?? "",
+    authority.githubOwner && authority.githubRepo
+      ? `https://github.com/${authority.githubOwner}/${authority.githubRepo}`
+      : "",
+    authority.githubOwner && authority.githubRepo
+      ? `github.com/${authority.githubOwner}/${authority.githubRepo}`
+      : "",
+  ]);
+  expectedSignals.delete("");
+
+  const repositoryUrl =
+    typeof parsed.repository === "string"
+      ? parsed.repository
+      : parsed.repository &&
+          typeof parsed.repository === "object" &&
+          typeof (parsed.repository as { url?: unknown }).url === "string"
+        ? String((parsed.repository as { url?: unknown }).url)
+        : "";
+  const provenanceFields = [
+    repositoryUrl,
+    typeof parsed._resolved === "string" ? parsed._resolved : "",
+    typeof parsed._from === "string" ? parsed._from : "",
+  ].filter(Boolean);
+
+  const combined = provenanceFields.join("\n");
+  const hasExpectedSignal = [...expectedSignals].some((signal) => combined.includes(signal));
+  if (hasExpectedSignal) {
+    return [];
+  }
+
+  return [
+    authority.githubSlug
+      ? `installed package provenance does not match configured fork authority ${authority.githubSlug}`
+      : `installed package provenance does not match configured fork authority ${authority.repoUrl}`,
+  ];
 }
 
 async function collectInstalledPackageDistErrors(params: {
@@ -308,6 +378,8 @@ export function resolveGlobalInstallSpec(params: {
   packageName: string;
   tag: string;
   env?: NodeJS.ProcessEnv;
+  authority?: ResolvedUpdateAuthority | null;
+  resolvedVersion?: string | null;
 }): string {
   const override =
     params.env?.OPENCLAW_UPDATE_PACKAGE_SPEC?.trim() ||
@@ -321,6 +393,15 @@ export function resolveGlobalInstallSpec(params: {
   }
   if (isExplicitPackageInstallSpec(target)) {
     return target;
+  }
+  const authority = params.authority ?? resolveUpdateAuthority({ env: params.env });
+  if (authority.releaseSource === "fork") {
+    const version = params.resolvedVersion?.trim() || target;
+    return buildForkReleaseAssetUrl({
+      authority,
+      packageName: params.packageName,
+      version,
+    });
   }
   return `${params.packageName}@${target}`;
 }

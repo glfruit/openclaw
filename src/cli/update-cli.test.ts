@@ -196,7 +196,7 @@ const { doctorCommand } = await import("../commands/doctor.js");
 const { defaultRuntime } = await import("../runtime.js");
 const { updateCommand, updateStatusCommand, updateWizardCommand } = await import("./update-cli.js");
 const updateCliShared = await import("./update-cli/shared.js");
-const { resolveGitInstallDir } = updateCliShared;
+const { resolveGitCloneRepoUrl, resolveGitInstallDir } = updateCliShared;
 
 type UpdateCliScenario = {
   name: string;
@@ -972,6 +972,26 @@ describe("update-cli", () => {
       expectedSpec: "github:openclaw/openclaw#main",
     },
     {
+      name: "fork release authority from config",
+      run: async () => {
+        mockPackageInstallStatus(createCaseDir("openclaw-update"));
+        vi.mocked(readConfigFileSnapshot).mockResolvedValue({
+          ...baseSnapshot,
+          config: {
+            update: {
+              authority: {
+                repoUrl: "https://github.com/glfruit/openclaw.git",
+                releaseSource: "fork",
+              },
+            },
+          } as OpenClawConfig,
+        });
+        await updateCommand({ yes: true, tag: "2026.4.23" });
+      },
+      expectedSpec:
+        "https://github.com/glfruit/openclaw/releases/download/v2026.4.23/openclaw-2026.4.23.tgz",
+    },
+    {
       name: "OPENCLAW_UPDATE_PACKAGE_SPEC override",
       run: async () => {
         mockPackageInstallStatus(createCaseDir("openclaw-update"));
@@ -1687,6 +1707,64 @@ describe("update-cli", () => {
       const call = vi.mocked(runGatewayUpdate).mock.calls[0]?.[0];
       expect(call?.channel).toBe("dev");
     });
+  });
+
+  it("uses OPENCLAW_UPDATE_REPO_URL when present for git checkout authority", async () => {
+    await withEnvAsync(
+      { OPENCLAW_UPDATE_REPO_URL: "https://github.com/glfruit/openclaw.git" },
+      async () => {
+        expect(resolveGitCloneRepoUrl()).toBe("https://github.com/glfruit/openclaw.git");
+      },
+    );
+  });
+
+  it("uses config repoUrl for git checkout authority when provided", async () => {
+    expect(
+      resolveGitCloneRepoUrl(undefined, {
+        update: {
+          authority: {
+            repoUrl: "https://github.com/glfruit/openclaw.git",
+          },
+        },
+      } as OpenClawConfig),
+    ).toBe("https://github.com/glfruit/openclaw.git");
+  });
+
+  it("ensureGitCheckout forwards config repoUrl to git clone", async () => {
+    const tempDir = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ensure-git-")),
+      "checkout",
+    );
+    await fs.mkdir(path.dirname(tempDir), { recursive: true });
+    vi.mocked(runCommandWithTimeout).mockResolvedValue({
+      stdout: "",
+      stderr: "",
+      code: 0,
+      signal: null,
+      killed: false,
+      termination: "exit",
+    });
+
+    const config = {
+      update: {
+        authority: {
+          repoUrl: "https://github.com/glfruit/openclaw.git",
+        },
+      },
+    } as OpenClawConfig;
+    const result = await updateCliShared.ensureGitCheckout({
+      dir: tempDir,
+      timeoutMs: 5000,
+      config,
+    });
+
+    expect(result).not.toBeNull();
+    expect(vi.mocked(runCommandWithTimeout)).toHaveBeenCalledWith(
+      expect.arrayContaining(["clone", "https://github.com/glfruit/openclaw.git"]),
+      expect.objectContaining({ env: expect.anything() }),
+    );
+
+    await fs.rm(tempDir, { recursive: true, force: true });
   });
 
   it("uses ~/openclaw as the default dev checkout directory", async () => {

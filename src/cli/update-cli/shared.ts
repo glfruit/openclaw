@@ -2,11 +2,13 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
 import { readPackageName, readPackageVersion } from "../../infra/package-json.js";
 import { normalizePackageTagInput } from "../../infra/package-tag.js";
 import { trimLogTail } from "../../infra/restart-sentinel.js";
 import { parseSemver } from "../../infra/runtime-guard.js";
+import { resolveUpdateAuthority } from "../../infra/update-authority.js";
 import { fetchNpmTagVersion } from "../../infra/update-check.js";
 import {
   canResolveRegistryVersionForPackageTarget,
@@ -54,7 +56,6 @@ export function parseTimeoutMsOrExit(timeout?: string): number | undefined | nul
   return timeoutMs;
 }
 
-const OPENCLAW_REPO_URL = "https://github.com/openclaw/openclaw.git";
 const MAX_LOG_CHARS = 8000;
 
 export const DEFAULT_PACKAGE_NAME = "openclaw";
@@ -111,6 +112,13 @@ export async function isEmptyDir(targetPath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export function resolveGitCloneRepoUrl(
+  env?: NodeJS.ProcessEnv,
+  config?: OpenClawConfig | null,
+): string {
+  return resolveUpdateAuthority({ env, config }).repoUrl;
 }
 
 export function resolveGitInstallDir(): string {
@@ -198,13 +206,15 @@ export async function ensureGitCheckout(params: {
   timeoutMs: number;
   progress?: UpdateStepProgress;
   env?: NodeJS.ProcessEnv;
+  config?: OpenClawConfig | null;
 }): Promise<UpdateStepResult | null> {
   const gitEnv = params.env ?? (await createGlobalInstallEnv());
+  const repoUrl = resolveGitCloneRepoUrl(gitEnv, params.config);
   const dirExists = await pathExists(params.dir);
   if (!dirExists) {
     return await runUpdateStep({
       name: "git clone",
-      argv: ["git", "clone", OPENCLAW_REPO_URL, params.dir],
+      argv: ["git", "clone", repoUrl, params.dir],
       env: gitEnv,
       timeoutMs: params.timeoutMs,
       progress: params.progress,
@@ -221,7 +231,7 @@ export async function ensureGitCheckout(params: {
 
     return await runUpdateStep({
       name: "git clone",
-      argv: ["git", "clone", OPENCLAW_REPO_URL, params.dir],
+      argv: ["git", "clone", repoUrl, params.dir],
       cwd: params.dir,
       env: gitEnv,
       timeoutMs: params.timeoutMs,
