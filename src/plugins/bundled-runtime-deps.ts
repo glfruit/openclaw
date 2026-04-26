@@ -327,6 +327,12 @@ function resolveBundledPluginPackageRoot(pluginRoot: string): string | null {
   return path.dirname(buildDir);
 }
 
+function isOwnedPackageWithManagedRuntimeDeps(packageRoot: string): boolean {
+  const packageJson = readJsonObject(path.join(packageRoot, "package.json"));
+  const metadata = packageJson?.openclawOwnedPackage;
+  return Boolean(metadata) && typeof metadata === "object" && !Array.isArray(metadata);
+}
+
 export function resolveBundledRuntimeDependencyPackageRoot(pluginRoot: string): string | null {
   return resolveBundledPluginPackageRoot(pluginRoot);
 }
@@ -952,12 +958,25 @@ export function resolveBundledRuntimeDependencyInstallRoot(
 ): string {
   const env = options.env ?? process.env;
   const externalRoot = resolveExternalBundledRuntimeDepsInstallRoot({ pluginRoot, env });
+  const packageRoot = resolveBundledPluginPackageRoot(pluginRoot);
+  const vendoredPackageRoot =
+    packageRoot &&
+    !isSourceCheckoutRoot(packageRoot) &&
+    isOwnedPackageWithManagedRuntimeDeps(packageRoot) &&
+    fs.existsSync(path.join(packageRoot, "node_modules"))
+      ? packageRoot
+      : null;
   if (
     options.forceExternal ||
     env.OPENCLAW_PLUGIN_STAGE_DIR?.trim() ||
-    env.STATE_DIRECTORY?.trim() ||
-    isPackagedBundledPluginRoot(pluginRoot)
+    env.STATE_DIRECTORY?.trim()
   ) {
+    return externalRoot;
+  }
+  if (vendoredPackageRoot) {
+    return vendoredPackageRoot;
+  }
+  if (isPackagedBundledPluginRoot(pluginRoot)) {
     return externalRoot;
   }
   return isWritableDirectory(pluginRoot) ? pluginRoot : externalRoot;
