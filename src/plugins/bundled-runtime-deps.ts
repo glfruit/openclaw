@@ -317,7 +317,14 @@ function resolveSourceCheckoutPackageRoot(pluginRoot: string): string | null {
 }
 
 function resolveBundledPluginPackageRoot(pluginRoot: string): string | null {
-  const extensionsDir = path.dirname(path.resolve(pluginRoot));
+  const resolvedPluginRoot = path.resolve(pluginRoot);
+  if (path.basename(resolvedPluginRoot) === "extensions") {
+    const buildDir = path.dirname(resolvedPluginRoot);
+    if (path.basename(buildDir) === "dist" || path.basename(buildDir) === "dist-runtime") {
+      return path.dirname(buildDir);
+    }
+  }
+  const extensionsDir = path.dirname(resolvedPluginRoot);
   const buildDir = path.dirname(extensionsDir);
   if (
     path.basename(extensionsDir) !== "extensions" ||
