@@ -55,6 +55,7 @@ const BUNDLED_RUNTIME_DEPS_LOCK_OWNER_FILE = "owner.json";
 const BUNDLED_RUNTIME_DEPS_LOCK_WAIT_MS = 100;
 const BUNDLED_RUNTIME_DEPS_LOCK_TIMEOUT_MS = 5 * 60_000;
 const BUNDLED_RUNTIME_DEPS_LOCK_STALE_MS = 10 * 60_000;
+const NODE_MODULES_REPLACE_RETRIES = 3;
 
 const registeredBundledRuntimeDepNodePaths = new Set<string>();
 
@@ -553,8 +554,22 @@ function replaceNodeModulesDir(targetDir: string, sourceDir: string): void {
   const stagedDir = path.join(tempDir, "node_modules");
   try {
     fs.cpSync(sourceDir, stagedDir, { recursive: true });
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.renameSync(stagedDir, targetDir);
+    let lastError: unknown;
+    for (let attempt = 0; attempt < NODE_MODULES_REPLACE_RETRIES; attempt += 1) {
+      try {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        fs.renameSync(stagedDir, targetDir);
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        sleepSync(BUNDLED_RUNTIME_DEPS_LOCK_WAIT_MS);
+      }
+    }
+    if (lastError) {
+      throw lastError;
+    }
   } finally {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
