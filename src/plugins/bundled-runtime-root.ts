@@ -87,7 +87,7 @@ function mirrorBundledPluginRuntimeRoot(params: {
     installRoot: params.installRoot,
     pluginRoot: params.pluginRoot,
   });
-  const mirrorRoot = path.join(mirrorParent, params.pluginId);
+  const mirrorRoot = path.join(mirrorParent, path.basename(params.pluginRoot));
   fs.mkdirSync(params.installRoot, { recursive: true });
   try {
     fs.chmodSync(params.installRoot, 0o755);
