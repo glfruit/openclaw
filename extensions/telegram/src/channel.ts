@@ -795,9 +795,7 @@ export const telegramPlugin = createChatChannelPlugin({
         return lines;
       },
       auditAccount: async ({ account, timeoutMs, probe, cfg }) => {
-        const groups =
-          cfg.channels?.telegram?.accounts?.[account.accountId]?.groups ??
-          cfg.channels?.telegram?.groups;
+        const groups = account.config.groups;
         const { groupIds, unresolvedGroups, hasWildcardUnmentionedGroups } =
           resolveTelegramAuditCollector()(groups);
         if (!groupIds.length && unresolvedGroups === 0 && !hasWildcardUnmentionedGroups) {
@@ -839,9 +837,7 @@ export const telegramPlugin = createChatChannelPlugin({
           : null;
         const configured =
           (configuredFromStatus ?? Boolean(account.token?.trim())) && !ownerAccountId;
-        const groups =
-          cfg.channels?.telegram?.accounts?.[account.accountId]?.groups ??
-          cfg.channels?.telegram?.groups;
+        const groups = account.config.groups;
         const allowUnmentionedGroups =
           groups?.["*"]?.requireMention === false ||
           Object.entries(groups ?? {}).some(

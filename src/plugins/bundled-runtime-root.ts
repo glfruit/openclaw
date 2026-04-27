@@ -240,7 +240,6 @@ function ensureOpenClawPluginSdkAlias(distRoot: string): void {
       "./plugin-sdk/*": "./plugin-sdk/*.js",
     },
   });
-  fs.rmSync(pluginSdkAliasDir, { recursive: true, force: true });
   fs.mkdirSync(pluginSdkAliasDir, { recursive: true });
   for (const entry of fs.readdirSync(pluginSdkDir, { withFileTypes: true })) {
     if (!entry.isFile() || path.extname(entry.name) !== ".js") {
