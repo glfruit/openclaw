@@ -318,11 +318,21 @@ function resolveSourceCheckoutPackageRoot(pluginRoot: string): string | null {
 
 function resolveBundledPluginPackageRoot(pluginRoot: string): string | null {
   const resolvedPluginRoot = path.resolve(pluginRoot);
-  if (path.basename(resolvedPluginRoot) === "extensions") {
-    const buildDir = path.dirname(resolvedPluginRoot);
+  let current = resolvedPluginRoot;
+  while (true) {
+    if (path.basename(current) !== "extensions") {
+      const next = path.dirname(current);
+      if (next === current) {
+        break;
+      }
+      current = next;
+      continue;
+    }
+    const buildDir = path.dirname(current);
     if (path.basename(buildDir) === "dist" || path.basename(buildDir) === "dist-runtime") {
       return path.dirname(buildDir);
     }
+    break;
   }
   const extensionsDir = path.dirname(resolvedPluginRoot);
   const buildDir = path.dirname(extensionsDir);
