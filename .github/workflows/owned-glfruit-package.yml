@@ -1,0 +1,121 @@
+name: Owned glfruit package
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: "Official OpenClaw source version, for example 2026.4.24"
+        required: true
+        type: string
+      owned_suffix:
+        description: "Owned suffix without leading hyphen, for example glfruit.9"
+        required: true
+        type: string
+      publish:
+        description: "Publish to GitHub Packages"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build and publish @glfruit/openclaw
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@glfruit"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.0 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Materialize owned package metadata
+        env:
+          UPSTREAM_VERSION: ${{ inputs.upstream_version }}
+          OWNED_SUFFIX: ${{ inputs.owned_suffix }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+          const childProcess = require("child_process");
+
+          const upstreamVersion = process.env.UPSTREAM_VERSION;
+          const ownedSuffix = process.env.OWNED_SUFFIX;
+          if (!/^\d{4}\.\d{1,2}\.\d{1,2}$/.test(upstreamVersion)) {
+            throw new Error(`Invalid upstream_version: ${upstreamVersion}`);
+          }
+          if (!/^glfruit\.\d+$/.test(ownedSuffix)) {
+            throw new Error(`Invalid owned_suffix: ${ownedSuffix}`);
+          }
+
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const ownedVersion = `${upstreamVersion}-${ownedSuffix}`;
+          pkg.name = "@glfruit/openclaw";
+          pkg.version = ownedVersion;
+          pkg.repository = { type: "git", url: "git+https://github.com/glfruit/openclaw.git" };
+          pkg.publishConfig = { registry: "https://npm.pkg.github.com", tag: "owned" };
+          pkg.files = Array.from(new Set([...(pkg.files || []), "owned-provenance.json"]));
+          fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+
+          const lockHash = childProcess
+            .execFileSync("shasum", ["-a", "256", "pnpm-lock.yaml"], { encoding: "utf8" })
+            .trim()
+            .split(/\s+/)[0];
+          const provenance = {
+            package_authority: "owned-fork-github-packages",
+            owned_package_name: "@glfruit/openclaw",
+            package_json_version: ownedVersion,
+            source_package_version: upstreamVersion,
+            source_repo: "https://github.com/glfruit/openclaw",
+            source_ref: process.env.GITHUB_REF_NAME,
+            source_head: process.env.GITHUB_SHA,
+            source_dirty: false,
+            dependency_lockfile_hash: lockHash,
+            build_host: "github-actions",
+            built_at: new Date().toISOString(),
+          };
+          fs.writeFileSync("owned-provenance.json", JSON.stringify(provenance, null, 2) + "\n");
+          NODE
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pack
+        id: pack
+        run: |
+          TARBALL="$(npm pack --json | node -e 'let s=""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => process.stdout.write(JSON.parse(s)[0].filename));')"
+          shasum -a 256 "$TARBALL" > "$TARBALL.sha256"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: owned-openclaw-package
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sha256
+            owned-provenance.json
+
+      - name: Publish to GitHub Packages
+        if: ${{ inputs.publish }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish "${{ steps.pack.outputs.tarball }}" --tag owned --registry=https://npm.pkg.github.com --no-audit --loglevel=error
