@@ -7,6 +7,7 @@ Telegraph style. Root rules only. Read scoped `AGENTS.md` before subtree work.
 - Repo: `https://github.com/openclaw/openclaw`
 - Replies: repo-root refs only: `extensions/telegram/src/index.ts:80`. No absolute paths, no `~/`.
 - Run docs list first: `pnpm docs:list` if available; read relevant docs only.
+- Owned-fork work: read `docs/owned/GOVERNANCE.md` plus the scoped owned docs before acting. Do not perform destructive git operations until repository health is verified.
 - High-confidence answers only when fixing/triaging: verify source, tests, shipped/current behavior, and dependency contracts before deciding.
 - Dependency-backed behavior: read upstream dependency docs/source/types first. Do not assume APIs, defaults, errors, timing, or runtime behavior.
 - Live-verify when feasible. Check env/`~/.profile` for keys before assuming live tests are blocked; keep secret output redacted.

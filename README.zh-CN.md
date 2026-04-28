@@ -17,29 +17,18 @@
 
 ## 为什么维护自己的版本 / Fork
 
-我们维护 owned fork 的目标不是伪装成上游官方版本，而是为自己的运行环境提供可控、可验证、可回滚的发行物。
+我们维护 owned fork 的目标不是伪装成上游官方版本，而是为本地运行环境提供可控、可验证、可回滚的发行物。
 
-- **运维可控**：先在本地构建并验证指定版本，再决定是否安装到任何环境。
-- **发布卫生**：仓库内保留 prepack / release guardrail，避免把不该进入 npm 包的运行时产物一起打进去。
-- **本地优先迭代**：文档、skills、patches、打包脚本和 bundled plugin 安装辅助可以一起演进，不必等待上游节奏。
-- **来源清晰**：fork 专属行为写在 README 中；通用概念继续链接到上游 OpenClaw 文档。
+## Owned fork 操作规范
 
-## 当前 owned package 信息
+Owned fork 工作以这些本地 runbook 为准：
 
-来自本 checkout 的 `package.json`：
+- [治理规范](docs/owned/GOVERNANCE.md)：分支模型、角色合规、功能流、review/QA/ship 门禁、文档归属和破坏性 git 操作保护。
+- [环境规范](docs/owned/ENVIRONMENT.md)：Node/pnpm 工作流、已安装 CLI 验证、仓库健康检查、artifact 期望，以及 git pack/delta 修复提醒。
+- [交接协议](docs/owned/HANDOFF.md)：scope、files、evidence、commands、commit refs、open questions、risks、next owner；没有证据不能说 done。
+- [发布 runbook](docs/owned/RELEASE.md)：从 `owned/main` 切 release branch、tarball-first 验证、build/install/restart/promotion 分离、本地分发证据、rollback 和 checksum 记录。
 
-- 包名：`openclaw`
-- 版本：`2026.4.25`
-- CLI：`openclaw` → `openclaw.mjs`
-- License：MIT
-- 主要打包内容：`README.md`、`README.zh-CN.md`、`docs/`、`skills/`、`patches/`、`dist/`、以及 bundled-plugin postinstall helpers。
-
-## 本 owned 版本的特点
-
-- **文档透明**：fork 专属说明直接放在 README 中，不隐藏在发布脚本里。
-- **CLI 包形态清楚**：npm 包通过 `openclaw.mjs` 暴露 `openclaw` 命令，并从 `dist/` 导出构建产物。
-- **Bundled extension 卫生**：包元数据排除 `dist/extensions/**/node_modules`，prepack / release check 会验证 bundled runtime dependency 的处理。
-- **无隐式生产动作**：构建或编辑文档不会自动全局安装、重启 Gateway，也不会修改生产路由。
+安全模型是 local-first：文档和打包工作不会隐式全局安装、重启 Gateway、切换生产路由、重写分支历史、修改 remotes、改变 package version 或运行时行为；除非这些动作被明确纳入 scope 并留下证据。
 
 ## 安装与快速开始
 

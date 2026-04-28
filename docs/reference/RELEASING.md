@@ -6,6 +6,8 @@ read_when:
   - Looking for version naming and cadence
 ---
 
+This policy is upstream-oriented for public OpenClaw releases. Owned local releases use the owned runbook at [Owned release runbook](/owned/RELEASE) and must not be treated as upstream official releases.
+
 OpenClaw has three public release lanes:
 
 - stable: tagged releases that publish to npm `beta` by default, or to npm `latest` when explicitly requested

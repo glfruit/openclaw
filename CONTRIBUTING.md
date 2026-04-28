@@ -2,11 +2,15 @@
 
 Welcome to the lobster tank! 🦞
 
+## Owned fork note
+
+This file describes upstream-facing external contributions to OpenClaw. Internal work on the owned fork follows [owned fork governance](docs/owned/GOVERNANCE.md), including branch rules, role handoffs, local release hygiene, and evidence requirements. Do not mix upstream PR expectations with the internal owned workflow.
+
 ## Quick Links
 
-- **GitHub:** https://github.com/openclaw/openclaw
+- **GitHub:** [openclaw/openclaw](https://github.com/openclaw/openclaw)
 - **Vision:** [`VISION.md`](VISION.md)
-- **Discord:** https://discord.gg/clawd
+- **Discord:** [discord.gg/clawd](https://discord.gg/clawd)
 - **X/Twitter:** [@steipete](https://x.com/steipete) / [@openclaw](https://x.com/openclaw)
 
 ## Maintainers
@@ -182,14 +186,14 @@ Check the [GitHub Issues](https://github.com/openclaw/openclaw/issues) for
 labels. If none are open, pick a small docs or bug issue and leave a quick comment saying
 you'd like to work on it.
 
-## Maintainers
+## Maintainer Applications
 
 We're selectively expanding the maintainer team.
 If you're an experienced contributor who wants to help shape OpenClaw's direction — whether through code, docs, or community — we'd like to hear from you.
 
 Being a maintainer is a responsibility, not an honorary title. We expect active, consistent involvement — triaging issues, reviewing PRs, and helping move the project forward.
 
-Still interested? Email contributing@openclaw.ai with:
+Still interested? Email [contributing@openclaw.ai](mailto:contributing@openclaw.ai) with:
 
 - Links to your PRs on OpenClaw (if you don't have any, start there first)
 - Links to open source projects you maintain or actively contribute to
@@ -213,7 +217,7 @@ We take security reports seriously. Report vulnerabilities directly to the repos
 - **ClawHub** — [openclaw/clawhub](https://github.com/openclaw/clawhub)
 - **Trust and threat model** — [openclaw/trust](https://github.com/openclaw/trust)
 
-For issues that don't fit a specific repo, or if you're unsure, email **security@openclaw.ai** and we'll route it.
+For issues that don't fit a specific repo, or if you're unsure, email **[security@openclaw.ai](mailto:security@openclaw.ai)** and we'll route it.
 
 ### Required in Reports
 
