@@ -718,7 +718,8 @@ function mirrorBundledPluginRuntimeRoot(params: {
         installRoot: params.installRoot,
         pluginRoot: params.pluginRoot,
       });
-      const mirrorRoot = path.join(mirrorParent, params.pluginId);
+      const mirrorDirName = path.basename(params.pluginRoot);
+      const mirrorRoot = path.join(mirrorParent, mirrorDirName);
       fs.mkdirSync(params.installRoot, { recursive: true });
       try {
         fs.chmodSync(params.installRoot, 0o755);
@@ -732,7 +733,7 @@ function mirrorBundledPluginRuntimeRoot(params: {
         // Best-effort only: the access check below will surface non-writable dirs.
       }
       fs.accessSync(mirrorParent, fs.constants.W_OK);
-      const tempDir = fs.mkdtempSync(path.join(mirrorParent, `.plugin-${params.pluginId}-`));
+      const tempDir = fs.mkdtempSync(path.join(mirrorParent, `.plugin-${mirrorDirName}-`));
       const stagedRoot = path.join(tempDir, "plugin");
       try {
         copyBundledPluginRuntimeRoot(params.pluginRoot, stagedRoot);

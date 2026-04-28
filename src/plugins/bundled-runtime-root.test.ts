@@ -118,4 +118,43 @@ describe("prepareBundledPluginRuntimeRoot", () => {
     expect(prepared.modulePath).toBe(path.join(prepared.pluginRoot, "index.js"));
     expect(fs.lstatSync(staleMirrorChunk).isSymbolicLink()).toBe(false);
   });
+
+  it("keeps runtime mirror under bundled directory name when manifest id differs", () => {
+    const packageRoot = makeTempRoot();
+    const stageDir = makeTempRoot();
+    const pluginRoot = path.join(packageRoot, "dist", "extensions", "kimi-coding");
+    const env = { ...process.env, OPENCLAW_PLUGIN_STAGE_DIR: stageDir };
+    fs.mkdirSync(pluginRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "openclaw", version: "2026.4.25", type: "module" }),
+      "utf8",
+    );
+    fs.writeFileSync(path.join(pluginRoot, "index.js"), `export default { id: "kimi" };\n`, "utf8");
+    fs.writeFileSync(
+      path.join(pluginRoot, "package.json"),
+      JSON.stringify(
+        {
+          name: "@openclaw/kimi-provider",
+          version: "1.0.0",
+          type: "module",
+          openclaw: { extensions: ["./index.js"] },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const installRoot = resolveBundledRuntimeDependencyInstallRoot(pluginRoot, { env });
+    const prepared = prepareBundledPluginRuntimeRoot({
+      pluginId: "kimi",
+      pluginRoot,
+      modulePath: path.join(pluginRoot, "index.js"),
+      env,
+    });
+
+    expect(prepared.pluginRoot).toBe(path.join(installRoot, "dist", "extensions", "kimi-coding"));
+    expect(fs.existsSync(path.join(installRoot, "dist", "extensions", "kimi"))).toBe(false);
+  });
 });
