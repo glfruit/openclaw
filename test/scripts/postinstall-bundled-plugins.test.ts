@@ -6,6 +6,7 @@ import {
   createBundledRuntimeDependencyInstallEnv,
   createNestedNpmInstallEnv,
   isDirectPostinstallInvocation,
+  pruneLegacyKimiDistAlias,
   pruneInstalledPackageDist,
   discoverBundledPluginRuntimeDeps,
   pruneBundledPluginSourceNodeModules,
@@ -437,6 +438,38 @@ describe("bundled plugin postinstall", () => {
         encoding: "utf8",
       }),
     ).resolves.toBe("export {};\n");
+  });
+
+  it("prunes legacy Kimi dist alias when canonical Kimi bundled plugin exists", async () => {
+    const packageRoot = await createTempDirAsync("openclaw-packaged-install-kimi-alias-");
+    const canonicalManifest = path.join(
+      packageRoot,
+      "dist",
+      "extensions",
+      "kimi-coding",
+      "openclaw.plugin.json",
+    );
+    const aliasManifest = path.join(
+      packageRoot,
+      "dist",
+      "extensions",
+      "kimi",
+      "openclaw.plugin.json",
+    );
+    await fs.mkdir(path.dirname(canonicalManifest), { recursive: true });
+    await fs.mkdir(path.dirname(aliasManifest), { recursive: true });
+    await fs.writeFile(canonicalManifest, JSON.stringify({ id: "kimi" }));
+    await fs.writeFile(aliasManifest, JSON.stringify({ id: "kimi" }));
+
+    expect(
+      pruneLegacyKimiDistAlias({
+        packageRoot,
+        log: { log: vi.fn(), warn: vi.fn() },
+      }),
+    ).toEqual(["dist/extensions/kimi"]);
+
+    await expect(fs.stat(canonicalManifest)).resolves.toBeTruthy();
+    await expect(fs.stat(aliasManifest)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps postinstall QA compat sidecars aligned with update verification metadata", async () => {

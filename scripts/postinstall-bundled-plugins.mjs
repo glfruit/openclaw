@@ -35,6 +35,8 @@ const DISABLE_POSTINSTALL_ENV = "OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL";
 const DISABLE_PLUGIN_REGISTRY_MIGRATION_ENV = "OPENCLAW_DISABLE_PLUGIN_REGISTRY_MIGRATION";
 const EAGER_BUNDLED_PLUGIN_DEPS_ENV = "OPENCLAW_EAGER_BUNDLED_PLUGIN_DEPS";
 const DIST_INVENTORY_PATH = "dist/postinstall-inventory.json";
+const LEGACY_KIMI_DIST_ALIAS_DIR = "dist/extensions/kimi";
+const CANONICAL_KIMI_DIST_DIR = "dist/extensions/kimi-coding";
 const LEGACY_QA_CHANNEL_DIR = ["qa", "channel"].join("-");
 const LEGACY_QA_LAB_DIR = ["qa", "lab"].join("-");
 const LEGACY_UPDATE_COMPAT_SIDECARS = [
@@ -350,6 +352,32 @@ export function restoreLegacyUpdaterCompatSidecars(params = {}) {
     log.log(`[postinstall] restored legacy updater compat sidecars: ${restored.join(", ")}`);
   }
   return restored;
+}
+
+export function pruneLegacyKimiDistAlias(params = {}) {
+  const packageRoot = params.packageRoot ?? DEFAULT_PACKAGE_ROOT;
+  const pathExists = params.existsSync ?? existsSync;
+  const removePath = params.rmSync ?? rmSync;
+  const pathLstat = params.lstatSync ?? lstatSync;
+  const pathRealpath = params.realpathSync ?? realpathSync;
+  const log = params.log ?? console;
+  const canonicalPath = join(packageRoot, CANONICAL_KIMI_DIST_DIR);
+  const aliasPath = join(packageRoot, LEGACY_KIMI_DIST_ALIAS_DIR);
+  if (!pathExists(canonicalPath) || !pathExists(aliasPath)) {
+    return [];
+  }
+  const aliasStats = pathLstat(aliasPath);
+  if (!aliasStats.isDirectory() || aliasStats.isSymbolicLink()) {
+    return [];
+  }
+  const safeAliasPath = assertSafeInstalledDistPath(LEGACY_KIMI_DIST_ALIAS_DIR, {
+    packageRoot,
+    distDirReal: pathRealpath(join(packageRoot, "dist")),
+    realpathSync: pathRealpath,
+  });
+  removePath(safeAliasPath, { recursive: true, force: true });
+  log.log?.(`[postinstall] pruned legacy Kimi bundled plugin alias: ${LEGACY_KIMI_DIST_ALIAS_DIR}`);
+  return [LEGACY_KIMI_DIST_ALIAS_DIR];
 }
 
 function dependencySentinelPath(depName) {
@@ -786,6 +814,14 @@ export function runBundledPluginPostinstall(params = {}) {
     existsSync: pathExists,
     readFileSync: params.readFileSync,
     readdirSync: params.readdirSync,
+    rmSync: params.rmSync,
+    log,
+  });
+  pruneLegacyKimiDistAlias({
+    packageRoot,
+    existsSync: pathExists,
+    lstatSync: params.lstatSync,
+    realpathSync: params.realpathSync,
     rmSync: params.rmSync,
     log,
   });
