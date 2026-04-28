@@ -368,6 +368,64 @@ describe("loadPluginManifestRegistry", () => {
     expect(warning?.message).toContain(path.join(configDir, "index.ts"));
   });
 
+  it("silently prefers canonical Kimi bundled plugin over historical dist alias", () => {
+    const rootDir = makeTempDir();
+    const extensionsDir = path.join(rootDir, "dist", "extensions");
+    const legacyDir = path.join(extensionsDir, "kimi");
+    const canonicalDir = path.join(extensionsDir, "kimi-coding");
+    const manifest = { id: "kimi", configSchema: { type: "object" } };
+    mkdirSafe(legacyDir);
+    mkdirSafe(canonicalDir);
+    writeManifest(legacyDir, manifest);
+    writeManifest(canonicalDir, manifest);
+
+    const registry = loadRegistry([
+      createPluginCandidate({
+        idHint: "kimi",
+        rootDir: legacyDir,
+        origin: "bundled",
+      }),
+      createPluginCandidate({
+        idHint: "kimi",
+        rootDir: canonicalDir,
+        origin: "bundled",
+      }),
+    ]);
+
+    expect(countDuplicateWarnings(registry)).toBe(0);
+    expect(registry.plugins).toHaveLength(1);
+    expect(registry.plugins[0]?.rootDir).toBe(canonicalDir);
+  });
+
+  it("keeps canonical Kimi bundled plugin when the historical alias is discovered later", () => {
+    const rootDir = makeTempDir();
+    const extensionsDir = path.join(rootDir, "dist", "extensions");
+    const legacyDir = path.join(extensionsDir, "kimi");
+    const canonicalDir = path.join(extensionsDir, "kimi-coding");
+    const manifest = { id: "kimi", configSchema: { type: "object" } };
+    mkdirSafe(legacyDir);
+    mkdirSafe(canonicalDir);
+    writeManifest(legacyDir, manifest);
+    writeManifest(canonicalDir, manifest);
+
+    const registry = loadRegistry([
+      createPluginCandidate({
+        idHint: "kimi",
+        rootDir: canonicalDir,
+        origin: "bundled",
+      }),
+      createPluginCandidate({
+        idHint: "kimi",
+        rootDir: legacyDir,
+        origin: "bundled",
+      }),
+    ]);
+
+    expect(countDuplicateWarnings(registry)).toBe(0);
+    expect(registry.plugins).toHaveLength(1);
+    expect(registry.plugins[0]?.rootDir).toBe(canonicalDir);
+  });
+
   it("reports explicit installed globals as the effective duplicate winner", () => {
     const bundledDir = makeTempDir();
     const globalDir = makeTempDir();

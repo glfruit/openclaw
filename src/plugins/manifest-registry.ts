@@ -95,6 +95,33 @@ const PLUGIN_ORIGIN_RANK: Readonly<Record<PluginOrigin, number>> = {
   bundled: 3,
 };
 
+const KIMI_LEGACY_BUNDLED_DIR = "kimi";
+const KIMI_CANONICAL_BUNDLED_DIR = "kimi-coding";
+
+function isHistoricalKimiBundledAliasDuplicate(params: {
+  pluginId: string;
+  existing: PluginCandidate;
+  candidate: PluginCandidate;
+}): boolean {
+  if (params.pluginId !== "kimi") {
+    return false;
+  }
+  if (params.existing.origin !== "bundled" || params.candidate.origin !== "bundled") {
+    return false;
+  }
+  const existingDir = path.basename(params.existing.rootDir);
+  const candidateDir = path.basename(params.candidate.rootDir);
+  const dirNames = new Set([existingDir, candidateDir]);
+  return dirNames.has(KIMI_LEGACY_BUNDLED_DIR) && dirNames.has(KIMI_CANONICAL_BUNDLED_DIR);
+}
+
+function isCanonicalKimiBundledCandidate(candidate: PluginCandidate): boolean {
+  return (
+    candidate.origin === "bundled" &&
+    path.basename(candidate.rootDir) === KIMI_CANONICAL_BUNDLED_DIR
+  );
+}
+
 export type PluginManifestRecord = {
   id: string;
   name?: string;
@@ -679,6 +706,21 @@ export function loadPluginManifestRegistry(
         // Prefer higher-precedence origins even if candidates are passed in
         // an unexpected order (config > workspace > global > bundled).
         if (PLUGIN_ORIGIN_RANK[candidate.origin] < PLUGIN_ORIGIN_RANK[existing.candidate.origin]) {
+          records[existing.recordIndex] = record;
+          seenIds.set(manifest.id, { candidate, recordIndex: existing.recordIndex });
+          pushManifestCompatibilityDiagnostics({ record, diagnostics });
+        }
+        continue;
+      }
+
+      if (
+        isHistoricalKimiBundledAliasDuplicate({
+          pluginId: manifest.id,
+          existing: existing.candidate,
+          candidate,
+        })
+      ) {
+        if (isCanonicalKimiBundledCandidate(candidate)) {
           records[existing.recordIndex] = record;
           seenIds.set(manifest.id, { candidate, recordIndex: existing.recordIndex });
           pushManifestCompatibilityDiagnostics({ record, diagnostics });
