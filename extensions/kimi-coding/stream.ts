@@ -31,6 +31,10 @@ type KimiThinkingLevel =
   | "adaptive"
   | "max";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function normalizeKimiThinkingType(value: unknown): KimiThinkingType | undefined {
   if (typeof value === "boolean") {
     return value ? "enabled" : "disabled";
@@ -66,6 +70,51 @@ export function resolveKimiThinkingType(params: {
     return "disabled";
   }
   return "enabled";
+}
+
+function isKimiK26PayloadModel(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = normalizeOptionalLowercaseString(value);
+  return normalized === "k2.6" || normalized === "kimi-k2.6";
+}
+
+function isToolCallLikeBlock(block: unknown): boolean {
+  if (!isRecord(block)) {
+    return false;
+  }
+  return ["toolCall", "tool_call", "toolUse", "tool_use"].includes(String(block.type));
+}
+
+function assistantMessageHasToolCalls(message: Record<string, unknown>): boolean {
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+    return true;
+  }
+  if (Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
+    return true;
+  }
+  return Array.isArray(message.content) && message.content.some(isToolCallLikeBlock);
+}
+
+function ensureKimiToolCallReplayReasoningContent(payloadObj: Record<string, unknown>): void {
+  const messages = payloadObj.messages;
+  if (!Array.isArray(messages)) {
+    return;
+  }
+
+  for (const message of messages) {
+    if (!isRecord(message) || message.role !== "assistant") {
+      continue;
+    }
+    if (!assistantMessageHasToolCalls(message)) {
+      continue;
+    }
+    if (typeof message.reasoning_content === "string") {
+      continue;
+    }
+    message.reasoning_content = "";
+  }
 }
 
 function stripTaggedToolCallCounter(value: string): string {
@@ -205,6 +254,12 @@ export function createKimiThinkingWrapper(
   return (model, context, options) =>
     streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
       payloadObj.thinking = { type: thinkingType };
+      if (thinkingType === "enabled" && isKimiK26PayloadModel(payloadObj.model)) {
+        (payloadObj.thinking as Record<string, unknown>).keep = "all";
+      }
+      if (thinkingType === "enabled") {
+        ensureKimiToolCallReplayReasoningContent(payloadObj);
+      }
       delete payloadObj.reasoning;
       delete payloadObj.reasoning_effort;
       delete payloadObj.reasoningEffort;

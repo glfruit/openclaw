@@ -331,4 +331,121 @@ describe("kimi tool-call markup wrapper", () => {
       thinking: { type: "enabled" },
     });
   });
+
+  it("adds blank reasoning_content to assistant tool-call replay messages when thinking is enabled", () => {
+    const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_read",
+              type: "function",
+              function: { name: "read", arguments: '{"path":"AGENTS.md"}' },
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: "plain text",
+        },
+      ],
+    });
+
+    const wrapped = createKimiThinkingWrapper(baseStreamFn, "enabled");
+    void wrapped(
+      {
+        api: "anthropic-messages",
+        provider: "kimi",
+        id: "k2.6",
+      } as Model<"anthropic-messages">,
+      { messages: [] } as Context,
+      {},
+    );
+
+    expect(getCapturedPayload()).toMatchObject({
+      messages: [
+        {
+          role: "assistant",
+          reasoning_content: "",
+        },
+        {
+          role: "assistant",
+          content: "plain text",
+        },
+      ],
+      thinking: { type: "enabled" },
+    });
+  });
+
+  it("keeps existing Kimi reasoning_content on assistant tool-call replay messages", () => {
+    const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
+      messages: [
+        {
+          role: "assistant",
+          reasoning_content: "Need the file first.",
+          content: [{ type: "toolCall", id: "call_read", name: "read", arguments: {} }],
+        },
+      ],
+    });
+
+    const wrapped = createKimiThinkingWrapper(baseStreamFn, "enabled");
+    void wrapped(KIMI_MODEL, KIMI_CONTEXT, {});
+
+    expect(getCapturedPayload()).toMatchObject({
+      messages: [
+        {
+          role: "assistant",
+          reasoning_content: "Need the file first.",
+        },
+      ],
+    });
+  });
+
+  it("does not add reasoning_content when Kimi thinking is disabled", () => {
+    const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_read", name: "read", arguments: {} }],
+        },
+      ],
+    });
+
+    const wrapped = createKimiThinkingWrapper(baseStreamFn, "disabled");
+    void wrapped(KIMI_MODEL, KIMI_CONTEXT, {});
+
+    expect(getCapturedPayload()).toEqual({
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_read", name: "read", arguments: {} }],
+        },
+      ],
+      thinking: { type: "disabled" },
+    });
+  });
+
+  it("enables thinking.keep=all for local Kimi k2.6 model ids", () => {
+    const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
+      model: "k2.6",
+    });
+
+    const wrapped = createKimiThinkingWrapper(baseStreamFn, "enabled");
+    void wrapped(
+      {
+        api: "anthropic-messages",
+        provider: "kimi",
+        id: "k2.6",
+      } as Model<"anthropic-messages">,
+      { messages: [] } as Context,
+      {},
+    );
+
+    expect(getCapturedPayload()).toEqual({
+      model: "k2.6",
+      thinking: { type: "enabled", keep: "all" },
+    });
+  });
 });
