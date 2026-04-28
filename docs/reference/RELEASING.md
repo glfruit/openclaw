@@ -87,8 +87,13 @@ OpenClaw has three public release lanes:
   `OPENCLAW_LIVE_TEST=1 OPENCLAW_LIVE_CACHE_TEST=1 pnpm test:live:cache`
   using both `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` workflow secrets
 - npm release preflight no longer waits on the separate release checks lane
-- Run `RELEASE_TAG=vYYYY.M.D node --import tsx scripts/openclaw-npm-release-check.ts`
-  (or the matching beta/correction tag) before approval
+- Run `RELEASE_TAG=vYYYY.M.D pnpm release:openclaw:npm:check`
+  (or `RELEASE_TAG=vYYYY.M.D node --import tsx scripts/openclaw-npm-release-check.ts`; use
+  the matching beta/correction tag) before approval. Do not use raw
+  `pnpm pack --dry-run --json` stdout as a release decision source; lifecycle
+  logs can precede the JSON payload. The release check runs the guarded
+  `npm pack --json --dry-run --ignore-scripts` path and parses mixed stdout
+  defensively.
 - Expensive release validation should target the prepared npm tarball from the
   successful preflight run before npm publish. The `OpenClaw NPM Release`
   preflight uploads an `openclaw-npm-preflight-<tag-or-sha>` artifact containing

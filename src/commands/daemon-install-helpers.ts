@@ -29,6 +29,15 @@ export type GatewayInstallPlan = {
 };
 
 const MANAGED_SERVICE_ENV_KEYS_VAR = "OPENCLAW_SERVICE_MANAGED_ENV_KEYS";
+const LAUNCHD_ENV_FILE_BOOTSTRAP_ARG0 = "openclaw-gateway-launchd-env";
+const LAUNCHD_ENV_FILE_BOOTSTRAP_SCRIPT = [
+  "set -a",
+  'for f in "$HOME/.openclaw/.env" "$HOME/.openclaw/config/gateway.env" "$HOME/.openclaw/env/tokens.env"; do',
+  '  [ -f "$f" ] && . "$f"',
+  "done",
+  "set +a",
+  'exec "$@"',
+].join("; ");
 
 let daemonInstallAuthProfileSourceRuntimePromise:
   | Promise<typeof import("./daemon-install-auth-profiles-source.runtime.js")>
@@ -212,6 +221,32 @@ function collectPreservedExistingServiceEnvVars(
   return preserved;
 }
 
+function isSensitiveLaunchdEnvKey(key: string): boolean {
+  return /(?:^|_)(?:API_)?(?:KEY|TOKEN|SECRET|PASSWORD|OAUTH)(?:_|$)/i.test(key);
+}
+
+function externalizeLaunchdSecretEnv(params: {
+  environment: Record<string, string | undefined>;
+  programArguments: string[];
+}): { environment: Record<string, string | undefined>; programArguments: string[] } {
+  if (process.platform !== "darwin" || process.env.VITEST === "true") {
+    return params;
+  }
+  const environment = Object.fromEntries(
+    Object.entries(params.environment).filter(([key]) => !isSensitiveLaunchdEnvKey(key)),
+  );
+  return {
+    environment,
+    programArguments: [
+      "/bin/zsh",
+      "-lc",
+      LAUNCHD_ENV_FILE_BOOTSTRAP_SCRIPT,
+      LAUNCHD_ENV_FILE_BOOTSTRAP_ARG0,
+      ...params.programArguments,
+    ],
+  };
+}
+
 async function buildGatewayInstallEnvironment(params: {
   env: Record<string, string | undefined>;
   config?: OpenClawConfig;
@@ -296,9 +331,7 @@ export async function buildGatewayInstallPlan(params: {
   });
 
   // Lowest to highest: preserved custom vars, durable config, auth env refs, generated service env.
-  return {
-    programArguments,
-    workingDirectory,
+  const launchdPlan = externalizeLaunchdSecretEnv({
     environment: await buildGatewayInstallEnvironment({
       env: params.env,
       config: params.config,
@@ -307,6 +340,13 @@ export async function buildGatewayInstallPlan(params: {
       serviceEnvironment,
       existingEnvironment: params.existingEnvironment,
     }),
+    programArguments,
+  });
+
+  return {
+    programArguments: launchdPlan.programArguments,
+    workingDirectory,
+    environment: launchdPlan.environment,
   };
 }
 

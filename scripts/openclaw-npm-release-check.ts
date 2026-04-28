@@ -70,6 +70,11 @@ const REQUIRED_PACKED_PATHS = [
 const CONTROL_UI_ASSET_PREFIX = "dist/control-ui/assets/";
 const FORBIDDEN_PACKED_PATH_RULES = [
   {
+    pattern: /^dist\/extensions\/(?:node_modules|[^/]+\/node_modules)(?:\/|$)/u,
+    describe: (packedPath: string) =>
+      `npm package must not include bundled extension node_modules artifact "${packedPath}".`,
+  },
+  {
     prefix: "docs/.generated/",
     describe: (packedPath: string) =>
       `npm package must not include generated docs artifact "${packedPath}".`,
@@ -450,29 +455,75 @@ function describeExecFailure(error: unknown): string {
   return details.join(" | ");
 }
 
-export function parseNpmPackJsonOutput(stdout: string): NpmPackResult[] | null {
+export function extractJsonValueFromMixedOutput(stdout: string): unknown | null {
   const trimmed = stdout.trim();
   if (!trimmed) {
     return null;
   }
 
-  const candidates = [trimmed];
-  const trailingArrayStart = trimmed.lastIndexOf("\n[");
-  if (trailingArrayStart !== -1) {
-    candidates.push(trimmed.slice(trailingArrayStart + 1).trim());
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    // npm/pnpm lifecycle output can prepend non-JSON logs before --json output.
   }
 
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate) as unknown;
-      if (Array.isArray(parsed)) {
-        return parsed as NpmPackResult[];
+  let parsedValue: unknown | null = null;
+  for (let start = 0; start < trimmed.length; start += 1) {
+    const opener = trimmed[start];
+    if (opener !== "[" && opener !== "{") {
+      continue;
+    }
+
+    const stack: string[] = [opener === "[" ? "]" : "}"];
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start + 1; index < trimmed.length; index += 1) {
+      const char = trimmed[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
       }
-    } catch {
-      // Try the next candidate. npm lifecycle output can prepend non-JSON logs.
+
+      if (char === '"') {
+        inString = true;
+      } else if (char === "[" || char === "{") {
+        stack.push(char === "[" ? "]" : "}");
+      } else if (char === "]" || char === "}") {
+        if (stack.pop() !== char) {
+          break;
+        }
+        if (stack.length === 0) {
+          const candidate = trimmed.slice(start, index + 1);
+          try {
+            parsedValue = JSON.parse(candidate) as unknown;
+            start = index;
+          } catch {
+            // Continue scanning in case lifecycle output contained bracketed text.
+          }
+          break;
+        }
+      }
     }
   }
 
+  return parsedValue;
+}
+
+export function parseNpmPackJsonOutput(stdout: string): NpmPackResult[] | null {
+  const parsed = extractJsonValueFromMixedOutput(stdout);
+  if (Array.isArray(parsed)) {
+    return parsed as NpmPackResult[];
+  }
+  if (parsed && typeof parsed === "object") {
+    return [parsed as NpmPackResult];
+  }
   return null;
 }
 
@@ -573,7 +624,7 @@ export function collectForbiddenPackedPathErrors(paths: Iterable<string>): strin
   const errors: string[] = [];
   for (const packedPath of paths) {
     const matchedRule = FORBIDDEN_PACKED_PATH_RULES.find((rule) =>
-      packedPath.startsWith(rule.prefix),
+      "pattern" in rule ? rule.pattern.test(packedPath) : packedPath.startsWith(rule.prefix),
     );
     if (!matchedRule) {
       continue;

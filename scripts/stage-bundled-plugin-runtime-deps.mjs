@@ -864,9 +864,26 @@ function createRuntimeInstallManifest(pluginId, pinnedGroups) {
   return manifest;
 }
 
-function runNpmInstall(params) {
-  const npmEnv = {
-    ...(params.npmRunner.env ?? process.env),
+const nestedNpmInstallConfigKeysToDelete = new Set([
+  "npm_config_dry_run",
+  "npm_config_global",
+  "npm_config_location",
+  "npm_config_prefix",
+]);
+
+export function createNestedNpmInstallEnv(env = process.env) {
+  const nextEnv = { ...env };
+  for (const key of Object.keys(nextEnv)) {
+    if (nestedNpmInstallConfigKeysToDelete.has(key.toLowerCase())) {
+      delete nextEnv[key];
+    }
+  }
+  return nextEnv;
+}
+
+export function createBundledRuntimeDepsStageNpmInstallEnv(env = process.env) {
+  return {
+    ...createNestedNpmInstallEnv(env),
     CI: "1",
     npm_config_audit: "false",
     npm_config_fund: "false",
@@ -877,6 +894,10 @@ function runNpmInstall(params) {
     npm_config_save: "false",
     npm_config_yes: "true",
   };
+}
+
+function runNpmInstall(params) {
+  const npmEnv = createBundledRuntimeDepsStageNpmInstallEnv(params.npmRunner.env ?? process.env);
   const result = spawnSync(params.npmRunner.command, params.npmRunner.args, {
     cwd: params.cwd,
     encoding: "utf8",

@@ -29,6 +29,34 @@ Supported channels include: WhatsApp, Telegram, Slack, Discord, Google Chat, Sig
 
 New install? Start here: [Getting started](https://docs.openclaw.ai/start/getting-started)
 
+Language: [English](README.md) · [简体中文](README.zh-CN.md)
+
+## Owned fork notice
+
+This checkout is an **owned OpenClaw fork** maintained for our local distribution and operations. It is based on OpenClaw, but this README describes this fork's packaging and operating expectations; it should not be read as an official upstream release note unless a link explicitly points to upstream OpenClaw documentation.
+
+Why we maintain an owned fork:
+
+- **Operational control** — we can build and validate a known package version for our environment before installing it anywhere.
+- **Release hygiene** — packaging checks live with the repo, including prepack validation and guardrails that keep bundled extension runtime artifacts out of the npm package.
+- **Local-first iteration** — we can stage documentation, skills, patches, and bundled plugin install helpers together without waiting on upstream timing.
+- **Clear provenance** — fork-specific behavior is documented here and in [README.zh-CN.md](README.zh-CN.md), while upstream docs remain linked for general OpenClaw concepts.
+
+Current owned package metadata from this checkout:
+
+- Package: `openclaw`
+- Version: `2026.4.25`
+- CLI binary: `openclaw` → `openclaw.mjs`
+- License: MIT
+- Runtime package contents include `README.md`, `README.zh-CN.md`, `docs/`, `skills/`, `patches/`, `dist/`, and bundled-plugin postinstall helpers.
+
+Owned-fork characteristics in this repo:
+
+- **Docs-first transparency:** fork-specific notes are kept in the README instead of being hidden in release scripts.
+- **Packaged CLI shape:** the npm package exposes the `openclaw` command via `openclaw.mjs` and exports built files from `dist/`.
+- **Bundled extension hygiene:** package metadata excludes `dist/extensions/**/node_modules`, and prepack/release checks verify bundled runtime dependency handling.
+- **No implicit production action:** building or documenting this fork does not install it globally, restart the Gateway, or change production routing by itself.
+
 Preferred setup: run `openclaw onboard` in your terminal.
 OpenClaw Onboard guides you step by step through setting up the gateway, workspace, channels, and skills. It is the recommended CLI setup path and works on **macOS, Linux, and Windows (via WSL2; strongly recommended)**.
 Works with npm, pnpm, or bun.

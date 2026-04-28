@@ -62,6 +62,7 @@ const BUNDLED_RUNTIME_DEPS_LOCK_STALE_MS = 10 * 60_000;
 const BUNDLED_RUNTIME_DEPS_OWNERLESS_LOCK_STALE_MS = 30_000;
 const BUNDLED_RUNTIME_MIRROR_MATERIALIZED_EXTENSIONS = new Set([".cjs", ".js", ".mjs"]);
 const BUNDLED_RUNTIME_MIRROR_PLUGIN_REGION_RE = /(?:^|\n)\/\/#region extensions\/[^/\s]+(?:\/|$)/u;
+const NODE_MODULES_REPLACE_RETRIES = 3;
 
 const registeredBundledRuntimeDepNodePaths = new Set<string>();
 
@@ -480,7 +481,24 @@ function resolveSourceCheckoutPackageRoot(pluginRoot: string): string | null {
 }
 
 function resolveBundledPluginPackageRoot(pluginRoot: string): string | null {
-  const extensionsDir = path.dirname(path.resolve(pluginRoot));
+  const resolvedPluginRoot = path.resolve(pluginRoot);
+  let current = resolvedPluginRoot;
+  while (true) {
+    if (path.basename(current) !== "extensions") {
+      const next = path.dirname(current);
+      if (next === current) {
+        break;
+      }
+      current = next;
+      continue;
+    }
+    const buildDir = path.dirname(current);
+    if (path.basename(buildDir) === "dist" || path.basename(buildDir) === "dist-runtime") {
+      return path.dirname(buildDir);
+    }
+    break;
+  }
+  const extensionsDir = path.dirname(resolvedPluginRoot);
   const buildDir = path.dirname(extensionsDir);
   if (
     path.basename(extensionsDir) !== "extensions" ||
@@ -489,6 +507,12 @@ function resolveBundledPluginPackageRoot(pluginRoot: string): string | null {
     return null;
   }
   return path.dirname(buildDir);
+}
+
+function isOwnedPackageWithManagedRuntimeDeps(packageRoot: string): boolean {
+  const packageJson = readJsonObject(path.join(packageRoot, "package.json"));
+  const metadata = packageJson?.openclawOwnedPackage;
+  return Boolean(metadata) && typeof metadata === "object" && !Array.isArray(metadata);
 }
 
 export function resolveBundledRuntimeDependencyPackageRoot(pluginRoot: string): string | null {
@@ -749,8 +773,22 @@ function replaceNodeModulesDir(targetDir: string, sourceDir: string): void {
   const stagedDir = path.join(tempDir, "node_modules");
   try {
     fs.cpSync(sourceDir, stagedDir, { recursive: true });
-    fs.rmSync(targetDir, { recursive: true, force: true });
-    fs.renameSync(stagedDir, targetDir);
+    let lastError: unknown;
+    for (let attempt = 0; attempt < NODE_MODULES_REPLACE_RETRIES; attempt += 1) {
+      try {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        fs.renameSync(stagedDir, targetDir);
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        sleepSync(BUNDLED_RUNTIME_DEPS_LOCK_WAIT_MS);
+      }
+    }
+    if (lastError) {
+      throw lastError;
+    }
   } finally {
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -1026,8 +1064,8 @@ function shouldIncludeBundledPluginRuntimeDeps(params: {
   includeConfiguredChannels?: boolean;
   manifestCache?: BundledPluginRuntimeDepsManifestCache;
 }): boolean {
-  if (params.pluginIds && !params.pluginIds.has(params.pluginId)) {
-    return false;
+  if (params.pluginIds) {
+    return params.pluginIds.has(params.pluginId);
   }
   if (!params.config) {
     return true;
@@ -1203,12 +1241,25 @@ export function resolveBundledRuntimeDependencyInstallRoot(
 ): string {
   const env = options.env ?? process.env;
   const externalRoot = resolveExternalBundledRuntimeDepsInstallRoot({ pluginRoot, env });
+  const packageRoot = resolveBundledPluginPackageRoot(pluginRoot);
+  const vendoredPackageRoot =
+    packageRoot &&
+    !isSourceCheckoutRoot(packageRoot) &&
+    isOwnedPackageWithManagedRuntimeDeps(packageRoot) &&
+    fs.existsSync(path.join(packageRoot, "node_modules"))
+      ? packageRoot
+      : null;
   if (
     options.forceExternal ||
     env.OPENCLAW_PLUGIN_STAGE_DIR?.trim() ||
-    env.STATE_DIRECTORY?.trim() ||
-    isPackagedBundledPluginRoot(pluginRoot)
+    env.STATE_DIRECTORY?.trim()
   ) {
+    return externalRoot;
+  }
+  if (vendoredPackageRoot) {
+    return vendoredPackageRoot;
+  }
+  if (isPackagedBundledPluginRoot(pluginRoot)) {
     return externalRoot;
   }
   return isWritableDirectory(pluginRoot) ? pluginRoot : externalRoot;

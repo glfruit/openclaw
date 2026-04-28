@@ -1,7 +1,8 @@
 #!/usr/bin/env -S node --import tsx
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
+import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { formatErrorMessage } from "../src/infra/errors.ts";
 import { writePackageDistInventory } from "../src/infra/package-dist-inventory.ts";
@@ -15,6 +16,47 @@ type PreparedFileReader = {
   existsSync: typeof existsSync;
   readdirSync: typeof readdirSync;
 };
+
+type PrepackCleanupReader = {
+  existsSync: typeof existsSync;
+  readdirSync: typeof readdirSync;
+  rmSync: typeof rmSync;
+};
+
+function normalizeRelativePath(filePath: string): string {
+  return filePath.replace(/\\/g, "/");
+}
+
+export function prunePrepackBundledExtensionNodeModules(
+  packageRoot = process.cwd(),
+  reader: PrepackCleanupReader = { existsSync, readdirSync, rmSync },
+): string[] {
+  const distExtensionsDir = join(packageRoot, "dist", "extensions");
+  if (!reader.existsSync(distExtensionsDir)) {
+    return [];
+  }
+
+  const removed: string[] = [];
+  const sharedNodeModulesDir = join(distExtensionsDir, "node_modules");
+  if (reader.existsSync(sharedNodeModulesDir)) {
+    reader.rmSync(sharedNodeModulesDir, { recursive: true, force: true });
+    removed.push(normalizeRelativePath(relative(packageRoot, sharedNodeModulesDir)));
+  }
+
+  for (const entry of reader.readdirSync(distExtensionsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || entry.name === "node_modules") {
+      continue;
+    }
+    const nodeModulesDir = join(distExtensionsDir, entry.name, "node_modules");
+    if (!reader.existsSync(nodeModulesDir)) {
+      continue;
+    }
+    reader.rmSync(nodeModulesDir, { recursive: true, force: true });
+    removed.push(normalizeRelativePath(relative(packageRoot, nodeModulesDir)));
+  }
+
+  return removed.toSorted((left, right) => left.localeCompare(right));
+}
 
 function normalizeFiles(files: Iterable<string>): Set<string> {
   return new Set(Array.from(files, (file) => file.replace(/\\/g, "/")));
@@ -109,15 +151,39 @@ async function writeDistInventory(): Promise<void> {
   await writePackageDistInventory(process.cwd());
 }
 
-async function main(): Promise<void> {
-  const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  run(pnpmCommand, ["build"]);
-  run(pnpmCommand, ["ui:build"]);
-  ensurePreparedArtifacts();
-  await writeDistInventory();
-  runBuildSmoke();
+type PrepackRun = (command: string, args: string[]) => void;
+
+type RunPrepackOptions = {
+  pnpmCommand?: string;
+  run?: PrepackRun;
+  ensurePreparedArtifacts?: () => void;
+  prunePrepackBundledExtensionNodeModules?: () => string[];
+  writeDistInventory?: () => Promise<void>;
+  runBuildSmoke?: () => void;
+  logger?: Pick<Console, "error">;
+};
+
+export async function runPrepack(options: RunPrepackOptions = {}): Promise<void> {
+  const pnpmCommand = options.pnpmCommand ?? (process.platform === "win32" ? "pnpm.cmd" : "pnpm");
+  const runCommand = options.run ?? run;
+  const verifyPreparedArtifacts = options.ensurePreparedArtifacts ?? ensurePreparedArtifacts;
+  const pruneBundledExtensionNodeModules =
+    options.prunePrepackBundledExtensionNodeModules ?? prunePrepackBundledExtensionNodeModules;
+  const writeInventory = options.writeDistInventory ?? writeDistInventory;
+  const runSmoke = options.runBuildSmoke ?? runBuildSmoke;
+  const logger = options.logger ?? console;
+
+  runCommand(pnpmCommand, ["build"]);
+  runCommand(pnpmCommand, ["ui:build"]);
+  verifyPreparedArtifacts();
+  runSmoke();
+  const removedNodeModules = pruneBundledExtensionNodeModules();
+  if (removedNodeModules.length > 0) {
+    logger.error(`prepack: pruned bundled extension node_modules: ${removedNodeModules.length}`);
+  }
+  await writeInventory();
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  await main();
+  await runPrepack();
 }

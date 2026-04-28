@@ -14,11 +14,11 @@
     "@openclaw/plugin-sdk": "workspace:*"
   },
   "openclaw": {
-    "extensions": [
-      "./index.ts"
-    ],
     "bundle": {
       "stageRuntimeDependencies": true
-    }
+    },
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

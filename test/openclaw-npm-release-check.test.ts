@@ -12,6 +12,7 @@ import {
   collectPackedTestCargoErrors,
   collectReleasePackageMetadataErrors,
   collectReleaseTagErrors,
+  extractJsonValueFromMixedOutput,
   parseNpmPackJsonOutput,
   parseReleaseTagVersion,
   parseReleaseVersion,
@@ -285,6 +286,40 @@ describe("parseNpmPackJsonOutput", () => {
     ]);
   });
 
+  it("extracts JSON from contaminated pnpm pack stdout without hiding missing JSON", () => {
+    const stdout = [
+      "> openclaw@2026.4.25 prepack /repo",
+      "> node --import tsx scripts/openclaw-prepack.ts",
+      "",
+      "[openclaw-prepack] build smoke passed",
+      '[{"filename":"openclaw-2026.4.25.tgz","files":[{"path":"package.json"}],"nested":{"brackets":"[not a start]"}}]',
+      "",
+    ].join("\n");
+
+    expect(extractJsonValueFromMixedOutput(stdout)).toEqual([
+      {
+        filename: "openclaw-2026.4.25.tgz",
+        files: [{ path: "package.json" }],
+        nested: { brackets: "[not a start]" },
+      },
+    ]);
+  });
+
+  it("normalizes a single pack JSON object for callers that need a result list", () => {
+    expect(parseNpmPackJsonOutput('> prepack\n{"filename":"openclaw.tgz","files":[]}')).toEqual([
+      { filename: "openclaw.tgz", files: [] },
+    ]);
+  });
+
+  it("prefers the final JSON payload when lifecycle logs contain bracketed text", () => {
+    const stdout = [
+      '[openclaw-prepack] debug {"ignored":true}',
+      '[{"filename":"openclaw.tgz","files":[]}]',
+    ].join("\n");
+
+    expect(parseNpmPackJsonOutput(stdout)).toEqual([{ filename: "openclaw.tgz", files: [] }]);
+  });
+
   it("returns null when no JSON payload is present", () => {
     expect(parseNpmPackJsonOutput("> openclaw@2026.3.23 prepack")).toBeNull();
   });
@@ -336,6 +371,19 @@ describe("collectForbiddenPackedPathErrors", () => {
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
+  });
+
+  it("rejects bundled extension node_modules in npm pack output", () => {
+    expect(
+      collectForbiddenPackedPathErrors([
+        "dist/extensions/discord/node_modules/zod/package.json",
+        "dist/extensions/node_modules/openclaw/package.json",
+        "dist/extensions/telegram/package.json",
+      ]),
+    ).toEqual([
+      'npm package must not include bundled extension node_modules artifact "dist/extensions/discord/node_modules/zod/package.json".',
+      'npm package must not include bundled extension node_modules artifact "dist/extensions/node_modules/openclaw/package.json".',
+    ]);
   });
 
   it("rejects generated docs artifacts in npm pack output", () => {

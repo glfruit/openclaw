@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   collectRuntimeDependencyInstallManifest,
   collectRuntimeDependencyInstallSpecs,
+  createBundledRuntimeDepsStageNpmInstallEnv,
+  createNestedNpmInstallEnv,
   stageBundledPluginRuntimeDeps,
 } from "../../scripts/stage-bundled-plugin-runtime-deps.mjs";
 import { createScriptTestHarness } from "./test-helpers.js";
@@ -44,6 +46,52 @@ describe("stageBundledPluginRuntimeDeps", () => {
   function runtimeDepsStampPath(repoRoot: string, pluginId = "fixture-plugin") {
     return path.join(repoRoot, ".artifacts", "bundled-runtime-deps-stamps", `${pluginId}.json`);
   }
+
+  it("strips inherited lifecycle npm location settings from nested npm installs", () => {
+    const env = createNestedNpmInstallEnv({
+      HOME: "/Users/alice",
+      NPM_CONFIG_DRY_RUN: "true",
+      NPM_CONFIG_GLOBAL: "true",
+      NPM_CONFIG_LOCATION: "global",
+      NPM_CONFIG_PREFIX: "/Users/alice/.npm-global",
+      npm_config_dry_run: "true",
+      npm_config_global: "true",
+      npm_config_location: "global",
+      npm_config_prefix: "/opt/homebrew",
+      npm_config_cache: "/Users/alice/.npm",
+    });
+
+    expect(env).toEqual({
+      HOME: "/Users/alice",
+      npm_config_cache: "/Users/alice/.npm",
+    });
+  });
+
+  it("does not pass inherited global/location/prefix to fallback npm install env", () => {
+    const env = createBundledRuntimeDepsStageNpmInstallEnv({
+      npm_config_dry_run: "true",
+      npm_config_global: "true",
+      npm_config_location: "global",
+      npm_config_prefix: "/opt/homebrew",
+      PATH: "/usr/bin",
+    });
+
+    expect(env).toMatchObject({
+      CI: "1",
+      PATH: "/usr/bin",
+      npm_config_legacy_peer_deps: "true",
+      npm_config_package_lock: "false",
+      npm_config_save: "false",
+    });
+    expect(env).not.toEqual(
+      expect.objectContaining({
+        npm_config_dry_run: expect.any(String),
+        npm_config_global: expect.any(String),
+        npm_config_location: expect.any(String),
+        npm_config_prefix: expect.any(String),
+      }),
+    );
+  });
 
   it("pins fallback install specs to exact installed versions", () => {
     const { repoRoot } = createBundledPluginFixture({
