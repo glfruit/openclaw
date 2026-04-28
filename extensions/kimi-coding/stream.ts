@@ -97,6 +97,32 @@ function assistantMessageHasToolCalls(message: Record<string, unknown>): boolean
   return Array.isArray(message.content) && message.content.some(isToolCallLikeBlock);
 }
 
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function extractReplayReasoningContent(message: Record<string, unknown>): string {
+  const content = message.content;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!isRecord(block)) {
+        continue;
+      }
+      const value = firstNonEmptyString(block.thinking, block.reasoning_content, block.text);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  const value = firstNonEmptyString(message.reasoning_content, message.reasoning, message.text);
+  return value ?? "Tool call replay.";
+}
+
 function ensureKimiToolCallReplayReasoningContent(payloadObj: Record<string, unknown>): void {
   const messages = payloadObj.messages;
   if (!Array.isArray(messages)) {
@@ -110,10 +136,10 @@ function ensureKimiToolCallReplayReasoningContent(payloadObj: Record<string, unk
     if (!assistantMessageHasToolCalls(message)) {
       continue;
     }
-    if (typeof message.reasoning_content === "string") {
+    if (typeof message.reasoning_content === "string" && message.reasoning_content.trim()) {
       continue;
     }
-    message.reasoning_content = "";
+    message.reasoning_content = extractReplayReasoningContent(message);
   }
 }
 

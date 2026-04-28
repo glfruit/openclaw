@@ -332,12 +332,12 @@ describe("kimi tool-call markup wrapper", () => {
     });
   });
 
-  it("adds blank reasoning_content to assistant tool-call replay messages when thinking is enabled", () => {
+  it("adds non-empty reasoning_content to assistant tool-call replay messages when thinking is enabled", () => {
     const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
       messages: [
         {
           role: "assistant",
-          content: "",
+          content: [{ type: "text", text: "Need the file first." }],
           tool_calls: [
             {
               id: "call_read",
@@ -368,7 +368,7 @@ describe("kimi tool-call markup wrapper", () => {
       messages: [
         {
           role: "assistant",
-          reasoning_content: "",
+          reasoning_content: "Need the file first.",
         },
         {
           role: "assistant",
@@ -376,6 +376,33 @@ describe("kimi tool-call markup wrapper", () => {
         },
       ],
       thinking: { type: "enabled" },
+    });
+  });
+
+  it("replaces blank Kimi reasoning_content on tool-call replay messages", () => {
+    const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
+      messages: [
+        {
+          role: "assistant",
+          reasoning_content: "",
+          content: [
+            { type: "thinking", thinking: "Need to call read.", signature: "sig" },
+            { type: "tool_use", id: "call_read", name: "read", input: {} },
+          ],
+        },
+      ],
+    });
+
+    const wrapped = createKimiThinkingWrapper(baseStreamFn, "enabled");
+    void wrapped(KIMI_MODEL, KIMI_CONTEXT, {});
+
+    expect(getCapturedPayload()).toMatchObject({
+      messages: [
+        {
+          role: "assistant",
+          reasoning_content: "Need to call read.",
+        },
+      ],
     });
   });
 
