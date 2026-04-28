@@ -252,25 +252,19 @@ export function syncTelegramMenuCommands(params: {
       return;
     }
 
+    if (commandsToRegister.length === 0) {
+      writeCachedCommandHash(accountId, botIdentity, currentHash);
+      logVerbose("telegram: command menu empty; skipping remote sync");
+      return;
+    }
+
     // Keep delete -> set ordering to avoid stale deletions racing after fresh registrations.
-    let deleteSucceeded = true;
     if (typeof bot.api.deleteMyCommands === "function") {
-      deleteSucceeded = await withTelegramApiErrorLogging({
+      await withTelegramApiErrorLogging({
         operation: "deleteMyCommands",
         runtime,
         fn: () => bot.api.deleteMyCommands(),
-      })
-        .then(() => true)
-        .catch(() => false);
-    }
-
-    if (commandsToRegister.length === 0) {
-      if (!deleteSucceeded) {
-        runtime.log?.("telegram: deleteMyCommands failed; skipping empty-menu hash cache write");
-        return;
-      }
-      writeCachedCommandHash(accountId, botIdentity, currentHash);
-      return;
+      });
     }
 
     let retryCommands = commandsToRegister;
