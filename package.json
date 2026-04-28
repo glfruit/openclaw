@@ -1691,6 +1691,7 @@
     "vitest": "^4.1.5"
   },
   "overrides": {
+    "@mariozechner/pi-coding-agent": "0.70.2",
     "axios": "1.15.0",
     "follow-redirects": "1.16.0",
     "node-domexception": "npm:@nolyfill/domexception@1.0.28",
@@ -1719,6 +1720,7 @@
     "overrides": {
       "@anthropic-ai/sdk": "0.91.0",
       "@hono/node-server": "1.19.14",
+      "@mariozechner/pi-coding-agent": "0.70.2",
       "axios": "1.15.0",
       "basic-ftp": "5.3.0",
       "defu": "6.1.5",
