@@ -97,6 +97,17 @@ function assistantMessageHasToolCalls(message: Record<string, unknown>): boolean
   return Array.isArray(message.content) && message.content.some(isToolCallLikeBlock);
 }
 
+function payloadHasAssistantToolCallReplay(payloadObj: Record<string, unknown>): boolean {
+  const messages = payloadObj.messages;
+  if (!Array.isArray(messages)) {
+    return false;
+  }
+  return messages.some(
+    (message) =>
+      isRecord(message) && message.role === "assistant" && assistantMessageHasToolCalls(message),
+  );
+}
+
 function firstNonEmptyString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) {
@@ -279,11 +290,17 @@ export function createKimiThinkingWrapper(
   const underlying = baseStreamFn ?? streamSimple;
   return (model, context, options) =>
     streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
-      payloadObj.thinking = { type: thinkingType };
-      if (thinkingType === "enabled" && isKimiK26PayloadModel(payloadObj.model)) {
+      // Kimi K2.6 currently rejects thinking-enabled assistant tool-call replay on
+      // the Anthropic-compatible coding endpoint, even with reasoning_content.
+      const effectiveThinkingType =
+        thinkingType === "enabled" && payloadHasAssistantToolCallReplay(payloadObj)
+          ? "disabled"
+          : thinkingType;
+      payloadObj.thinking = { type: effectiveThinkingType };
+      if (effectiveThinkingType === "enabled" && isKimiK26PayloadModel(payloadObj.model)) {
         (payloadObj.thinking as Record<string, unknown>).keep = "all";
       }
-      if (thinkingType === "enabled") {
+      if (effectiveThinkingType === "enabled") {
         ensureKimiToolCallReplayReasoningContent(payloadObj);
       }
       delete payloadObj.reasoning;
