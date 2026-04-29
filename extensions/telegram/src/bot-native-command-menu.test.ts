@@ -254,11 +254,8 @@ describe("bot-native-command-menu", () => {
     await vi.waitFor(() => expect(setMyCommands).toHaveBeenCalledTimes(2));
   });
 
-  it("does not cache empty-menu hash when deleteMyCommands fails", async () => {
-    const deleteMyCommands = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("transient failure"))
-      .mockResolvedValue(undefined);
+  it("caches empty-menu hash without remote Telegram calls", async () => {
+    const deleteMyCommands = vi.fn(async () => undefined);
     const setMyCommands = vi.fn(async () => undefined);
     const runtimeLog = vi.fn();
     const accountId = `test-empty-delete-fail-${Date.now()}`;
@@ -271,7 +268,7 @@ describe("bot-native-command-menu", () => {
       accountId,
       botIdentity: "bot-a",
     });
-    await vi.waitFor(() => expect(deleteMyCommands).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(deleteMyCommands).not.toHaveBeenCalled());
 
     syncMenuCommandsWithMocks({
       deleteMyCommands,
@@ -281,7 +278,8 @@ describe("bot-native-command-menu", () => {
       accountId,
       botIdentity: "bot-a",
     });
-    await vi.waitFor(() => expect(deleteMyCommands).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(setMyCommands).not.toHaveBeenCalled());
+    expect(deleteMyCommands).not.toHaveBeenCalled();
   });
 
   it("retries with fewer commands on BOT_COMMANDS_TOO_MUCH", async () => {
