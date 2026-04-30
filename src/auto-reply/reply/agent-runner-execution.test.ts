@@ -1783,7 +1783,7 @@ describe("runAgentTurnWithFallback", () => {
 
   it("retries a live-user transient model failure once before surfacing recovery copy", async () => {
     vi.useFakeTimers();
-    state.isTransientHttpErrorMock.mockImplementation((message: string) => /502/.test(message));
+    state.isTransientHttpErrorMock.mockImplementation((message: string) => message.includes("502"));
     state.runWithModelFallbackMock
       .mockRejectedValueOnce(new Error("502 Bad Gateway"))
       .mockRejectedValueOnce(new Error("502 Bad Gateway"));

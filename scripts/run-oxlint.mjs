@@ -55,49 +55,120 @@ export function filterSparseMissingOxlintTargets(
     return { args, hadExplicitTargets: false, remainingExplicitTargets: 0, skippedTargets: [] };
   }
 
-  const filteredArgs = [];
+  const targetResult = mapOxlintTargetArgs(args, (arg) => {
+    const absoluteTarget = path.resolve(cwd, arg);
+    if (!fileExists(absoluteTarget) && isTrackedPath({ cwd, target: arg })) {
+      return { replacement: [], skipped: true };
+    }
+
+    return { replacement: [arg], kept: true };
+  });
+
+  return {
+    args: targetResult.args,
+    hadExplicitTargets: targetResult.hadExplicitTargets,
+    remainingExplicitTargets: targetResult.remainingExplicitTargets,
+    skippedTargets: targetResult.skippedTargets,
+  };
+}
+
+export function expandDirectoryOxlintTargets(
+  args,
+  { cwd = process.cwd(), stat = fs.statSync, listTrackedFiles = listTrackedFilesUnderTargets } = {},
+) {
+  const expandedTargets = [];
+  const targetResult = mapOxlintTargetArgs(args, (arg) => {
+    const absoluteTarget = path.resolve(cwd, arg);
+    try {
+      if (!stat(absoluteTarget).isDirectory()) {
+        return { replacement: [arg], kept: true };
+      }
+    } catch {
+      return { replacement: [arg], kept: true };
+    }
+
+    const files = listTrackedFiles({ cwd, targets: [arg] }).filter(isOxlintLintablePath);
+    if (files.length === 0) {
+      return { replacement: [arg], kept: true };
+    }
+
+    expandedTargets.push({ target: arg, fileCount: files.length });
+    return { replacement: files, kept: true, count: files.length };
+  });
+
+  return {
+    args: targetResult.args,
+    hadExplicitTargets: targetResult.hadExplicitTargets,
+    remainingExplicitTargets: targetResult.remainingExplicitTargets,
+    expandedTargets,
+  };
+}
+
+function mapOxlintTargetArgs(args, mapTarget) {
+  const mappedArgs = [];
   const skippedTargets = [];
   let hadExplicitTargets = false;
   let remainingExplicitTargets = 0;
   let consumeNextValue = false;
+  let afterSeparator = false;
 
   for (const arg of args) {
-    if (consumeNextValue) {
-      filteredArgs.push(arg);
+    if (!afterSeparator && consumeNextValue) {
+      mappedArgs.push(arg);
       consumeNextValue = false;
       continue;
     }
 
-    if (arg === "--") {
-      filteredArgs.push(arg);
+    if (!afterSeparator && arg === "--") {
+      mappedArgs.push(arg);
+      afterSeparator = true;
       continue;
     }
 
-    if (arg.startsWith("--")) {
-      filteredArgs.push(arg);
+    if (!afterSeparator && arg.startsWith("--")) {
+      mappedArgs.push(arg);
       if (!arg.includes("=") && OXLINT_VALUE_FLAGS.has(arg)) {
         consumeNextValue = true;
       }
       continue;
     }
 
-    if (arg.startsWith("-")) {
-      filteredArgs.push(arg);
+    if (!afterSeparator && arg.startsWith("-")) {
+      mappedArgs.push(arg);
       continue;
     }
 
     hadExplicitTargets = true;
-    const absoluteTarget = path.resolve(cwd, arg);
-    if (!fileExists(absoluteTarget) && isTrackedPath({ cwd, target: arg })) {
+    const result = mapTarget(arg);
+    if (result.skipped) {
       skippedTargets.push(arg);
       continue;
     }
 
-    remainingExplicitTargets += 1;
-    filteredArgs.push(arg);
+    remainingExplicitTargets += result.count ?? result.replacement.length;
+    mappedArgs.push(...result.replacement);
   }
 
-  return { args: filteredArgs, hadExplicitTargets, remainingExplicitTargets, skippedTargets };
+  return { args: mappedArgs, hadExplicitTargets, remainingExplicitTargets, skippedTargets };
+}
+
+function isOxlintLintablePath(target) {
+  return /\.(?:[cm]?[jt]sx?|vue)$/u.test(target);
+}
+
+function listTrackedFilesUnderTargets({ cwd, targets }) {
+  const result = spawnSync("git", ["ls-files", "-z", "--", ...targets], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    shell: process.platform === "win32",
+  });
+
+  if (result.status !== 0) {
+    return [];
+  }
+
+  return result.stdout.split("\0").filter(Boolean);
 }
 
 function getSparseCheckoutEnabled({ cwd }) {
@@ -153,7 +224,6 @@ export async function main(argv = process.argv.slice(2), runtimeEnv = process.en
     resolveLocalHeavyCheckEnv(runtimeEnv),
   );
   const sparseTargets = filterSparseMissingOxlintTargets(policyArgs);
-  const finalArgs = sparseTargets.args;
   if (sparseTargets.skippedTargets.length > 0) {
     console.error(
       `[oxlint] sparse checkout is missing tracked target(s); skipping ${sparseTargets.skippedTargets.join(", ")}`,
@@ -164,10 +234,16 @@ export async function main(argv = process.argv.slice(2), runtimeEnv = process.en
     return;
   }
 
+  const expandedTargets = expandDirectoryOxlintTargets(sparseTargets.args);
+  const finalArgs = expandedTargets.args;
+  for (const target of expandedTargets.expandedTargets) {
+    console.error(`[oxlint] expanded ${target.target} to ${target.fileCount} tracked lint file(s)`);
+  }
+
   const releaseLock =
     env.OPENCLAW_OXLINT_SKIP_LOCK === "1"
       ? () => {}
-      : shouldAcquireLocalHeavyCheckLockForOxlint(finalArgs, {
+      : shouldAcquireLocalHeavyCheckLockForOxlint(sparseTargets.args, {
             cwd: process.cwd(),
             env,
           })

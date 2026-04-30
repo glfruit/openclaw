@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  expandDirectoryOxlintTargets,
   filterSparseMissingOxlintTargets,
   shouldPrepareExtensionPackageBoundaryArtifacts,
 } from "../../scripts/run-oxlint.mjs";
@@ -63,6 +64,50 @@ describe("run-oxlint", () => {
       args: ["src", "typo"],
       remainingExplicitTargets: 2,
       skippedTargets: [],
+    });
+  });
+
+  it("expands directory targets to tracked lintable files", () => {
+    const result = expandDirectoryOxlintTargets(
+      ["--tsconfig", "tsconfig.oxlint.core.json", "src", "README.md", "--threads=1"],
+      {
+        stat: (target: string) => ({
+          isDirectory: () => target.endsWith("/src"),
+        }),
+        listTrackedFiles: () => [
+          "src/index.ts",
+          "src/component.tsx",
+          "src/readme.md",
+          "src/generated.json",
+        ],
+      },
+    );
+
+    expect(result).toEqual({
+      args: [
+        "--tsconfig",
+        "tsconfig.oxlint.core.json",
+        "src/index.ts",
+        "src/component.tsx",
+        "README.md",
+        "--threads=1",
+      ],
+      hadExplicitTargets: true,
+      remainingExplicitTargets: 3,
+      expandedTargets: [{ target: "src", fileCount: 2 }],
+    });
+  });
+
+  it("keeps directory targets when tracked lintable discovery is empty", () => {
+    const result = expandDirectoryOxlintTargets(["scripts"], {
+      stat: () => ({ isDirectory: () => true }),
+      listTrackedFiles: () => ["scripts/data.json"],
+    });
+
+    expect(result).toMatchObject({
+      args: ["scripts"],
+      remainingExplicitTargets: 1,
+      expandedTargets: [],
     });
   });
 });
