@@ -337,6 +337,36 @@ describe("installBundledRuntimeDeps", () => {
     );
   });
 
+  it("caps synchronous npm installs with a timeout", () => {
+    const installRoot = makeTempDir();
+    spawnSyncMock.mockImplementation((_command, _args, options) => {
+      writeInstalledPackage(String(options?.cwd ?? ""), "acpx", "0.5.3");
+      return {
+        pid: 123,
+        output: [],
+        stdout: "",
+        stderr: "",
+        signal: null,
+        status: 0,
+      };
+    });
+
+    installBundledRuntimeDeps({
+      installRoot,
+      missingSpecs: ["acpx@0.5.3"],
+      env: { OPENCLAW_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS: "7000" },
+    });
+
+    expect(spawnSyncMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({
+        killSignal: "SIGTERM",
+        timeout: 7000,
+      }),
+    );
+  });
+
   it("hides async npm child windows for startup repair installs", async () => {
     const installRoot = makeTempDir();
     spawnMock.mockImplementation((_command, _args, options) => {
@@ -430,6 +460,41 @@ describe("installBundledRuntimeDeps", () => {
 
       closeChild();
       await expect(install).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("terminates async npm installs that exceed the timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const installRoot = makeTempDir();
+      const child = new EventEmitter() as ReturnType<typeof spawn> & {
+        kill: ReturnType<typeof vi.fn>;
+        stdout: EventEmitter;
+        stderr: EventEmitter;
+      };
+      Object.assign(child, {
+        kill: vi.fn(() => {
+          child.emit("close", null, "SIGTERM");
+          return true;
+        }),
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      });
+      spawnMock.mockReturnValue(child);
+
+      const install = installBundledRuntimeDepsAsync({
+        installRoot,
+        missingSpecs: ["acpx@0.5.3"],
+        env: { OPENCLAW_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS: "5000" },
+      });
+      const expectedFailure = expect(install).rejects.toThrow("npm install timed out after 5s");
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expectedFailure;
+      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
     } finally {
       vi.useRealTimers();
     }

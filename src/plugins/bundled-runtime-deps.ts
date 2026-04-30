@@ -67,6 +67,9 @@ const BUNDLED_RUNTIME_DEPS_LOCK_TIMEOUT_MS = 5 * 60_000;
 const BUNDLED_RUNTIME_DEPS_LOCK_STALE_MS = 10 * 60_000;
 const BUNDLED_RUNTIME_DEPS_OWNERLESS_LOCK_STALE_MS = 30_000;
 const BUNDLED_RUNTIME_DEPS_INSTALL_PROGRESS_INTERVAL_MS = 5_000;
+const DEFAULT_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS = 60_000;
+const MIN_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS = 5_000;
+const MAX_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS = 10 * 60_000;
 const BUNDLED_RUNTIME_MIRROR_MATERIALIZED_EXTENSIONS = new Set([".cjs", ".js", ".mjs"]);
 const BUNDLED_RUNTIME_MIRROR_PLUGIN_REGION_RE = /(?:^|\n)\/\/#region extensions\/[^/\s]+(?:\/|$)/u;
 const MIRRORED_PACKAGE_RUNTIME_DEP_NAMES = ["tslog"] as const;
@@ -1589,6 +1592,21 @@ function formatBundledRuntimeDepsInstallError(result: {
   return output || "npm install failed";
 }
 
+function resolveBundledRuntimeDepsInstallTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.OPENCLAW_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS;
+  }
+  return Math.min(
+    MAX_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS,
+    Math.max(MIN_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS, Math.round(parsed)),
+  );
+}
+
 function formatBundledRuntimeDepsInstallElapsed(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   if (seconds < 60) {
@@ -1623,6 +1641,7 @@ async function spawnBundledRuntimeDepsInstall(params: {
   args: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+  timeoutMs: number;
   onProgress?: (message: string) => void;
 }): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -1647,6 +1666,18 @@ async function spawnBundledRuntimeDepsInstall(params: {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    const timeout =
+      params.timeoutMs > 0
+        ? setTimeout(() => {
+            params.onProgress?.(
+              `npm install timed out after ${formatBundledRuntimeDepsInstallElapsed(params.timeoutMs)}; terminating`,
+            );
+            child.kill("SIGTERM");
+          }, params.timeoutMs)
+        : undefined;
+    timeout?.unref?.();
+    let timedOut = false;
+    timeout?.refresh?.();
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -1661,18 +1692,24 @@ async function spawnBundledRuntimeDepsInstall(params: {
       settle(() => reject(new Error(formatBundledRuntimeDepsInstallError({ error }))));
     });
     child.on("close", (status, signal) => {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
       if (status === 0 && !signal) {
         settle(resolve);
         return;
       }
+      timedOut = signal === "SIGTERM" && Date.now() - startedAtMs >= params.timeoutMs;
       settle(() =>
         reject(
           new Error(
             formatBundledRuntimeDepsInstallError({
               status,
               signal,
+              stderr: timedOut
+                ? `npm install timed out after ${formatBundledRuntimeDepsInstallElapsed(params.timeoutMs)}`
+                : Buffer.concat(stderr).toString("utf8"),
               stdout: Buffer.concat(stdout).toString("utf8"),
-              stderr: Buffer.concat(stderr).toString("utf8"),
             }),
           ),
         ),
@@ -1720,11 +1757,14 @@ export function installBundledRuntimeDeps(params: {
       env: installEnv,
       npmArgs: createBundledRuntimeDepsInstallArgs(params.missingSpecs),
     });
+    const timeoutMs = resolveBundledRuntimeDepsInstallTimeoutMs(params.env);
     const result = spawnSync(npmRunner.command, npmRunner.args, {
       cwd: installExecutionRoot,
       encoding: "utf8",
       env: npmRunner.env ?? installEnv,
       stdio: "pipe",
+      timeout: timeoutMs,
+      killSignal: "SIGTERM",
       windowsHide: true,
     });
     if (result.status !== 0 || result.error) {
@@ -1795,6 +1835,7 @@ export async function installBundledRuntimeDepsAsync(params: {
       args: npmRunner.args,
       cwd: installExecutionRoot,
       env: npmRunner.env ?? installEnv,
+      timeoutMs: resolveBundledRuntimeDepsInstallTimeoutMs(params.env),
       onProgress: params.onProgress,
     });
     assertBundledRuntimeDepsInstalled(installExecutionRoot, params.missingSpecs);
