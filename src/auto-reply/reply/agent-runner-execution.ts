@@ -1229,6 +1229,7 @@ export async function runAgentTurnWithFallback(params: {
                     : undefined,
                 onReasoningEnd: params.opts?.onReasoningEnd,
                 onAgentEvent: async (evt) => {
+                  params.replyOperation?.markActivity();
                   if (evt.stream.startsWith("codex_app_server.")) {
                     emitAgentEvent({
                       runId,
@@ -1392,6 +1393,7 @@ export async function runAgentTurnWithFallback(params: {
                       // See: https://github.com/openclaw/openclaw/issues/11044
                       let toolResultChain: Promise<void> = Promise.resolve();
                       return (payload: ReplyPayload) => {
+                        params.replyOperation?.markActivity();
                         toolResultChain = toolResultChain
                           .then(async () => {
                             const { text, skip } = normalizeStreamingText(payload);

@@ -41,6 +41,11 @@ import {
 } from "../thinking.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
+import {
+  buildStaleActiveRunQueuedReply,
+  resolveActiveRunStaleness,
+  shouldSurfaceLiveQueuedBehindStaleRun,
+} from "./active-run-policy.js";
 import { applySessionHints } from "./body.js";
 import type { buildCommandContext } from "./commands.js";
 import type { InlineDirectives } from "./directive-handling.js";
@@ -713,9 +718,11 @@ export async function runPreparedReply(
       activeSessionId,
       isActive: piRuntime.isEmbeddedPiRunActive(activeSessionId),
       isStreaming: piRuntime.isEmbeddedPiRunStreaming(activeSessionId),
+      runtimeState: piRuntime.getActiveEmbeddedRunRuntimeState(activeSessionId),
     };
   };
-  let { activeSessionId, isActive, isStreaming } = resolveQueueBusyState();
+  let { activeSessionId, isActive, isStreaming, runtimeState } = resolveQueueBusyState();
+  let activeRunStaleness = resolveActiveRunStaleness({ state: runtimeState });
   const shouldSteer = resolvedQueue.mode === "steer" || resolvedQueue.mode === "steer-backlog";
   const shouldFollowup =
     resolvedQueue.mode === "followup" ||
@@ -727,6 +734,7 @@ export async function runPreparedReply(
     lane: turnLane,
     shouldFollowup,
     queueMode: resolvedQueue.mode,
+    activeRunStale: activeRunStaleness.stale,
   });
   if (isActive && activeRunQueueAction === "run-now") {
     const queueState = await resolvePreparedReplyQueueState({
@@ -762,7 +770,8 @@ export async function runPreparedReply(
       typing.cleanup();
       return queueState.reply;
     }
-    ({ activeSessionId, isActive, isStreaming } = queueState.busyState);
+    ({ activeSessionId, isActive, isStreaming, runtimeState } = queueState.busyState);
+    activeRunStaleness = resolveActiveRunStaleness({ state: runtimeState });
   }
   const authProfileIdSource = preparedSessionState.sessionEntry?.authProfileOverrideSource;
   const followupRun = {
@@ -879,6 +888,16 @@ export async function runPreparedReply(
     shouldSteer,
     shouldFollowup,
     isActive,
+    activeRunStale: activeRunStaleness.stale,
+    staleActiveRunReplyText: shouldSurfaceLiveQueuedBehindStaleRun({
+      lane: turnLane,
+      activeRunStale: activeRunStaleness.stale,
+    })
+      ? buildStaleActiveRunQueuedReply({
+          thresholdMs: activeRunStaleness.thresholdMs,
+          lastActivityAgeMs: activeRunStaleness.lastActivityAgeMs,
+        })
+      : undefined,
     isRunActive: () => {
       const latestSessionState = resolvePreparedSessionState();
       const latestActiveSessionId =

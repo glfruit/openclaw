@@ -1,5 +1,6 @@
 export {
   abortEmbeddedPiRun,
+  getActiveEmbeddedRunRuntimeState,
   isEmbeddedPiRunActive,
   isEmbeddedPiRunStreaming,
   resolveActiveEmbeddedRunSessionId,

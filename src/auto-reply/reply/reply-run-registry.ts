@@ -49,7 +49,10 @@ export type ReplyOperation = {
   readonly resetTriggered: boolean;
   readonly phase: ReplyOperationPhase;
   readonly result: ReplyOperationResult | null;
+  readonly startedAt: number;
+  readonly lastActivityAt: number;
   setPhase(next: "queued" | "preflight_compacting" | "memory_flushing" | "running"): void;
+  markActivity(): void;
   updateSessionId(nextSessionId: string): void;
   attachBackend(handle: ReplyBackendHandle): void;
   detachBackend(handle: ReplyBackendHandle): void;
@@ -210,7 +213,13 @@ export function createReplyOperation(params: {
   let currentSessionId = sessionId;
   let phase: ReplyOperationPhase = "queued";
   let result: ReplyOperationResult | null = null;
+  const startedAt = Date.now();
+  let lastActivityAt = startedAt;
   let stateCleared = false;
+
+  const markActivity = () => {
+    lastActivityAt = Date.now();
+  };
 
   const clearState = () => {
     if (stateCleared) {
@@ -238,6 +247,7 @@ export function createReplyOperation(params: {
       result = { kind: "aborted", code: opts.abortedCode };
     }
     phase = "aborted";
+    markActivity();
     abortInternally(abortReason);
     getAttachedBackend(operation)?.cancel(reason);
   };
@@ -275,12 +285,20 @@ export function createReplyOperation(params: {
     get result() {
       return result;
     },
+    get startedAt() {
+      return startedAt;
+    },
+    get lastActivityAt() {
+      return lastActivityAt;
+    },
     setPhase(next) {
       if (result) {
         return;
       }
       phase = next;
+      markActivity();
     },
+    markActivity,
     updateSessionId(nextSessionId) {
       if (result) {
         return;
@@ -300,6 +318,7 @@ export function createReplyOperation(params: {
       replyRunState.activeKeysBySessionId.delete(currentSessionId);
       registerWaitSessionId(sessionKey, currentSessionId);
       currentSessionId = normalizedNextSessionId;
+      markActivity();
       replyRunState.activeSessionIdsByKey.set(sessionKey, currentSessionId);
       replyRunState.activeKeysBySessionId.set(currentSessionId, sessionKey);
       registerWaitSessionId(sessionKey, currentSessionId);
@@ -316,6 +335,7 @@ export function createReplyOperation(params: {
         return;
       }
       attachedBackendByOperation.set(operation, handle);
+      markActivity();
       if (controller.signal.aborted) {
         handle.cancel("superseded");
       }
@@ -329,6 +349,7 @@ export function createReplyOperation(params: {
       if (!result) {
         result = { kind: "completed" };
         phase = "completed";
+        markActivity();
       }
       clearState();
     },
@@ -336,6 +357,7 @@ export function createReplyOperation(params: {
       if (!result) {
         result = { kind: "failed", code, cause };
         phase = "failed";
+        markActivity();
       }
       clearState();
     },
@@ -455,6 +477,29 @@ export function isReplyRunStreamingForSessionId(sessionId: string): boolean {
     return false;
   }
   return getAttachedBackend(operation)?.isStreaming() ?? false;
+}
+
+export function getActiveReplyRunRuntimeStateBySessionId(sessionId: string):
+  | {
+      isActive: boolean;
+      isStreaming: boolean;
+      startedAt: number;
+      lastActivityAt: number;
+      phase: ReplyOperationPhase;
+    }
+  | undefined {
+  const operation = resolveReplyRunForCurrentSessionId(sessionId);
+  if (!operation) {
+    return undefined;
+  }
+  return {
+    isActive: true,
+    isStreaming:
+      operation.phase === "running" && (getAttachedBackend(operation)?.isStreaming() ?? false),
+    startedAt: operation.startedAt,
+    lastActivityAt: operation.lastActivityAt,
+    phase: operation.phase,
+  };
 }
 
 export function queueReplyRunMessage(sessionId: string, text: string): boolean {

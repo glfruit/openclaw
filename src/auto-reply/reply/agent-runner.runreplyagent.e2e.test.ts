@@ -109,6 +109,8 @@ function createMinimalRun(params?: {
   typingMode?: TypingMode;
   blockStreamingEnabled?: boolean;
   isActive?: boolean;
+  activeRunStale?: boolean;
+  staleActiveRunReplyText?: string;
   isRunActive?: () => boolean;
   shouldFollowup?: boolean;
   resolvedQueueMode?: string;
@@ -166,6 +168,8 @@ function createMinimalRun(params?: {
         shouldSteer: false,
         shouldFollowup: params?.shouldFollowup ?? false,
         isActive: params?.isActive ?? false,
+        activeRunStale: params?.activeRunStale,
+        staleActiveRunReplyText: params?.staleActiveRunReplyText,
         isRunActive: params?.isRunActive,
         isStreaming: false,
         opts,
@@ -210,6 +214,42 @@ describe("runReplyAgent heartbeat followup guard", () => {
       isActive: true,
       shouldFollowup: true,
       resolvedQueueMode: "collect",
+    });
+
+    const result = await run();
+
+    expect(result).toBeUndefined();
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+    expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces live user messages queued behind a stale active run", async () => {
+    const { run } = createMinimalRun({
+      opts: { isHeartbeat: false },
+      isActive: true,
+      activeRunStale: true,
+      staleActiveRunReplyText: "queued behind stale run",
+      shouldFollowup: false,
+      resolvedQueueMode: "queue",
+      runOverrides: { lane: "live_user" },
+    });
+
+    const result = await run();
+
+    expect(result).toEqual({ text: "queued behind stale run" });
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+    expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("queues live user messages behind a non-stale active run without a stale notice", async () => {
+    const { run } = createMinimalRun({
+      opts: { isHeartbeat: false },
+      isActive: true,
+      activeRunStale: false,
+      staleActiveRunReplyText: undefined,
+      shouldFollowup: false,
+      resolvedQueueMode: "queue",
+      runOverrides: { lane: "live_user" },
     });
 
     const result = await run();

@@ -1,6 +1,7 @@
 import {
   abortActiveReplyRuns,
   abortReplyRunBySessionId,
+  getActiveReplyRunRuntimeStateBySessionId,
   isReplyRunActiveForSessionId,
   isReplyRunStreamingForSessionId,
   queueReplyRunMessage,
@@ -15,11 +16,13 @@ import {
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import {
   ACTIVE_EMBEDDED_RUNS,
+  ACTIVE_EMBEDDED_RUN_RUNTIME_STATES,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY,
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS,
   EMBEDDED_RUN_MODEL_SWITCH_REQUESTS,
   EMBEDDED_RUN_WAITERS,
   getActiveEmbeddedRunCount,
+  type ActiveEmbeddedRunRuntimeState,
   type ActiveEmbeddedRunSnapshot,
   type EmbeddedPiQueueHandle,
   type EmbeddedRunModelSwitchRequest,
@@ -28,6 +31,7 @@ import {
 
 export {
   getActiveEmbeddedRunCount,
+  type ActiveEmbeddedRunRuntimeState,
   type ActiveEmbeddedRunSnapshot,
   type EmbeddedPiQueueHandle,
   type EmbeddedRunModelSwitchRequest,
@@ -182,6 +186,31 @@ export function getActiveEmbeddedRunSnapshot(
   return ACTIVE_EMBEDDED_RUN_SNAPSHOTS.get(sessionId);
 }
 
+export function getActiveEmbeddedRunRuntimeState(
+  sessionId: string,
+): ActiveEmbeddedRunRuntimeState | undefined {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  if (!handle) {
+    return getActiveReplyRunRuntimeStateBySessionId(sessionId);
+  }
+  const existing = ACTIVE_EMBEDDED_RUN_RUNTIME_STATES.get(sessionId);
+  if (!existing) {
+    return undefined;
+  }
+  const replyState = getActiveReplyRunRuntimeStateBySessionId(sessionId);
+  const replyLastActivityAt = replyState?.lastActivityAt;
+  return {
+    ...existing,
+    isActive: true,
+    isStreaming: handle.isStreaming(),
+    isCompacting: handle.isCompacting(),
+    lastActivityAt:
+      typeof replyLastActivityAt === "number"
+        ? Math.max(existing.lastActivityAt ?? 0, replyLastActivityAt)
+        : existing.lastActivityAt,
+  };
+}
+
 export function requestEmbeddedRunModelSwitch(
   sessionId: string,
   request: EmbeddedRunModelSwitchRequest,
@@ -313,6 +342,15 @@ export function setActiveEmbeddedRun(
 ) {
   const wasActive = ACTIVE_EMBEDDED_RUNS.has(sessionId);
   ACTIVE_EMBEDDED_RUNS.set(sessionId, handle);
+  const now = Date.now();
+  const existingState = ACTIVE_EMBEDDED_RUN_RUNTIME_STATES.get(sessionId);
+  ACTIVE_EMBEDDED_RUN_RUNTIME_STATES.set(sessionId, {
+    isActive: true,
+    isStreaming: handle.isStreaming(),
+    isCompacting: handle.isCompacting(),
+    startedAt: existingState?.startedAt ?? now,
+    lastActivityAt: now,
+  });
   setActiveRunSessionKey(sessionKey, sessionId);
   logSessionStateChange({
     sessionId,
@@ -332,7 +370,18 @@ export function updateActiveEmbeddedRunSnapshot(
   if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
     return;
   }
+  const now = Date.now();
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, snapshot);
+  const existingState = ACTIVE_EMBEDDED_RUN_RUNTIME_STATES.get(sessionId);
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  if (existingState && handle) {
+    ACTIVE_EMBEDDED_RUN_RUNTIME_STATES.set(sessionId, {
+      ...existingState,
+      isStreaming: handle.isStreaming(),
+      isCompacting: handle.isCompacting(),
+      lastActivityAt: now,
+    });
+  }
 }
 
 export function clearActiveEmbeddedRun(
@@ -343,6 +392,7 @@ export function clearActiveEmbeddedRun(
   if (ACTIVE_EMBEDDED_RUNS.get(sessionId) === handle) {
     ACTIVE_EMBEDDED_RUNS.delete(sessionId);
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
+    ACTIVE_EMBEDDED_RUN_RUNTIME_STATES.delete(sessionId);
     EMBEDDED_RUN_MODEL_SWITCH_REQUESTS.delete(sessionId);
     clearActiveRunSessionKeys(sessionId, sessionKey);
     logSessionStateChange({ sessionId, sessionKey, state: "idle", reason: "run_completed" });
@@ -366,6 +416,7 @@ export const __testing = {
     EMBEDDED_RUN_WAITERS.clear();
     ACTIVE_EMBEDDED_RUNS.clear();
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.clear();
+    ACTIVE_EMBEDDED_RUN_RUNTIME_STATES.clear();
     ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.clear();
     EMBEDDED_RUN_MODEL_SWITCH_REQUESTS.clear();
   },

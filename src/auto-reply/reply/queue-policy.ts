@@ -1,3 +1,4 @@
+import { isAutonomousLane, isLiveRecoverableLane } from "./active-run-policy.js";
 import type { QueueSettings } from "./queue.js";
 import type { RuntimeTurnLane } from "./turn-lane.types.js";
 
@@ -9,15 +10,16 @@ export function resolveActiveRunQueueAction(params: {
   lane?: RuntimeTurnLane;
   shouldFollowup: boolean;
   queueMode: QueueSettings["mode"];
+  activeRunStale?: boolean;
 }): ActiveRunQueueAction {
   if (!params.isActive) {
     return "run-now";
   }
   const lane = params.lane;
-  if (params.isHeartbeat || lane === "heartbeat" || lane === "cron" || lane === "maintenance") {
+  if (params.isHeartbeat || isAutonomousLane(lane)) {
     return "drop";
   }
-  if (lane === "live_user" || lane === "operator_recovery" || lane === "inter_session") {
+  if (isLiveRecoverableLane(lane)) {
     return "enqueue-followup";
   }
   if (params.shouldFollowup || params.queueMode === "steer") {

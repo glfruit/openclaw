@@ -824,6 +824,8 @@ export async function runReplyAgent(params: {
   shouldSteer: boolean;
   shouldFollowup: boolean;
   isActive: boolean;
+  activeRunStale?: boolean;
+  staleActiveRunReplyText?: string;
   isRunActive?: () => boolean;
   isStreaming: boolean;
   opts?: GetReplyOptions;
@@ -861,6 +863,8 @@ export async function runReplyAgent(params: {
     shouldSteer,
     shouldFollowup,
     isActive,
+    activeRunStale,
+    staleActiveRunReplyText,
     isRunActive,
     isStreaming,
     opts,
@@ -943,6 +947,7 @@ export async function runReplyAgent(params: {
     lane: followupRun.lane ?? followupRun.run.lane,
     shouldFollowup,
     queueMode: resolvedQueue.mode,
+    activeRunStale,
   });
 
   const queuedRunFollowupTurn = createFollowupRunner({
@@ -978,6 +983,9 @@ export async function runReplyAgent(params: {
     }
     await touchActiveSessionEntry();
     typing.cleanup();
+    if (staleActiveRunReplyText) {
+      return { text: staleActiveRunReplyText };
+    }
     return undefined;
   }
 

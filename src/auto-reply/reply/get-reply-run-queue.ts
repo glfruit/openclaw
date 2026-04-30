@@ -1,5 +1,6 @@
 import { logVerbose } from "../../globals.js";
 import type { ReplyPayload } from "../types.js";
+import type { ActiveRunRuntimeState } from "./active-run-policy.js";
 import type { ActiveRunQueueAction } from "./queue-policy.js";
 import type { QueueSettings } from "./queue.js";
 
@@ -7,6 +8,7 @@ export type ReplyRunQueueBusyState = {
   activeSessionId: string | undefined;
   isActive: boolean;
   isStreaming: boolean;
+  runtimeState?: ActiveRunRuntimeState;
 };
 
 export async function resolvePreparedReplyQueueState(params: {

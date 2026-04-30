@@ -25,6 +25,7 @@ export {
   abortEmbeddedPiRun as abortEmbeddedAgentRun,
   isEmbeddedPiRunActive,
   isEmbeddedPiRunActive as isEmbeddedAgentRunActive,
+  getActiveEmbeddedRunRuntimeState,
   isEmbeddedPiRunStreaming,
   isEmbeddedPiRunStreaming as isEmbeddedAgentRunStreaming,
   queueEmbeddedPiMessage,

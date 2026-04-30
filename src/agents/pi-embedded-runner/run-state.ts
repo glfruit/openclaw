@@ -19,6 +19,14 @@ export type ActiveEmbeddedRunSnapshot = {
   inFlightPrompt?: string;
 };
 
+export type ActiveEmbeddedRunRuntimeState = {
+  isActive: boolean;
+  isStreaming?: boolean;
+  isCompacting?: boolean;
+  startedAt?: number;
+  lastActivityAt?: number;
+};
+
 export type EmbeddedRunModelSwitchRequest = {
   provider: string;
   model: string;
@@ -39,6 +47,7 @@ const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
   sessionIdsByKey: new Map<string, string>(),
   waiters: new Map<string, Set<EmbeddedRunWaiter>>(),
   modelSwitchRequests: new Map<string, EmbeddedRunModelSwitchRequest>(),
+  runtimeStates: new Map<string, ActiveEmbeddedRunRuntimeState>(),
 }));
 
 export const ACTIVE_EMBEDDED_RUNS =
@@ -56,6 +65,9 @@ export const EMBEDDED_RUN_WAITERS =
 export const EMBEDDED_RUN_MODEL_SWITCH_REQUESTS =
   embeddedRunState.modelSwitchRequests ??
   (embeddedRunState.modelSwitchRequests = new Map<string, EmbeddedRunModelSwitchRequest>());
+export const ACTIVE_EMBEDDED_RUN_RUNTIME_STATES =
+  embeddedRunState.runtimeStates ??
+  (embeddedRunState.runtimeStates = new Map<string, ActiveEmbeddedRunRuntimeState>());
 
 export function getActiveEmbeddedRunCount(): number {
   let activeCount = ACTIVE_EMBEDDED_RUNS.size;
