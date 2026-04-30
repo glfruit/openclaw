@@ -383,6 +383,7 @@ describe("monitorTelegramProvider (grammY)", () => {
     initSpy.mockClear();
     readTelegramUpdateOffsetSpy.mockReset().mockResolvedValue(null);
     api.getUpdates.mockReset().mockResolvedValue([]);
+    api.deleteWebhook.mockReset();
     runSpy.mockReset().mockImplementation(() =>
       makeRunnerStub({
         task: () => Promise.reject(new Error("runSpy called without explicit test stub")),
@@ -539,6 +540,21 @@ describe("monitorTelegramProvider (grammY)", () => {
     expect(api.deleteWebhook).toHaveBeenCalledTimes(2);
     expect(api.getWebhookInfo).toHaveBeenCalledTimes(1);
     expectRecoverableRetryState(1);
+  });
+
+  it("continues polling after repeated recoverable deleteWebhook failures", async () => {
+    const abort = new AbortController();
+    const cleanupError = makeRecoverableFetchError();
+    api.deleteWebhook.mockReset();
+    api.getWebhookInfo.mockReset().mockRejectedValue(makeRecoverableFetchError());
+    api.deleteWebhook.mockRejectedValue(cleanupError);
+    mockRunOnceAndAbort(abort);
+
+    await monitorTelegramProvider({ token: "tok", abortSignal: abort.signal });
+
+    expect(api.deleteWebhook).toHaveBeenCalledTimes(3);
+    expect(api.getWebhookInfo).toHaveBeenCalledTimes(3);
+    expect(runSpy).toHaveBeenCalledTimes(1);
   });
 
   it("retries setup-time recoverable errors before starting polling", async () => {
