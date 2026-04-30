@@ -348,9 +348,6 @@ async function saveSessionStoreUnlocked(
         }
       }
 
-      // Rotate the on-disk file if it exceeds the size threshold.
-      await rotateSessionFile(storePath, maintenance.rotateBytes);
-
       const diskBudget = await enforceSessionDiskBudget({
         store,
         storePath,
@@ -375,6 +372,13 @@ async function saveSessionStoreUnlocked(
   if (getSerializedSessionStore(storePath) === json) {
     updateSessionStoreWriteCaches({ storePath, store, serialized: json });
     return;
+  }
+
+  if (!opts?.skipMaintenance) {
+    const maintenance = opts?.maintenanceConfig
+      ? { ...opts.maintenanceConfig, ...opts?.maintenanceOverride }
+      : { ...resolveMaintenanceConfig(), ...opts?.maintenanceOverride };
+    await rotateSessionFile(storePath, maintenance.rotateBytes);
   }
 
   // Windows: keep retry semantics because rename can fail while readers hold locks.

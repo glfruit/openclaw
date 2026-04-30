@@ -17,6 +17,7 @@ const DEFAULT_SESSION_DISK_BUDGET_HIGH_WATER_RATIO = 0.8;
 const STRICT_ENTRY_MAINTENANCE_MAX_ENTRIES = 49;
 const MIN_BATCHED_ENTRY_MAINTENANCE_SLACK = 25;
 const BATCHED_ENTRY_MAINTENANCE_SLACK_RATIO = 0.1;
+const DEFAULT_SESSION_ROTATE_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
 export type SessionMaintenanceWarning = {
   activeSessionKey: string;
@@ -351,6 +352,7 @@ async function getSessionFileSize(storePath: string): Promise<number | null> {
 export async function rotateSessionFile(
   storePath: string,
   overrideBytes?: number,
+  opts: { minIntervalMs?: number } = {},
 ): Promise<boolean> {
   const maxBytes = overrideBytes ?? resolveMaintenanceConfigFromInput().rotateBytes;
 
@@ -362,6 +364,14 @@ export async function rotateSessionFile(
 
   if (fileSize <= maxBytes) {
     return false;
+  }
+
+  const minIntervalMs = opts.minIntervalMs ?? DEFAULT_SESSION_ROTATE_MIN_INTERVAL_MS;
+  if (minIntervalMs > 0) {
+    const latestBackupMs = await getLatestSessionStoreBackupTimestamp(storePath);
+    if (latestBackupMs != null && Date.now() - latestBackupMs < minIntervalMs) {
+      return false;
+    }
   }
 
   // Keep the live store authoritative until the caller's later atomic write succeeds.
@@ -403,4 +413,27 @@ export async function rotateSessionFile(
   }
 
   return true;
+}
+
+async function getLatestSessionStoreBackupTimestamp(storePath: string): Promise<number | null> {
+  try {
+    const dir = path.dirname(storePath);
+    const baseName = path.basename(storePath);
+    const files = await fs.promises.readdir(dir);
+    let latest: number | null = null;
+    for (const file of files) {
+      if (!file.startsWith(`${baseName}.bak.`)) {
+        continue;
+      }
+      const raw = file.slice(`${baseName}.bak.`.length);
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) {
+        continue;
+      }
+      latest = latest == null ? parsed : Math.max(latest, parsed);
+    }
+    return latest;
+  } catch {
+    return null;
+  }
 }

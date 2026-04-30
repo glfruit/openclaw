@@ -210,7 +210,7 @@ describe("rotateSessionFile", () => {
       // 4 rotations are enough to verify pruning to <=3 backups.
       for (let i = 0; i < 4; i++) {
         await fs.writeFile(storePath, `data-${i}-${"x".repeat(100)}`, "utf-8");
-        await rotateSessionFile(storePath, 50);
+        await rotateSessionFile(storePath, 50, { minIntervalMs: 0 });
       }
     } finally {
       nowSpy.mockRestore();
@@ -220,5 +220,27 @@ describe("rotateSessionFile", () => {
     const bakFiles = files.filter((f) => f.startsWith("sessions.json.bak.")).toSorted();
 
     expect(bakFiles.length).toBeLessThanOrEqual(3);
+  });
+
+  it("skips repeated backup churn within the rotation interval", async () => {
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      await fs.writeFile(storePath, `data-1-${"x".repeat(100)}`, "utf-8");
+      await expect(rotateSessionFile(storePath, 50, { minIntervalMs: 1000 })).resolves.toBe(true);
+
+      now += 500;
+      await fs.writeFile(storePath, `data-2-${"x".repeat(100)}`, "utf-8");
+      await expect(rotateSessionFile(storePath, 50, { minIntervalMs: 1000 })).resolves.toBe(false);
+
+      now += 501;
+      await expect(rotateSessionFile(storePath, 50, { minIntervalMs: 1000 })).resolves.toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    const files = await fs.readdir(testDir);
+    const bakFiles = files.filter((f) => f.startsWith("sessions.json.bak."));
+    expect(bakFiles).toHaveLength(2);
   });
 });
