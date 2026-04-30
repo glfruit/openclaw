@@ -9,6 +9,24 @@ import { resolveNpmRunner } from "./npm-runner.mjs";
 const TRANSIENT_TEMP_REMOVE_ERROR_CODES = new Set(["EBUSY", "ENOTEMPTY", "EPERM"]);
 const TEMP_REMOVE_RETRY_DELAYS_MS = [10, 25, 50];
 const TEMP_OWNER_FILE = "owner.json";
+const DEFAULT_RUNTIME_DEPS_INSTALL_TIMEOUT_MS = 60_000;
+const MIN_RUNTIME_DEPS_INSTALL_TIMEOUT_MS = 5_000;
+const MAX_RUNTIME_DEPS_INSTALL_TIMEOUT_MS = 10 * 60_000;
+
+function resolveRuntimeDepsInstallTimeoutMs(env = process.env) {
+  const raw = env.OPENCLAW_BUNDLED_RUNTIME_DEPS_INSTALL_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_RUNTIME_DEPS_INSTALL_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_RUNTIME_DEPS_INSTALL_TIMEOUT_MS;
+  }
+  return Math.min(
+    MAX_RUNTIME_DEPS_INSTALL_TIMEOUT_MS,
+    Math.max(MIN_RUNTIME_DEPS_INSTALL_TIMEOUT_MS, Math.round(parsed)),
+  );
+}
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -900,14 +918,23 @@ function runNpmInstall(params) {
     env: npmEnv,
     shell: params.npmRunner.shell,
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: params.timeoutMs ?? 5 * 60 * 1000,
+    timeout: params.timeoutMs ?? resolveRuntimeDepsInstallTimeoutMs(npmEnv),
+    killSignal: "SIGTERM",
     windowsHide: true,
     windowsVerbatimArguments: params.npmRunner.windowsVerbatimArguments,
   });
   if (result.status === 0) {
     return;
   }
-  const output = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+  const output = [
+    result.error?.message,
+    result.signal ? `terminated by ${result.signal}` : null,
+    result.stderr,
+    result.stdout,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
   throw new Error(output || "npm install failed");
 }
 
