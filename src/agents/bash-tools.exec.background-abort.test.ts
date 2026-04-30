@@ -279,6 +279,55 @@ test("yielded background exec still times out", async () => {
   });
 });
 
+test("yielded background exec invokes background notification after yieldMs", async () => {
+  const onBackgrounded = vi.fn();
+  const tool = createTestExecTool({
+    allowBackground: true,
+    backgroundMs: 10,
+    onBackgrounded,
+    timeoutSec: BACKGROUND_TIMEOUT_SEC,
+  });
+
+  const result = await tool.execute("toolcall", {
+    command: BACKGROUND_HOLD_CMD,
+    yieldMs: 5,
+  });
+
+  expect(result.details.status).toBe("running");
+  const sessionId = (result.details as { sessionId: string }).sessionId;
+  expect(onBackgrounded).toHaveBeenCalledWith(
+    expect.objectContaining({
+      sessionId,
+      reason: "yield",
+    }),
+  );
+  await waitForFinishedSession(sessionId);
+  cleanupRunningSession(sessionId);
+});
+
+test("default timed background exec invokes background notification", async () => {
+  const onBackgrounded = vi.fn();
+  const tool = createTestExecTool({
+    allowBackground: true,
+    backgroundMs: 5,
+    onBackgrounded,
+    timeoutSec: BACKGROUND_TIMEOUT_SEC,
+  });
+
+  const result = await tool.execute("toolcall", { command: BACKGROUND_HOLD_CMD });
+
+  expect(result.details.status).toBe("running");
+  const sessionId = (result.details as { sessionId: string }).sessionId;
+  expect(onBackgrounded).toHaveBeenCalledWith(
+    expect.objectContaining({
+      sessionId,
+      reason: "yield",
+    }),
+  );
+  await waitForFinishedSession(sessionId);
+  cleanupRunningSession(sessionId);
+});
+
 test("yieldMs exec without explicit timeout applies default timeout", async () => {
   const tool = createTestExecTool({
     allowBackground: true,
