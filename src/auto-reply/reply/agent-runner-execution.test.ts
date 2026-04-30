@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
   runWithModelFallbackMock: vi.fn(),
   isCliProviderMock: vi.fn((_: unknown) => false),
   isInternalMessageChannelMock: vi.fn((_: unknown) => false),
+  isRateLimitErrorMessageMock: vi.fn((_: string) => false),
+  isTransientHttpErrorMock: vi.fn((_: string) => false),
   createBlockReplyDeliveryHandlerMock: vi.fn(),
 }));
 
@@ -71,8 +73,8 @@ vi.mock("../../agents/pi-embedded-helpers.js", () => ({
   isBillingErrorMessage: () => false,
   isLikelyContextOverflowError: () => false,
   isOverloadedErrorMessage: (message: string) => /overloaded|capacity/i.test(message),
-  isRateLimitErrorMessage: () => false,
-  isTransientHttpError: () => false,
+  isRateLimitErrorMessage: (message: string) => state.isRateLimitErrorMessageMock(message),
+  isTransientHttpError: (message: string) => state.isTransientHttpErrorMock(message),
   sanitizeUserFacingText: (text?: string) => text ?? "",
 }));
 
@@ -302,6 +304,10 @@ describe("runAgentTurnWithFallback", () => {
     state.isCliProviderMock.mockReturnValue(false);
     state.isInternalMessageChannelMock.mockReset();
     state.isInternalMessageChannelMock.mockReturnValue(false);
+    state.isRateLimitErrorMessageMock.mockReset();
+    state.isRateLimitErrorMessageMock.mockReturnValue(false);
+    state.isTransientHttpErrorMock.mockReset();
+    state.isTransientHttpErrorMock.mockReturnValue(false);
     state.createBlockReplyDeliveryHandlerMock.mockReset();
     state.createBlockReplyDeliveryHandlerMock.mockReturnValue(undefined);
     state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => ({
@@ -313,6 +319,7 @@ describe("runAgentTurnWithFallback", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -1717,6 +1724,113 @@ describe("runAgentTurnWithFallback", () => {
       expect(result.payload.text).not.toContain("All models failed");
       expect(result.payload.text).not.toContain("402 (billing)");
       expect(result.payload.text).not.toContain("Rate-limited");
+    }
+  });
+
+  it("surfaces pure live-user rate-limit fallback exhaustion", async () => {
+    state.runWithModelFallbackMock.mockRejectedValueOnce(
+      Object.assign(new Error("All models failed (1): anthropic/claude: 429 (rate_limit)"), {
+        name: "FallbackSummaryError",
+        attempts: [{ provider: "anthropic", model: "claude", error: "429", reason: "rate_limit" }],
+        soonestCooldownExpiry: Date.now() + 45_000,
+      }),
+    );
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    const result = await runAgentTurnWithFallback(
+      createMinimalRunAgentTurnParams({
+        followupRun: {
+          ...createFollowupRun(),
+          lane: "live_user",
+          run: { ...createFollowupRun().run, lane: "live_user" },
+        } as FollowupRun,
+      }),
+    );
+
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.payload.text).toContain("Rate-limited");
+      expect(result.payload.text).not.toBe(SILENT_REPLY_TOKEN);
+    }
+  });
+
+  it("keeps autonomous rate-limit fallback exhaustion out of user-visible replies", async () => {
+    state.runWithModelFallbackMock.mockRejectedValueOnce(
+      Object.assign(new Error("All models failed (1): anthropic/claude: 429 (rate_limit)"), {
+        name: "FallbackSummaryError",
+        attempts: [{ provider: "anthropic", model: "claude", error: "429", reason: "rate_limit" }],
+        soonestCooldownExpiry: Date.now() + 45_000,
+      }),
+    );
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    const baseRun = createFollowupRun();
+    const result = await runAgentTurnWithFallback(
+      createMinimalRunAgentTurnParams({
+        followupRun: {
+          ...baseRun,
+          lane: "heartbeat",
+          run: { ...baseRun.run, lane: "heartbeat" },
+        } as FollowupRun,
+      }),
+    );
+
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.payload.text).toBe(SILENT_REPLY_TOKEN);
+    }
+  });
+
+  it("retries a live-user transient model failure once before surfacing recovery copy", async () => {
+    vi.useFakeTimers();
+    state.isTransientHttpErrorMock.mockImplementation((message: string) => /502/.test(message));
+    state.runWithModelFallbackMock
+      .mockRejectedValueOnce(new Error("502 Bad Gateway"))
+      .mockRejectedValueOnce(new Error("502 Bad Gateway"));
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    const runPromise = runAgentTurnWithFallback(
+      createMinimalRunAgentTurnParams({
+        followupRun: {
+          ...createFollowupRun(),
+          lane: "live_user",
+          run: { ...createFollowupRun().run, lane: "live_user" },
+        } as FollowupRun,
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(2_500);
+    const result = await runPromise;
+    vi.useRealTimers();
+
+    expect(state.runWithModelFallbackMock).toHaveBeenCalledTimes(2);
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.payload.text).toContain("Something went wrong");
+      expect(result.payload.text).not.toBe(SILENT_REPLY_TOKEN);
+    }
+  });
+
+  it("does not inject autonomous mid-turn provider rate-limit errors as visible replies", async () => {
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "429 Too Many Requests", isError: true }],
+      meta: { error: { message: "429 Too Many Requests" } },
+    });
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    const baseRun = createFollowupRun();
+    const result = await runAgentTurnWithFallback(
+      createMinimalRunAgentTurnParams({
+        followupRun: {
+          ...baseRun,
+          lane: "maintenance",
+          run: { ...baseRun.run, lane: "maintenance" },
+        } as FollowupRun,
+      }),
+    );
+
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      expect(result.runResult.payloads).toEqual([{ text: SILENT_REPLY_TOKEN, isError: true }]);
     }
   });
 

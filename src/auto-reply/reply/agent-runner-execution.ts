@@ -68,6 +68,7 @@ import {
   stripLeadingSilentToken,
 } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
+import { isAutonomousLane, isLiveRecoverableLane } from "./active-run-policy.js";
 import { resolveRunAuthProfile } from "./agent-runner-auth-profile.js";
 import {
   buildEmbeddedRunExecutionParams,
@@ -735,6 +736,17 @@ export async function runAgentTurnWithFallback(params: {
       logVerbose(`compaction ${phase} notice delivery failed (non-fatal): ${String(err)}`);
     }
   };
+  const turnLane = params.followupRun.lane ?? params.followupRun.run.lane;
+  const shouldSuppressAutonomousModelFailure = (failure: {
+    isRateLimit?: boolean;
+    isTransientHttp?: boolean;
+    hasRateLimitOrOverloadedCopy?: boolean;
+  }): boolean =>
+    (failure.isRateLimit === true ||
+      failure.isTransientHttp === true ||
+      failure.hasRateLimitOrOverloadedCopy === true) &&
+    (params.isHeartbeat || isAutonomousLane(turnLane)) &&
+    !isLiveRecoverableLane(turnLane);
   const shouldSurfaceToControlUi = isInternalMessageChannel(
     params.followupRun.run.messageProvider ??
       params.sessionCtx.Surface ??
@@ -1689,6 +1701,21 @@ export async function runAgentTurnWithFallback(params: {
         !isFallbackSummary || isPureTransientSummary
           ? formatRateLimitOrOverloadedErrorCopy(message)
           : undefined;
+      if (
+        shouldSuppressAutonomousModelFailure({
+          isRateLimit,
+          isTransientHttp,
+          hasRateLimitOrOverloadedCopy: Boolean(rateLimitOrOverloadedCopy),
+        })
+      ) {
+        params.replyOperation?.fail("run_failed", err);
+        return {
+          kind: "final",
+          payload: {
+            text: SILENT_REPLY_TOKEN,
+          },
+        };
+      }
       const safeMessage = isTransientHttp
         ? sanitizeUserFacingText(message, { errorContext: true })
         : message;
@@ -1784,7 +1811,9 @@ export async function runAgentTurnWithFallback(params: {
       if (formattedErrorCandidate) {
         runResult.payloads = [
           {
-            text: formattedErrorCandidate,
+            text: shouldSuppressAutonomousModelFailure({ hasRateLimitOrOverloadedCopy: true })
+              ? SILENT_REPLY_TOKEN
+              : formattedErrorCandidate,
             isError: true,
           },
         ];
