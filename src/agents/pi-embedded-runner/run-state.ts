@@ -25,6 +25,7 @@ export type ActiveEmbeddedRunRuntimeState = {
   isCompacting?: boolean;
   startedAt?: number;
   lastActivityAt?: number;
+  visiblePendingBackgroundedWork?: boolean;
 };
 
 export type EmbeddedRunModelSwitchRequest = {

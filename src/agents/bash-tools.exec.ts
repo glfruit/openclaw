@@ -1761,6 +1761,11 @@ export function createExecTool(
           }
           yielded = true;
           markBackgrounded(run.session);
+          defaults?.onBackgrounded?.({
+            sessionId: run.session.id,
+            ...(typeof run.session.pid === "number" ? { pid: run.session.pid } : {}),
+            reason: backgroundRequested ? "background" : "yield",
+          });
           resolveRunning();
         };
 

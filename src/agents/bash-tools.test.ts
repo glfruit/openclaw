@@ -689,6 +689,23 @@ describe("exec tool backgrounding", () => {
     isWin ? 15_000 : 5_000,
   );
 
+  it("notifies the caller when exec work backgrounds", async () => {
+    const onBackgrounded = vi.fn();
+    const tool = createTestExecTool({ allowBackground: true, backgroundMs: 0, onBackgrounded });
+
+    const result = await executeExecCommand(tool, shortDelayCmd, { background: true });
+
+    if (result.details.status !== PROCESS_STATUS_RUNNING) {
+      return;
+    }
+    expect(onBackgrounded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: result.details.sessionId,
+        reason: "background",
+      }),
+    );
+  });
+
   it("supports explicit background and derives session name from the command", async () => {
     const sessionId = await startBackgroundCommand(execTool, COMMAND_ECHO_HELLO);
 

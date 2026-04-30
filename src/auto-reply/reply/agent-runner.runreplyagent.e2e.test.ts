@@ -111,6 +111,7 @@ function createMinimalRun(params?: {
   isActive?: boolean;
   activeRunStale?: boolean;
   staleActiveRunReplyText?: string;
+  backgroundedActiveRunReplyText?: string;
   isRunActive?: () => boolean;
   shouldFollowup?: boolean;
   resolvedQueueMode?: string;
@@ -130,6 +131,13 @@ function createMinimalRun(params?: {
     prompt: "hello",
     summaryLine: "hello",
     enqueuedAt: Date.now(),
+    lane: params?.runOverrides?.lane,
+    priority:
+      params?.runOverrides?.lane === "live_user" ||
+      params?.runOverrides?.lane === "operator_recovery" ||
+      params?.runOverrides?.lane === "inter_session"
+        ? "live"
+        : undefined,
     run: {
       sessionId: "session",
       sessionKey,
@@ -170,6 +178,7 @@ function createMinimalRun(params?: {
         isActive: params?.isActive ?? false,
         activeRunStale: params?.activeRunStale,
         staleActiveRunReplyText: params?.staleActiveRunReplyText,
+        backgroundedActiveRunReplyText: params?.backgroundedActiveRunReplyText,
         isRunActive: params?.isRunActive,
         isStreaming: false,
         opts,
@@ -241,12 +250,35 @@ describe("runReplyAgent heartbeat followup guard", () => {
     expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
   });
 
-  it("queues live user messages behind a non-stale active run without a stale notice", async () => {
+  it("queues live user messages behind backgrounded work and surfaces a visible notice", async () => {
+    const { run } = createMinimalRun({
+      opts: { isHeartbeat: false },
+      isActive: true,
+      activeRunStale: false,
+      backgroundedActiveRunReplyText: "queued behind backgrounded work",
+      shouldFollowup: false,
+      resolvedQueueMode: "queue",
+      runOverrides: { lane: "live_user" },
+    });
+
+    const result = await run();
+
+    expect(result).toEqual({ text: "queued behind backgrounded work" });
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueFollowupRun).mock.calls[0]?.[1]).toMatchObject({
+      lane: "live_user",
+      priority: "live",
+    });
+    expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("queues live user messages behind a non-stale active run without a notice", async () => {
     const { run } = createMinimalRun({
       opts: { isHeartbeat: false },
       isActive: true,
       activeRunStale: false,
       staleActiveRunReplyText: undefined,
+      backgroundedActiveRunReplyText: undefined,
       shouldFollowup: false,
       resolvedQueueMode: "queue",
       runOverrides: { lane: "live_user" },

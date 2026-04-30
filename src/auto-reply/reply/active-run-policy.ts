@@ -8,6 +8,7 @@ export type ActiveRunRuntimeState = {
   startedAt?: number;
   lastActivityAt?: number;
   phase?: string;
+  visiblePendingBackgroundedWork?: boolean;
 };
 
 export function isLiveRecoverableLane(lane?: RuntimeTurnLane): boolean {
@@ -52,6 +53,21 @@ export function shouldSurfaceLiveQueuedBehindStaleRun(params: {
   activeRunStale?: boolean;
 }): boolean {
   return params.activeRunStale === true && isLiveRecoverableLane(params.lane);
+}
+
+export function shouldSurfaceLiveQueuedBehindBackgroundedRun(params: {
+  lane?: RuntimeTurnLane;
+  visiblePendingBackgroundedWork?: boolean;
+}): boolean {
+  return params.visiblePendingBackgroundedWork === true && isLiveRecoverableLane(params.lane);
+}
+
+export function buildBackgroundedActiveRunQueuedReply(): string {
+  return [
+    "⚠️ I received this live message while prior backgrounded work is still running.",
+    "I queued your message as live priority so it can be recovered after the background work finishes.",
+    "The background process was not cancelled.",
+  ].join("\n");
 }
 
 export function buildStaleActiveRunQueuedReply(params: {

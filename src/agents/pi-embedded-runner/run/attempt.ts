@@ -735,6 +735,9 @@ export async function runEmbeddedAttempt(
                 params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
               disableMessageTool: params.disableMessageTool,
               forceMessageTool: params.forceMessageTool,
+              onBackgroundedExec: () => {
+                params.replyOperation?.markVisiblePendingBackgroundedWork();
+              },
               onYield: (message) => {
                 yieldDetected = true;
                 yieldMessage = message;

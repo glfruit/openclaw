@@ -42,8 +42,10 @@ import {
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import {
+  buildBackgroundedActiveRunQueuedReply,
   buildStaleActiveRunQueuedReply,
   resolveActiveRunStaleness,
+  shouldSurfaceLiveQueuedBehindBackgroundedRun,
   shouldSurfaceLiveQueuedBehindStaleRun,
 } from "./active-run-policy.js";
 import { applySessionHints } from "./body.js";
@@ -897,6 +899,12 @@ export async function runPreparedReply(
           thresholdMs: activeRunStaleness.thresholdMs,
           lastActivityAgeMs: activeRunStaleness.lastActivityAgeMs,
         })
+      : undefined,
+    backgroundedActiveRunReplyText: shouldSurfaceLiveQueuedBehindBackgroundedRun({
+      lane: turnLane,
+      visiblePendingBackgroundedWork: runtimeState?.visiblePendingBackgroundedWork,
+    })
+      ? buildBackgroundedActiveRunQueuedReply()
       : undefined,
     isRunActive: () => {
       const latestSessionState = resolvePreparedSessionState();

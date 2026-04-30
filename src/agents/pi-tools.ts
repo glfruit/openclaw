@@ -342,6 +342,12 @@ export function createOpenClawCodingTools(options?: {
   senderIsOwner?: boolean;
   /** Callback invoked when sessions_yield tool is called. */
   onYield?: (message: string) => Promise<void> | void;
+  /** Callback invoked when exec backgrounds/yields a process for process-tool follow-up. */
+  onBackgroundedExec?: (params: {
+    sessionId: string;
+    pid?: number;
+    reason: "background" | "yield";
+  }) => void;
 }): AnyAgentTool[] {
   const execToolName = "exec";
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
@@ -525,6 +531,7 @@ export function createOpenClawCodingTools(options?: {
     notifyOnExit: options?.exec?.notifyOnExit ?? execConfig.notifyOnExit,
     notifyOnExitEmptySuccess:
       options?.exec?.notifyOnExitEmptySuccess ?? execConfig.notifyOnExitEmptySuccess,
+    onBackgrounded: options?.onBackgroundedExec,
     sandbox: sandbox
       ? {
           containerName: sandbox.containerName,

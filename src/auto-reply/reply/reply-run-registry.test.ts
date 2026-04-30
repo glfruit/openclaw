@@ -3,6 +3,7 @@ import {
   __testing,
   abortActiveReplyRuns,
   createReplyOperation,
+  getActiveReplyRunRuntimeStateBySessionId,
   isReplyRunActiveForSessionId,
   queueReplyRunMessage,
   replyRunRegistry,
@@ -63,6 +64,27 @@ describe("reply run registry", () => {
 
     expect(operation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(replyRunRegistry.isActive("agent:main:main")).toBe(false);
+  });
+
+  it("marks active reply operations as visible pending backgrounded work", () => {
+    const operation = createReplyOperation({
+      sessionKey: "agent:main:main",
+      sessionId: "session-backgrounded",
+      resetTriggered: false,
+    });
+
+    expect(
+      getActiveReplyRunRuntimeStateBySessionId("session-backgrounded")
+        ?.visiblePendingBackgroundedWork,
+    ).toBe(false);
+
+    operation.markVisiblePendingBackgroundedWork();
+
+    expect(operation.visiblePendingBackgroundedWork).toBe(true);
+    expect(
+      getActiveReplyRunRuntimeStateBySessionId("session-backgrounded")
+        ?.visiblePendingBackgroundedWork,
+    ).toBe(true);
   });
 
   it("queues messages only through the active running backend", async () => {

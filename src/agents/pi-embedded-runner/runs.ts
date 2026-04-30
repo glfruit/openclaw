@@ -208,6 +208,8 @@ export function getActiveEmbeddedRunRuntimeState(
       typeof replyLastActivityAt === "number"
         ? Math.max(existing.lastActivityAt ?? 0, replyLastActivityAt)
         : existing.lastActivityAt,
+    visiblePendingBackgroundedWork:
+      replyState?.visiblePendingBackgroundedWork ?? existing.visiblePendingBackgroundedWork,
   };
 }
 

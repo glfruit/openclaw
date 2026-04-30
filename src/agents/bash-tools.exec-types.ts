@@ -32,6 +32,11 @@ export type ExecToolDefaults = {
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   cwd?: string;
+  onBackgrounded?: (params: {
+    sessionId: string;
+    pid?: number;
+    reason: "background" | "yield";
+  }) => void;
 };
 
 export type ExecElevatedDefaults = {

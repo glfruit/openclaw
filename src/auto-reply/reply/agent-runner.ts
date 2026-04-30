@@ -826,6 +826,7 @@ export async function runReplyAgent(params: {
   isActive: boolean;
   activeRunStale?: boolean;
   staleActiveRunReplyText?: string;
+  backgroundedActiveRunReplyText?: string;
   isRunActive?: () => boolean;
   isStreaming: boolean;
   opts?: GetReplyOptions;
@@ -865,6 +866,7 @@ export async function runReplyAgent(params: {
     isActive,
     activeRunStale,
     staleActiveRunReplyText,
+    backgroundedActiveRunReplyText,
     isRunActive,
     isStreaming,
     opts,
@@ -985,6 +987,9 @@ export async function runReplyAgent(params: {
     typing.cleanup();
     if (staleActiveRunReplyText) {
       return { text: staleActiveRunReplyText };
+    }
+    if (backgroundedActiveRunReplyText) {
+      return { text: backgroundedActiveRunReplyText };
     }
     return undefined;
   }

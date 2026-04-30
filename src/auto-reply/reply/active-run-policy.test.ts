@@ -3,6 +3,7 @@ import {
   DEFAULT_ACTIVE_RUN_STALE_MS,
   isAutonomousLane,
   resolveActiveRunStaleness,
+  shouldSurfaceLiveQueuedBehindBackgroundedRun,
   shouldSurfaceLiveQueuedBehindStaleRun,
 } from "./active-run-policy.js";
 
@@ -51,6 +52,33 @@ describe("active run stale policy", () => {
     );
     expect(
       shouldSurfaceLiveQueuedBehindStaleRun({ lane: "live_user", activeRunStale: false }),
+    ).toBe(false);
+  });
+
+  it("surfaces only recoverable live lanes behind visible backgrounded work", () => {
+    expect(
+      shouldSurfaceLiveQueuedBehindBackgroundedRun({
+        lane: "live_user",
+        visiblePendingBackgroundedWork: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldSurfaceLiveQueuedBehindBackgroundedRun({
+        lane: "inter_session",
+        visiblePendingBackgroundedWork: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldSurfaceLiveQueuedBehindBackgroundedRun({
+        lane: "cron",
+        visiblePendingBackgroundedWork: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldSurfaceLiveQueuedBehindBackgroundedRun({
+        lane: "live_user",
+        visiblePendingBackgroundedWork: false,
+      }),
     ).toBe(false);
   });
 

@@ -51,8 +51,10 @@ export type ReplyOperation = {
   readonly result: ReplyOperationResult | null;
   readonly startedAt: number;
   readonly lastActivityAt: number;
+  readonly visiblePendingBackgroundedWork: boolean;
   setPhase(next: "queued" | "preflight_compacting" | "memory_flushing" | "running"): void;
   markActivity(): void;
+  markVisiblePendingBackgroundedWork(): void;
   updateSessionId(nextSessionId: string): void;
   attachBackend(handle: ReplyBackendHandle): void;
   detachBackend(handle: ReplyBackendHandle): void;
@@ -215,6 +217,7 @@ export function createReplyOperation(params: {
   let result: ReplyOperationResult | null = null;
   const startedAt = Date.now();
   let lastActivityAt = startedAt;
+  let visiblePendingBackgroundedWork = false;
   let stateCleared = false;
 
   const markActivity = () => {
@@ -291,6 +294,9 @@ export function createReplyOperation(params: {
     get lastActivityAt() {
       return lastActivityAt;
     },
+    get visiblePendingBackgroundedWork() {
+      return visiblePendingBackgroundedWork;
+    },
     setPhase(next) {
       if (result) {
         return;
@@ -299,6 +305,13 @@ export function createReplyOperation(params: {
       markActivity();
     },
     markActivity,
+    markVisiblePendingBackgroundedWork() {
+      if (result) {
+        return;
+      }
+      visiblePendingBackgroundedWork = true;
+      markActivity();
+    },
     updateSessionId(nextSessionId) {
       if (result) {
         return;
@@ -486,6 +499,7 @@ export function getActiveReplyRunRuntimeStateBySessionId(sessionId: string):
       startedAt: number;
       lastActivityAt: number;
       phase: ReplyOperationPhase;
+      visiblePendingBackgroundedWork?: boolean;
     }
   | undefined {
   const operation = resolveReplyRunForCurrentSessionId(sessionId);
@@ -499,6 +513,7 @@ export function getActiveReplyRunRuntimeStateBySessionId(sessionId: string):
     startedAt: operation.startedAt,
     lastActivityAt: operation.lastActivityAt,
     phase: operation.phase,
+    visiblePendingBackgroundedWork: operation.visiblePendingBackgroundedWork,
   };
 }
 
