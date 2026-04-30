@@ -39,6 +39,13 @@ const slackOutboundForTest: ChannelOutboundAdapter = {
 };
 
 const emptyRegistry = createTestRegistry([]);
+
+beforeEach(() => {
+  deliverOutboundPayloadsMock.mockReset();
+  deliverOutboundPayloadsMock.mockResolvedValue([{ channel: "slack", messageId: "delivered-1" }]);
+  createReplyMediaPathNormalizerMock.mockClear();
+});
+
 const slackRegistry = createTestRegistry([
   {
     pluginId: "slack",
@@ -189,7 +196,7 @@ describe("normalizeAgentCommandReplyPayloads", () => {
       }),
     );
     createReplyMediaPathNormalizerMock.mockReturnValue(normalizerFn);
-    deliverOutboundPayloadsMock.mockResolvedValue([]);
+    deliverOutboundPayloadsMock.mockResolvedValue([{ channel: "slack", messageId: "delivered-1" }]);
 
     await deliverMediaReplyForTest({
       key: "agent:tester:slack:direct:alice",
@@ -217,7 +224,7 @@ describe("normalizeAgentCommandReplyPayloads", () => {
 
   it("threads agentId into the normalizer when sessionKey is unresolved", async () => {
     createReplyMediaPathNormalizerMock.mockReturnValue(async (payload: ReplyPayload) => payload);
-    deliverOutboundPayloadsMock.mockResolvedValue([]);
+    deliverOutboundPayloadsMock.mockResolvedValue([{ channel: "slack", messageId: "delivered-1" }]);
 
     await deliverMediaReplyForTest({ agentId: "tester" } as never);
 
@@ -262,6 +269,61 @@ describe("normalizeAgentCommandReplyPayloads", () => {
         text: "[[buttons: Release menu | Choose an action | Retry:retry, Ignore:ignore]]",
       },
     ]);
+  });
+
+  it("passes the agent abort signal into outbound delivery", async () => {
+    const abortController = new AbortController();
+
+    await deliverAgentCommandResult({
+      cfg: {} as OpenClawConfig,
+      deps: {} as CliDeps,
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      opts: {
+        message: "test",
+        deliver: true,
+        replyChannel: "slack",
+        replyTo: "#general",
+        abortSignal: abortController.signal,
+      } as AgentCommandOpts,
+      outboundSession: undefined,
+      sessionEntry: undefined,
+      payloads: [{ text: "hello" }],
+      result: createResult(),
+    });
+
+    expect(deliverOutboundPayloadsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ abortSignal: abortController.signal }),
+    );
+  });
+
+  it("fails the delivered agent run when outbound delivery returns no confirmations", async () => {
+    const runtime = { log: vi.fn(), error: vi.fn() };
+    deliverOutboundPayloadsMock.mockResolvedValueOnce([]);
+
+    await expect(
+      deliverAgentCommandResult({
+        cfg: {} as OpenClawConfig,
+        deps: {} as CliDeps,
+        runtime: runtime as never,
+        opts: {
+          message: "test",
+          deliver: true,
+          replyChannel: "slack",
+          replyTo: "#general",
+          bestEffortDeliver: true,
+        } as AgentCommandOpts,
+        outboundSession: undefined,
+        sessionEntry: undefined,
+        payloads: [{ text: "hello" }],
+        result: createResult(),
+      }),
+    ).rejects.toThrow(/Delivery produced no confirmations/);
+
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Delivery failed (slack to #general): Error: Delivery produced no confirmations",
+      ),
+    );
   });
 
   it("merges result metadata overrides into JSON output and returned results", async () => {

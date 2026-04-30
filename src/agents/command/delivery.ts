@@ -70,6 +70,17 @@ function logNestedOutput(
   }
 }
 
+function createDeliveryUnconfirmedError(params: {
+  channel: string;
+  target?: string;
+  payloadCount: number;
+}): Error {
+  const target = params.target ? ` to ${params.target}` : "";
+  return new Error(
+    `Delivery produced no confirmations (${params.channel}${target}, payloads=${params.payloadCount})`,
+  );
+}
+
 function mergeResultMetaOverrides(
   meta: EmbeddedPiRunMeta,
   overrides: AgentCommandResultMetaOverrides | undefined,
@@ -376,7 +387,7 @@ export async function deliverAgentCommandResult(params: {
   }
   if (deliver && deliveryChannel && !isInternalMessageChannel(deliveryChannel)) {
     if (deliveryTarget) {
-      await deliverOutboundPayloads({
+      const deliveryResults = await deliverOutboundPayloads({
         cfg,
         channel: deliveryChannel,
         to: deliveryTarget,
@@ -389,7 +400,17 @@ export async function deliverAgentCommandResult(params: {
         onError: (err) => logDeliveryError(err),
         onPayload: logPayload,
         deps: createOutboundSendDeps(deps),
+        abortSignal: opts.abortSignal,
       });
+      if (deliveryPayloads.length > 0 && deliveryResults.length === 0) {
+        const err = createDeliveryUnconfirmedError({
+          channel: deliveryChannel,
+          target: deliveryTarget,
+          payloadCount: deliveryPayloads.length,
+        });
+        logDeliveryError(err);
+        throw err;
+      }
     }
   }
 
