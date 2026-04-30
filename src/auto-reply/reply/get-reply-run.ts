@@ -64,6 +64,7 @@ import { resolveBareSessionResetPromptState } from "./session-reset-prompt.js";
 import { resolveBareResetBootstrapFileAccess } from "./session-reset-prompt.js";
 import { drainFormattedSystemEvents } from "./session-system-events.js";
 import { buildSessionStartupContextPrelude, shouldApplyStartupContext } from "./startup-context.js";
+import { buildRuntimeTurnLanePrompt, classifyRuntimeTurnLane } from "./turn-lane.js";
 import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 import type { TypingController } from "./typing.js";
@@ -365,7 +366,11 @@ export async function runPreparedReply(
     isNewSession ? sessionCtx : { ...sessionCtx, ThreadStarterBody: undefined },
     { includeFormattingHints: !useFastReplyRuntime },
   );
+  const turnLane = classifyRuntimeTurnLane(ctx);
+  ctx.RuntimeTurnLane = turnLane;
+  sessionCtx.RuntimeTurnLane = turnLane;
   const extraSystemPromptParts = [
+    buildRuntimeTurnLanePrompt(turnLane),
     inboundMetaPrompt,
     directChatContext,
     groupChatContext,
@@ -719,6 +724,7 @@ export async function runPreparedReply(
   const activeRunQueueAction = resolveActiveRunQueueAction({
     isActive,
     isHeartbeat: opts?.isHeartbeat === true,
+    lane: turnLane,
     shouldFollowup,
     queueMode: resolvedQueue.mode,
   });
@@ -765,6 +771,11 @@ export async function runPreparedReply(
     messageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
     summaryLine: baseBodyTrimmedRaw,
     enqueuedAt: Date.now(),
+    lane: turnLane,
+    priority:
+      turnLane === "live_user" || turnLane === "operator_recovery" || turnLane === "inter_session"
+        ? ("live" as const)
+        : ("autonomous" as const),
     images: opts?.images,
     imageOrder: opts?.imageOrder,
     // Originating channel for reply routing.
@@ -779,6 +790,7 @@ export async function runPreparedReply(
       sessionId: preparedSessionState.sessionId,
       sessionKey,
       runtimePolicySessionKey,
+      lane: turnLane,
       messageProvider: resolveOriginMessageProvider({
         originatingChannel: ctx.OriginatingChannel ?? sessionCtx.OriginatingChannel,
         // Prefer Provider over Surface for fallback channel identity.

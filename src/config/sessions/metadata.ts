@@ -1,3 +1,4 @@
+import { classifyRuntimeTurnLane } from "../../auto-reply/reply/turn-lane.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveConversationLabel } from "../../channels/conversation-label.js";
@@ -189,11 +190,11 @@ export function deriveSessionMetaPatch(params: {
   const origin = deriveSessionOrigin(params.ctx, {
     skipSystemEventOrigin: params.skipSystemEventOrigin,
   });
-  if (!groupPatch && !origin) {
-    return null;
-  }
+  const turnLane = classifyRuntimeTurnLane(params.ctx);
 
   const patch: Partial<SessionEntry> = groupPatch ? { ...groupPatch } : {};
+  patch.lastTurnLane = turnLane;
+  patch.lastTurnLaneAt = Date.now();
   const mergedOrigin = mergeOrigin(params.existing?.origin, origin);
   if (mergedOrigin) {
     patch.origin = mergedOrigin;

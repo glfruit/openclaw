@@ -6,6 +6,7 @@ import type { PromptImageOrderEntry } from "../../../media/prompt-image-order.js
 import type { InputProvenance } from "../../../sessions/input-provenance.js";
 import type { OriginatingChannelType } from "../../templating.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel, VerboseLevel } from "../directives.js";
+import type { RuntimeTurnLane } from "../turn-lane.types.js";
 
 export type QueueMode = "steer" | "followup" | "collect" | "steer-backlog" | "interrupt" | "queue";
 
@@ -28,6 +29,10 @@ export type FollowupRun = {
   messageId?: string;
   summaryLine?: string;
   enqueuedAt: number;
+  /** Trusted semantic lane for scheduling; separate from sessionKey/process lanes. */
+  lane?: RuntimeTurnLane;
+  /** Higher priority followups are kept ahead of autonomous backlog. */
+  priority?: "live" | "normal" | "autonomous";
   images?: Array<{ type: "image"; data: string; mimeType: string }>;
   imageOrder?: PromptImageOrderEntry[];
   /**
@@ -53,6 +58,7 @@ export type FollowupRun = {
     sessionId: string;
     sessionKey?: string;
     runtimePolicySessionKey?: string;
+    lane?: RuntimeTurnLane;
     messageProvider?: string;
     agentAccountId?: string;
     groupId?: string;

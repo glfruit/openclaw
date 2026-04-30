@@ -940,6 +940,7 @@ export async function runReplyAgent(params: {
   const activeRunQueueAction = resolveActiveRunQueueAction({
     isActive,
     isHeartbeat,
+    lane: followupRun.lane ?? followupRun.run.lane,
     shouldFollowup,
     queueMode: resolvedQueue.mode,
   });

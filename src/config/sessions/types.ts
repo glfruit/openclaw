@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { Skill } from "@mariozechner/pi-coding-agent";
+import type { RuntimeTurnLane } from "../../auto-reply/reply/turn-lane.types.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import type { ChannelId } from "../../channels/plugins/channel-id.types.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
@@ -130,6 +131,10 @@ export type SessionEntry = {
   heartbeatTaskState?: Record<string, number>;
   sessionId: string;
   updatedAt: number;
+  /** Last trusted runtime lane observed for this session key. */
+  lastTurnLane?: RuntimeTurnLane;
+  /** Timestamp (ms) for lastTurnLane. */
+  lastTurnLaneAt?: number;
   sessionFile?: string;
   /** Parent session key that spawned this session (used for sandbox session-tool scoping). */
   spawnedBy?: string;

@@ -85,15 +85,35 @@ export function enqueueFollowupRun(
   queue.lastEnqueuedAt = Date.now();
   queue.lastRun = run.run;
 
-  const shouldEnqueue = applyQueueDropPolicy({
-    queue,
-    summarize: (item) => normalizeOptionalString(item.summaryLine) || item.prompt.trim(),
-  });
+  let shouldEnqueue = true;
+  if (run.priority === "live" && queue.cap > 0 && queue.items.length >= queue.cap) {
+    const dropIndex = queue.items.findIndex((item) => item.priority !== "live");
+    if (dropIndex >= 0) {
+      queue.items.splice(dropIndex, 1);
+    } else if (queue.dropPolicy === "new") {
+      shouldEnqueue = false;
+    }
+  }
+  if (shouldEnqueue) {
+    shouldEnqueue = applyQueueDropPolicy({
+      queue,
+      summarize: (item) => normalizeOptionalString(item.summaryLine) || item.prompt.trim(),
+    });
+  }
   if (!shouldEnqueue) {
     return false;
   }
 
-  queue.items.push(run);
+  if (run.priority === "live") {
+    const insertAt = queue.items.findIndex((item) => item.priority !== "live");
+    if (insertAt >= 0) {
+      queue.items.splice(insertAt, 0, run);
+    } else {
+      queue.items.push(run);
+    }
+  } else {
+    queue.items.push(run);
+  }
   if (recentMessageIdKey) {
     RECENT_QUEUE_MESSAGE_IDS.check(recentMessageIdKey);
   }

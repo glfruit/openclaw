@@ -4,6 +4,7 @@ import type {
 } from "../media-understanding/types.js";
 import type { InputProvenance } from "../sessions/input-provenance.js";
 import type { CommandArgs } from "./commands-args.types.js";
+import type { RuntimeTurnLane } from "./reply/turn-lane.types.js";
 import type { ReplyThreadingPolicy } from "./types.js";
 
 /** Valid message channels for routing. */
@@ -172,6 +173,8 @@ export type MsgContext = {
   LocationSource?: string;
   LocationIsLive?: boolean;
   LocationCaption?: string;
+  /** Trusted runtime lane for this turn; internal metadata, not user text. */
+  RuntimeTurnLane?: RuntimeTurnLane;
   /** Provider label. */
   Provider?: string;
   /** Provider surface label. Prefer this over `Provider` when available. */

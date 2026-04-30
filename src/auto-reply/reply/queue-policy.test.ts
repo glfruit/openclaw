@@ -13,15 +13,18 @@ describe("resolveActiveRunQueueAction", () => {
     ).toBe("run-now");
   });
 
-  it("drops heartbeat runs while another run is active", () => {
-    expect(
-      resolveActiveRunQueueAction({
-        isActive: true,
-        isHeartbeat: true,
-        shouldFollowup: true,
-        queueMode: "collect",
-      }),
-    ).toBe("drop");
+  it("drops autonomous runs while another run is active", () => {
+    for (const lane of ["heartbeat", "cron", "maintenance"] as const) {
+      expect(
+        resolveActiveRunQueueAction({
+          isActive: true,
+          isHeartbeat: lane === "heartbeat",
+          lane,
+          shouldFollowup: true,
+          queueMode: "collect",
+        }),
+      ).toBe("drop");
+    }
   });
 
   it("enqueues followups for non-heartbeat active runs", () => {
@@ -31,6 +34,18 @@ describe("resolveActiveRunQueueAction", () => {
         isHeartbeat: false,
         shouldFollowup: true,
         queueMode: "collect",
+      }),
+    ).toBe("enqueue-followup");
+  });
+
+  it("enqueues live user runs while active even when queue mode would otherwise wait", () => {
+    expect(
+      resolveActiveRunQueueAction({
+        isActive: true,
+        isHeartbeat: false,
+        lane: "live_user",
+        shouldFollowup: false,
+        queueMode: "queue",
       }),
     ).toBe("enqueue-followup");
   });
