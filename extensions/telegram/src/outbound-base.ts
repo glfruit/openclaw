@@ -1,7 +1,7 @@
 import { chunkMarkdownText } from "openclaw/plugin-sdk/reply-runtime";
 
 export const telegramOutboundBaseAdapter = {
-  deliveryMode: "direct" as const,
+  deliveryMode: "gateway" as const,
   chunker: chunkMarkdownText,
   chunkerMode: "markdown" as const,
   extractMarkdownImages: true,

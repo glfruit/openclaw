@@ -10,7 +10,7 @@ describe("telegramPlugin outbound", () => {
     const expected = chunkMarkdownText(text, 4000);
 
     expect(telegramOutboundBaseAdapter.chunker(text, 4000)).toEqual(expected);
-    expect(telegramOutboundBaseAdapter.deliveryMode).toBe("direct");
+    expect(telegramOutboundBaseAdapter.deliveryMode).toBe("gateway");
     expect(telegramOutboundBaseAdapter.chunkerMode).toBe("markdown");
     expect(telegramOutboundBaseAdapter.textChunkLimit).toBe(4000);
   });
