@@ -61,7 +61,15 @@ function mergeBootstrapPlugin(
 
 export function listBootstrapChannelPluginIds(): readonly string[] {
   const rootScope = resolveBundledChannelRootScope();
-  return listBundledChannelPluginIdsForRoot(rootScope.cacheKey);
+  const allowlist = process.env.OPENCLAW_BOOTSTRAP_BUNDLED_CHANNELS?.split(",")
+    .map((entry) => normalizeOptionalString(entry)?.toLowerCase() ?? "")
+    .filter(Boolean);
+  const ids = listBundledChannelPluginIdsForRoot(rootScope.cacheKey);
+  if (!allowlist || allowlist.length === 0) {
+    return ids;
+  }
+  const allowed = new Set(allowlist);
+  return ids.filter((id) => allowed.has(id.toLowerCase()));
 }
 
 export function* iterateBootstrapChannelPlugins(): IterableIterator<ChannelPlugin> {
