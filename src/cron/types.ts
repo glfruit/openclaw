@@ -118,9 +118,15 @@ export type CronFailureAlert = {
   accountId?: string;
 };
 
-export type CronPayload = { kind: "systemEvent"; text: string } | CronAgentTurnPayload;
+export type CronPayload =
+  | { kind: "systemEvent"; text: string }
+  | CronAgentTurnPayload
+  | CronCommandPayload;
 
-export type CronPayloadPatch = { kind: "systemEvent"; text?: string } | CronAgentTurnPayloadPatch;
+export type CronPayloadPatch =
+  | { kind: "systemEvent"; text?: string }
+  | CronAgentTurnPayloadPatch
+  | CronCommandPayloadPatch;
 
 type CronAgentTurnPayloadFields = {
   message: string;
@@ -148,6 +154,36 @@ type CronAgentTurnPayloadPatch = {
 } & Partial<Omit<CronAgentTurnPayloadFields, "toolsAllow">> & {
     toolsAllow?: string[] | null;
   };
+
+export type CronCommandOutputMode = "lastLine" | "stdout" | "combined";
+
+type CronCommandPayloadFields = {
+  /** Executable path or PATH-resolved command. Executed without a shell. */
+  command: string;
+  /** Command arguments. */
+  args?: string[];
+  /** Optional working directory. */
+  cwd?: string;
+  /** Optional environment overrides. Values are merged onto process.env. */
+  env?: Record<string, string>;
+  timeoutSeconds?: number;
+  /** Combined stdout/stderr regex that must match for success when set. */
+  successRegex?: string;
+  /** Combined stdout/stderr regex that marks the run as failed when matched. */
+  failureRegex?: string;
+  /** Combined stdout/stderr regex used to extract a concise summary. */
+  summaryRegex?: string;
+  /** Summary source when summaryRegex is absent. */
+  outputMode?: CronCommandOutputMode;
+};
+
+type CronCommandPayload = {
+  kind: "command";
+} & CronCommandPayloadFields;
+
+type CronCommandPayloadPatch = {
+  kind: "command";
+} & Partial<CronCommandPayloadFields>;
 export type CronJobState = {
   nextRunAtMs?: number;
   runningAtMs?: number;

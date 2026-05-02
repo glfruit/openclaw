@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { resolveFailoverReasonFromError } from "../../agents/failover-error.js";
 import type { CronConfig, CronRetryOn } from "../../config/types.cron.js";
 import type { HeartbeatRunResult } from "../../infra/heartbeat-wake.js";
@@ -62,6 +63,7 @@ const DEFAULT_MAX_MISSED_JOBS_PER_RESTART = 5;
 const DEFAULT_STARTUP_DEFERRED_MISSED_AGENT_JOB_DELAY_MS = 2 * 60_000;
 const DEFAULT_FAILURE_ALERT_AFTER = 2;
 const DEFAULT_FAILURE_ALERT_COOLDOWN_MS = 60 * 60_000; // 1 hour
+const MAX_COMMAND_OUTPUT_CHARS = 64_000;
 
 type ResolvedFailureAlert = {
   after: number;
@@ -1475,8 +1477,14 @@ async function executeDetachedCronJob(
       delivery?: CronDeliveryTrace;
     }
 > {
+  if (job.payload.kind === "command") {
+    return await executeCommandCronJob(job, abortSignal, resolveAbortError);
+  }
   if (job.payload.kind !== "agentTurn") {
-    return { status: "skipped", error: "isolated job requires payload.kind=agentTurn" };
+    return {
+      status: "skipped",
+      error: 'isolated job requires payload.kind="agentTurn" or "command"',
+    };
   }
   if (abortSignal?.aborted) {
     return resolveAbortError();
@@ -1506,6 +1514,153 @@ async function executeDetachedCronJob(
     provider: res.provider,
     usage: res.usage,
   };
+}
+
+function appendBoundedOutput(current: string, chunk: Buffer | string): string {
+  const next = current + chunk.toString();
+  if (next.length <= MAX_COMMAND_OUTPUT_CHARS) {
+    return next;
+  }
+  return next.slice(next.length - MAX_COMMAND_OUTPUT_CHARS);
+}
+
+function lastNonEmptyLine(input: string): string {
+  return (
+    input
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? ""
+  );
+}
+
+function compileCronCommandRegex(raw: string | undefined, label: string): RegExp | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  try {
+    return new RegExp(raw, "m");
+  } catch (err) {
+    throw new Error(`cron command ${label} is invalid: ${String(err)}`);
+  }
+}
+
+function resolveCommandSummary(params: {
+  payload: Extract<CronJob["payload"], { kind: "command" }>;
+  stdout: string;
+  combined: string;
+}): string | undefined {
+  const summaryRegex = compileCronCommandRegex(params.payload.summaryRegex, "summaryRegex");
+  if (summaryRegex) {
+    const match = params.combined.match(summaryRegex);
+    if (match) {
+      return (match[1] ?? match[0]).trim().slice(0, 1000) || undefined;
+    }
+  }
+  const mode = params.payload.outputMode ?? "lastLine";
+  const source =
+    mode === "stdout" ? params.stdout : mode === "combined" ? params.combined : params.combined;
+  const summary = mode === "lastLine" ? lastNonEmptyLine(source) : source.trim();
+  return summary ? summary.slice(0, 1000) : undefined;
+}
+
+async function executeCommandCronJob(
+  job: CronJob,
+  abortSignal: AbortSignal | undefined,
+  resolveAbortError: () => { status: "error"; error: string },
+): Promise<CronRunOutcome & CronRunTelemetry & { delivered?: boolean }> {
+  const payload = job.payload;
+  if (payload.kind !== "command") {
+    return { status: "skipped", error: "cron command executor received non-command payload" };
+  }
+  if (abortSignal?.aborted) {
+    return resolveAbortError();
+  }
+
+  const command = payload.command.trim();
+  if (!command) {
+    return { status: "error", error: "cron command payload requires command" };
+  }
+  const args = Array.isArray(payload.args) ? payload.args : [];
+  let stdout = "";
+  let stderr = "";
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    const child = spawn(command, args, {
+      cwd: payload.cwd,
+      env: payload.env ? { ...process.env, ...payload.env } : process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const finish = (outcome: CronRunOutcome & CronRunTelemetry & { delivered?: boolean }) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      abortSignal?.removeEventListener("abort", onAbort);
+      resolve(outcome);
+    };
+
+    const onAbort = () => {
+      child.kill("SIGTERM");
+      finish(resolveAbortError());
+    };
+
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+    child.stdout?.on("data", (chunk) => {
+      stdout = appendBoundedOutput(stdout, chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr = appendBoundedOutput(stderr, chunk);
+    });
+    child.on("error", (err) => {
+      finish({ status: "error", error: `cron command failed to start: ${String(err)}` });
+    });
+    child.on("close", (code, signal) => {
+      if (settled) {
+        return;
+      }
+      const combined = [stdout, stderr].filter(Boolean).join("\n");
+      let summary: string | undefined;
+      try {
+        summary = resolveCommandSummary({ payload, stdout, combined });
+        const failureRegex = compileCronCommandRegex(payload.failureRegex, "failureRegex");
+        if (failureRegex?.test(combined)) {
+          finish({
+            status: "error",
+            error: summary ?? "cron command failureRegex matched",
+            summary,
+          });
+          return;
+        }
+        if (code !== 0) {
+          finish({
+            status: "error",
+            error:
+              summary ??
+              `cron command exited with code ${code ?? "null"} signal ${signal ?? "null"}`,
+            summary,
+          });
+          return;
+        }
+        const successRegex = compileCronCommandRegex(payload.successRegex, "successRegex");
+        if (successRegex && !successRegex.test(combined)) {
+          finish({
+            status: "error",
+            error: summary ?? "cron command successRegex did not match",
+            summary,
+          });
+          return;
+        }
+      } catch (err) {
+        finish({ status: "error", error: String(err), summary });
+        return;
+      }
+      finish({ status: "ok", summary });
+    });
+  });
 }
 
 /**

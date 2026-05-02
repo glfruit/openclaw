@@ -45,6 +45,16 @@ function hasAgentTurnPayloadHint(payload: UnknownRecord) {
   );
 }
 
+function hasCommandPayloadHint(payload: UnknownRecord) {
+  return (
+    hasTrimmedStringValue(payload.command) ||
+    Array.isArray(payload.args) ||
+    hasTrimmedStringValue(payload.successRegex) ||
+    hasTrimmedStringValue(payload.failureRegex) ||
+    hasTrimmedStringValue(payload.summaryRegex)
+  );
+}
+
 function normalizeTrimmedStringArray(
   value: unknown,
   options?: { allowNull?: boolean },
@@ -166,6 +176,8 @@ function coercePayload(payload: UnknownRecord) {
     next.kind = "agentTurn";
   } else if (kindRaw === "systemevent") {
     next.kind = "systemEvent";
+  } else if (kindRaw === "command") {
+    next.kind = "command";
   } else if (kindRaw) {
     next.kind = kindRaw;
   }
@@ -175,6 +187,8 @@ function coercePayload(payload: UnknownRecord) {
     const hasAgentTurnHint = hasAgentTurnPayloadHint(next);
     if (message) {
       next.kind = "agentTurn";
+    } else if (hasCommandPayloadHint(next)) {
+      next.kind = "command";
     } else if (text && hasAgentTurnHint) {
       next.kind = "agentTurn";
       next.message = text;
@@ -243,6 +257,51 @@ function coercePayload(payload: UnknownRecord) {
   ) {
     delete next.allowUnsafeExternalContent;
   }
+  if ("command" in next) {
+    const command = parseOptionalField(TrimmedNonEmptyStringFieldSchema, next.command);
+    if (command !== undefined) {
+      next.command = command;
+    } else {
+      delete next.command;
+    }
+  }
+  if ("args" in next) {
+    const args = normalizeTrimmedStringArray(next.args);
+    if (args !== undefined) {
+      next.args = args;
+    } else {
+      delete next.args;
+    }
+  }
+  if ("cwd" in next) {
+    const cwd = parseOptionalField(TrimmedNonEmptyStringFieldSchema, next.cwd);
+    if (cwd !== undefined) {
+      next.cwd = cwd;
+    } else {
+      delete next.cwd;
+    }
+  }
+  if ("env" in next && !isRecord(next.env)) {
+    delete next.env;
+  }
+  for (const field of ["successRegex", "failureRegex", "summaryRegex"] as const) {
+    if (field in next) {
+      const value = parseOptionalField(TrimmedNonEmptyStringFieldSchema, next[field]);
+      if (value !== undefined) {
+        next[field] = value;
+      } else {
+        delete next[field];
+      }
+    }
+  }
+  if (
+    "outputMode" in next &&
+    next.outputMode !== "lastLine" &&
+    next.outputMode !== "stdout" &&
+    next.outputMode !== "combined"
+  ) {
+    delete next.outputMode;
+  }
   if (next.kind === "systemEvent") {
     delete next.message;
     delete next.model;
@@ -254,6 +313,23 @@ function coercePayload(payload: UnknownRecord) {
     delete next.toolsAllow;
   } else if (next.kind === "agentTurn") {
     delete next.text;
+    delete next.command;
+    delete next.args;
+    delete next.cwd;
+    delete next.env;
+    delete next.successRegex;
+    delete next.failureRegex;
+    delete next.summaryRegex;
+    delete next.outputMode;
+  } else if (next.kind === "command") {
+    delete next.text;
+    delete next.message;
+    delete next.model;
+    delete next.fallbacks;
+    delete next.thinking;
+    delete next.lightContext;
+    delete next.allowUnsafeExternalContent;
+    delete next.toolsAllow;
   }
   if ("deliver" in next) {
     delete next.deliver;
@@ -319,6 +395,26 @@ function inferTopLevelPayload(next: UnknownRecord) {
       return { kind: "agentTurn", message: text } satisfies UnknownRecord;
     }
     return { kind: "systemEvent", text } satisfies UnknownRecord;
+  }
+
+  if (hasCommandPayloadHint(next)) {
+    const payload: UnknownRecord = { kind: "command" };
+    for (const field of [
+      "command",
+      "args",
+      "cwd",
+      "env",
+      "timeoutSeconds",
+      "successRegex",
+      "failureRegex",
+      "summaryRegex",
+      "outputMode",
+    ]) {
+      if (field in next) {
+        payload[field] = next[field];
+      }
+    }
+    return payload;
   }
 
   if (hasAgentTurnPayloadHint(next)) {
@@ -434,6 +530,14 @@ function stripLegacyTopLevelFields(next: UnknownRecord) {
   delete next.threadId;
   delete next.bestEffortDeliver;
   delete next.provider;
+  delete next.command;
+  delete next.args;
+  delete next.cwd;
+  delete next.env;
+  delete next.successRegex;
+  delete next.failureRegex;
+  delete next.summaryRegex;
+  delete next.outputMode;
 }
 
 export function normalizeCronJobInput(
@@ -576,7 +680,7 @@ export function normalizeCronJobInput(
       // Users must explicitly specify "current" or "session:xxx" for custom session binding
       if (kind === "systemEvent") {
         next.sessionTarget = "main";
-      } else if (kind === "agentTurn") {
+      } else if (kind === "agentTurn" || kind === "command") {
         next.sessionTarget = "isolated";
       }
     }
@@ -633,10 +737,13 @@ export function normalizeCronJobInput(
       sessionTarget === "isolated" ||
       sessionTarget === "current" ||
       sessionTarget.startsWith("session:") ||
-      (sessionTarget === "" && payloadKind === "agentTurn");
+      (sessionTarget === "" && (payloadKind === "agentTurn" || payloadKind === "command"));
     const hasDelivery = "delivery" in next && next.delivery !== undefined;
     if (!hasDelivery && isIsolatedAgentTurn && payloadKind === "agentTurn") {
       next.delivery = { mode: "announce" };
+    }
+    if (!hasDelivery && isIsolatedAgentTurn && payloadKind === "command") {
+      next.delivery = { mode: "none" };
     }
   }
 
