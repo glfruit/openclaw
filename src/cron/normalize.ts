@@ -33,13 +33,26 @@ function hasTrimmedStringValue(value: unknown) {
   return parseOptionalField(TrimmedNonEmptyStringFieldSchema, value) !== undefined;
 }
 
+function hasCommandPayloadHint(payload: UnknownRecord) {
+  return (
+    hasTrimmedStringValue(payload.command) ||
+    Array.isArray(payload.args) ||
+    hasTrimmedStringValue(payload.cwd) ||
+    isRecord(payload.env) ||
+    hasTrimmedStringValue(payload.successRegex) ||
+    hasTrimmedStringValue(payload.failureRegex) ||
+    hasTrimmedStringValue(payload.summaryRegex) ||
+    hasTrimmedStringValue(payload.outputMode)
+  );
+}
+
 function hasAgentTurnPayloadHint(payload: UnknownRecord) {
   return (
     hasTrimmedStringValue(payload.model) ||
     normalizeTrimmedStringArray(payload.fallbacks) !== undefined ||
     normalizeTrimmedStringArray(payload.toolsAllow, { allowNull: true }) !== undefined ||
     hasTrimmedStringValue(payload.thinking) ||
-    typeof payload.timeoutSeconds === "number" ||
+    (typeof payload.timeoutSeconds === "number" && !hasCommandPayloadHint(payload)) ||
     typeof payload.lightContext === "boolean" ||
     typeof payload.allowUnsafeExternalContent === "boolean"
   );
@@ -172,8 +185,11 @@ function coercePayload(payload: UnknownRecord) {
   if (!next.kind) {
     const message = normalizeOptionalString(next.message);
     const text = normalizeOptionalString(next.text);
+    const hasCommandHint = hasCommandPayloadHint(next);
     const hasAgentTurnHint = hasAgentTurnPayloadHint(next);
-    if (message) {
+    if (hasCommandHint) {
+      next.kind = "command";
+    } else if (message) {
       next.kind = "agentTurn";
     } else if (text && hasAgentTurnHint) {
       next.kind = "agentTurn";
@@ -252,8 +268,92 @@ function coercePayload(payload: UnknownRecord) {
     delete next.lightContext;
     delete next.allowUnsafeExternalContent;
     delete next.toolsAllow;
+    delete next.command;
+    delete next.args;
+    delete next.cwd;
+    delete next.env;
+    delete next.successRegex;
+    delete next.failureRegex;
+    delete next.summaryRegex;
+    delete next.outputMode;
   } else if (next.kind === "agentTurn") {
     delete next.text;
+    delete next.command;
+    delete next.args;
+    delete next.cwd;
+    delete next.env;
+    delete next.successRegex;
+    delete next.failureRegex;
+    delete next.summaryRegex;
+    delete next.outputMode;
+  } else if (next.kind === "command") {
+    delete next.text;
+    delete next.message;
+    delete next.model;
+    delete next.fallbacks;
+    delete next.thinking;
+    delete next.lightContext;
+    delete next.allowUnsafeExternalContent;
+    delete next.toolsAllow;
+    if (typeof next.command === "string") {
+      const trimmed = normalizeOptionalString(next.command);
+      if (trimmed) {
+        next.command = trimmed;
+      } else {
+        delete next.command;
+      }
+    }
+    if (Array.isArray(next.args)) {
+      if (!next.args.every((entry) => typeof entry === "string")) {
+        delete next.args;
+      }
+    } else if ("args" in next) {
+      delete next.args;
+    }
+    if (typeof next.cwd === "string") {
+      const trimmed = normalizeOptionalString(next.cwd);
+      if (trimmed) {
+        next.cwd = trimmed;
+      } else {
+        delete next.cwd;
+      }
+    } else if ("cwd" in next) {
+      delete next.cwd;
+    }
+    if (isRecord(next.env)) {
+      const cleaned: Record<string, string> = {};
+      for (const [key, value] of Object.entries(next.env)) {
+        if (typeof value === "string") {
+          cleaned[key] = value;
+        }
+      }
+      next.env = cleaned;
+    } else if ("env" in next) {
+      delete next.env;
+    }
+    for (const field of ["successRegex", "failureRegex", "summaryRegex"] as const) {
+      if (typeof next[field] === "string") {
+        const trimmed = normalizeOptionalString(next[field]);
+        if (trimmed) {
+          try {
+            new RegExp(trimmed);
+            next[field] = trimmed;
+          } catch {
+            delete next[field];
+          }
+        } else {
+          delete next[field];
+        }
+      } else if (field in next) {
+        delete next[field];
+      }
+    }
+    if (
+      typeof next.outputMode !== "string" ||
+      !["lastLine", "stdout", "json"].includes(next.outputMode)
+    ) {
+      delete next.outputMode;
+    }
   }
   if ("deliver" in next) {
     delete next.deliver;
@@ -308,6 +408,11 @@ function coerceDelivery(delivery: UnknownRecord) {
 }
 
 function inferTopLevelPayload(next: UnknownRecord) {
+  const command = normalizeOptionalString(next.command) ?? "";
+  if (command) {
+    return { kind: "command", command } satisfies UnknownRecord;
+  }
+
   const message = normalizeOptionalString(next.message) ?? "";
   if (message) {
     return { kind: "agentTurn", message } satisfies UnknownRecord;
@@ -545,6 +650,7 @@ export function normalizeCronJobInput(
     copyTopLevelAgentTurnFields(next, payload);
   }
   stripLegacyTopLevelFields(next);
+  const payloadKind = payload && typeof payload.kind === "string" ? payload.kind : "";
 
   if (options.applyDefaults) {
     if (!next.wakeMode) {
@@ -576,31 +682,19 @@ export function normalizeCronJobInput(
       // Users must explicitly specify "current" or "session:xxx" for custom session binding
       if (kind === "systemEvent") {
         next.sessionTarget = "main";
-      } else if (kind === "agentTurn") {
+      } else if (kind === "agentTurn" || kind === "command") {
         next.sessionTarget = "isolated";
       }
     }
 
-    // Resolve "current" sessionTarget to the actual sessionKey from context
-    if (next.sessionTarget === "current") {
-      if (options.sessionContext?.sessionKey) {
-        const sessionKey = options.sessionContext.sessionKey.trim();
-        if (sessionKey) {
-          // Store as session:customId format for persistence
-          next.sessionTarget = `session:${assertSafeCronSessionTargetId(sessionKey)}`;
-        }
-      }
-      // If "current" wasn't resolved, fall back to "isolated" behavior
-      // This handles CLI/headless usage where no session context exists
-      if (next.sessionTarget === "current") {
-        next.sessionTarget = "isolated";
-      }
-    }
+    // Resolve "current" sessionTarget to the actual sessionKey from context.
+    // Command payloads intentionally do not fall back to isolated: current/session
+    // remain agentTurn-only and are rejected by job spec validation.
     if (next.sessionTarget === "current") {
       const sessionKey = options.sessionContext?.sessionKey?.trim();
       if (sessionKey) {
         next.sessionTarget = `session:${assertSafeCronSessionTargetId(sessionKey)}`;
-      } else {
+      } else if (payloadKind !== "command") {
         next.sessionTarget = "isolated";
       }
     }
@@ -625,8 +719,6 @@ export function normalizeCronJobInput(
         }
       }
     }
-    const payload = isRecord(next.payload) ? next.payload : null;
-    const payloadKind = payload && typeof payload.kind === "string" ? payload.kind : "";
     const sessionTarget = typeof next.sessionTarget === "string" ? next.sessionTarget : "";
     // Support "isolated", custom session IDs (session:xxx), and resolved "current" as isolated-like targets
     const isIsolatedAgentTurn =

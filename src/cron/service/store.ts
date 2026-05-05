@@ -89,7 +89,7 @@ export async function ensureLoaded(
     // on any code path that dereferences `.startsWith` (e.g.
     // `runIsolatedAgentJob` in `src/gateway/server-cron.ts`). Mirror the
     // defaulter applied at create time: systemEvent payloads -> "main",
-    // agentTurn -> "isolated". Use `Object.hasOwn` rather than `in` so a
+    // agentTurn/command -> "isolated". Use `Object.hasOwn` rather than `in` so a
     // poisoned prototype cannot feed a crafted `kind` into the defaulter.
     if (typeof hydrated.sessionTarget !== "string") {
       const payload = hydrated.payload as unknown;
@@ -103,7 +103,7 @@ export async function ensureLoaded(
       let defaulted: "main" | "isolated" | undefined;
       if (payloadKind === "systemEvent") {
         defaulted = "main";
-      } else if (payloadKind === "agentTurn") {
+      } else if (payloadKind === "agentTurn" || payloadKind === "command") {
         defaulted = "isolated";
       }
       if (defaulted) {
