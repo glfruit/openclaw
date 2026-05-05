@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyJobPatch,
+  assertSupportedJobSpec,
   createJob,
   recomputeNextRuns,
   resolveJobPayloadTextForMain,
@@ -73,6 +74,50 @@ describe("applyJobPatch", () => {
     expect(() => applyJobPatch(job, switchToMainPatch())).not.toThrow();
     expect(job.sessionTarget).toBe("main");
     expect(job.delivery).toEqual({ mode: "webhook", to: "https://example.invalid/cron" });
+  });
+
+  it("merges command payload patches", () => {
+    const job = createIsolatedAgentTurnJob("job-command", undefined, {
+      payload: {
+        kind: "command",
+        command: "/bin/echo",
+        args: ["old"],
+        outputMode: "lastLine",
+      },
+    });
+
+    applyJobPatch(job, {
+      payload: {
+        kind: "command",
+        args: ["OK"],
+        successRegex: "^OK",
+        failureRegex: "^ERR",
+        summaryRegex: "^(OK)$",
+        outputMode: "stdout",
+      },
+    });
+
+    expect(job.payload).toEqual({
+      kind: "command",
+      command: "/bin/echo",
+      args: ["OK"],
+      outputMode: "stdout",
+      successRegex: "^OK",
+      failureRegex: "^ERR",
+      summaryRegex: "^(OK)$",
+    });
+  });
+
+  it("allows isolated command cron jobs but keeps current/session command unsupported", () => {
+    const payload = { kind: "command" as const, command: "/bin/echo" };
+
+    expect(() => assertSupportedJobSpec({ sessionTarget: "isolated", payload })).not.toThrow();
+    expect(() => assertSupportedJobSpec({ sessionTarget: "current", payload })).toThrow(
+      'current/session cron jobs require payload.kind="agentTurn"',
+    );
+    expect(() => assertSupportedJobSpec({ sessionTarget: "session:abc", payload })).toThrow(
+      'current/session cron jobs require payload.kind="agentTurn"',
+    );
   });
 
   it("applies explicit delivery patches", () => {

@@ -89,6 +89,14 @@ export function registerCronEditCommand(cron: Command) {
       .option("--exact", "Disable cron staggering (set stagger to 0)")
       .option("--system-event <text>", "Set systemEvent payload")
       .option("--message <text>", "Set agentTurn payload message")
+      .option("--command <path>", "Set command payload executable path (runs without shell)")
+      .option("--args <args...>", "Set command payload args")
+      .option("--cwd <dir>", "Set command working directory")
+      .option("--env <pairs...>", "Set command environment KEY=VALUE pairs")
+      .option("--success-regex <regex>", "Set command output regex required for success")
+      .option("--failure-regex <regex>", "Set command output regex that marks failure")
+      .option("--summary-regex <regex>", "Set command stdout regex used to extract summary")
+      .option("--output-mode <mode>", "Set command summary output mode (lastLine|stdout|json)")
       .option(
         "--thinking <level>",
         "Thinking level for agent jobs (off|minimal|low|medium|high|xhigh)",
@@ -136,9 +144,9 @@ export function registerCronEditCommand(cron: Command) {
           if (typeof opts.session === "string" && !sessionTarget) {
             throw new Error("--session must be main, isolated, current, or session:<id>");
           }
-          if (sessionTarget === "main" && opts.message) {
+          if (sessionTarget === "main" && (opts.message || opts.command)) {
             throw new Error(
-              "Main jobs cannot use --message; use --system-event or --session isolated.",
+              "Main jobs cannot use --message or --command; use --system-event or --session isolated.",
             );
           }
           if (
@@ -148,8 +156,14 @@ export function registerCronEditCommand(cron: Command) {
             opts.systemEvent
           ) {
             throw new Error(
-              "Isolated jobs cannot use --system-event; use --message or --session main.",
+              "Isolated jobs cannot use --system-event; use --message, --command with --session isolated, or --session main.",
             );
+          }
+          if (
+            (sessionTarget === "current" || sessionTarget?.startsWith("session:")) &&
+            opts.command
+          ) {
+            throw new Error("Current/custom-session jobs cannot use --command; use --message.");
           }
           if (opts.announce && typeof opts.deliver === "boolean") {
             throw new Error("Choose --announce or --no-deliver (not multiple).");
@@ -223,6 +237,15 @@ export function registerCronEditCommand(cron: Command) {
           }
 
           const hasSystemEventPatch = typeof opts.systemEvent === "string";
+          const hasCommandPatch =
+            typeof opts.command === "string" ||
+            Array.isArray(opts.args) ||
+            typeof opts.cwd === "string" ||
+            Array.isArray(opts.env) ||
+            typeof opts.successRegex === "string" ||
+            typeof opts.failureRegex === "string" ||
+            typeof opts.summaryRegex === "string" ||
+            typeof opts.outputMode === "string";
           const model = normalizeOptionalString(opts.model);
           const thinking = normalizeOptionalString(opts.thinking);
           const toolsAllow = parseCronToolsAllow(opts.tools);
@@ -250,9 +273,25 @@ export function registerCronEditCommand(cron: Command) {
             hasDeliveryTarget ||
             hasDeliveryAccount ||
             hasBestEffort;
-          if (hasSystemEventPatch && hasAgentTurnPatch) {
+          if (
+            [hasSystemEventPatch, hasAgentTurnPatch, hasCommandPatch].filter(Boolean).length > 1
+          ) {
             throw new Error("Choose at most one payload change");
           }
+          const parseEnvPairs = (raw: unknown): Record<string, string> | undefined => {
+            const entries = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+            const env: Record<string, string> = {};
+            for (const entry of entries) {
+              const text = normalizeOptionalString(entry) ?? "";
+              if (!text) continue;
+              const idx = text.indexOf("=");
+              if (idx <= 0) {
+                throw new Error("--env entries must be KEY=VALUE");
+              }
+              env[text.slice(0, idx)] = text.slice(idx + 1);
+            }
+            return Object.keys(env).length ? env : undefined;
+          };
           if (hasSystemEventPatch) {
             patch.payload = {
               kind: "systemEvent",
@@ -274,6 +313,58 @@ export function registerCronEditCommand(cron: Command) {
               payload.toolsAllow = null;
             } else if (toolsAllow) {
               payload.toolsAllow = toolsAllow;
+            }
+            patch.payload = payload;
+          } else if (hasCommandPatch) {
+            const payload: Record<string, unknown> = { kind: "command" };
+            assignIf(
+              payload,
+              "command",
+              normalizeOptionalString(opts.command),
+              typeof opts.command === "string",
+            );
+            assignIf(
+              payload,
+              "args",
+              Array.isArray(opts.args) ? opts.args.map(String) : undefined,
+              Array.isArray(opts.args),
+            );
+            assignIf(
+              payload,
+              "cwd",
+              normalizeOptionalString(opts.cwd),
+              typeof opts.cwd === "string",
+            );
+            assignIf(
+              payload,
+              "env",
+              parseEnvPairs(opts.env),
+              Array.isArray(opts.env) || typeof opts.env === "string",
+            );
+            assignIf(payload, "timeoutSeconds", timeoutSeconds, hasTimeoutSeconds);
+            assignIf(
+              payload,
+              "successRegex",
+              normalizeOptionalString(opts.successRegex),
+              typeof opts.successRegex === "string",
+            );
+            assignIf(
+              payload,
+              "failureRegex",
+              normalizeOptionalString(opts.failureRegex),
+              typeof opts.failureRegex === "string",
+            );
+            assignIf(
+              payload,
+              "summaryRegex",
+              normalizeOptionalString(opts.summaryRegex),
+              typeof opts.summaryRegex === "string",
+            );
+            const outputMode = normalizeOptionalString(opts.outputMode);
+            if (outputMode === "lastLine" || outputMode === "stdout" || outputMode === "json") {
+              payload.outputMode = outputMode;
+            } else if (typeof opts.outputMode === "string") {
+              throw new Error("Invalid --output-mode (must be lastLine, stdout, or json).");
             }
             patch.payload = payload;
           }

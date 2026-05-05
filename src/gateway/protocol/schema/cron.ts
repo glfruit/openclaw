@@ -134,6 +134,24 @@ export const CronScheduleSchema = Type.Union([
   ),
 ]);
 
+const CronCommandPayloadSchema = Type.Object(
+  {
+    kind: Type.Literal("command"),
+    command: NonEmptyString,
+    args: Type.Optional(Type.Array(Type.String())),
+    cwd: Type.Optional(Type.String()),
+    env: Type.Optional(Type.Record(Type.String(), Type.String())),
+    timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+    successRegex: Type.Optional(Type.String()),
+    failureRegex: Type.Optional(Type.String()),
+    summaryRegex: Type.Optional(Type.String()),
+    outputMode: Type.Optional(
+      Type.Union([Type.Literal("lastLine"), Type.Literal("stdout"), Type.Literal("json")]),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const CronPayloadSchema = Type.Union([
   Type.Object(
     {
@@ -146,7 +164,26 @@ export const CronPayloadSchema = Type.Union([
     message: NonEmptyString,
     toolsAllow: Type.Array(Type.String()),
   }),
+  CronCommandPayloadSchema,
 ]);
+
+const CronCommandPayloadPatchSchema = Type.Object(
+  {
+    kind: Type.Literal("command"),
+    command: Type.Optional(NonEmptyString),
+    args: Type.Optional(Type.Array(Type.String())),
+    cwd: Type.Optional(Type.String()),
+    env: Type.Optional(Type.Record(Type.String(), Type.String())),
+    timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+    successRegex: Type.Optional(Type.String()),
+    failureRegex: Type.Optional(Type.String()),
+    summaryRegex: Type.Optional(Type.String()),
+    outputMode: Type.Optional(
+      Type.Union([Type.Literal("lastLine"), Type.Literal("stdout"), Type.Literal("json")]),
+    ),
+  },
+  { additionalProperties: false },
+);
 
 export const CronPayloadPatchSchema = Type.Union([
   Type.Object(
@@ -160,6 +197,7 @@ export const CronPayloadPatchSchema = Type.Union([
     message: Type.Optional(NonEmptyString),
     toolsAllow: Type.Union([Type.Array(Type.String()), Type.Null()]),
   }),
+  CronCommandPayloadPatchSchema,
 ]);
 
 export const CronFailureAlertSchema = Type.Object(

@@ -891,6 +891,56 @@ describe("normalizeCronJobPatch", () => {
     expectPayloadDeliveryHintsCleared(payload);
   });
 
+  it("accepts command payloads for create and defaults them to isolated", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "command job",
+      schedule: { kind: "every", everyMs: 60_000 },
+      payload: {
+        kind: "command",
+        command: " /bin/echo ",
+        args: ["OK"],
+        cwd: " /tmp ",
+        env: { FOO: "bar", BAD: 123 },
+        timeoutSeconds: 5,
+        successRegex: "^OK",
+        failureRegex: "^ERR",
+        summaryRegex: "^(OK)$",
+        outputMode: "lastLine",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    expect(normalized.sessionTarget).toBe("isolated");
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload.kind).toBe("command");
+    expect(payload.command).toBe("/bin/echo");
+    expect(payload.args).toEqual(["OK"]);
+    expect(payload.cwd).toBe("/tmp");
+    expect(payload.env).toEqual({ FOO: "bar" });
+    expect(payload.successRegex).toBe("^OK");
+    expect(payload.failureRegex).toBe("^ERR");
+    expect(payload.summaryRegex).toBe("^(OK)$");
+    expect(payload.outputMode).toBe("lastLine");
+    expect(validateCronAddParams(normalized)).toBe(true);
+  });
+
+  it("accepts command payload patches and prunes invalid regex/output mode", () => {
+    const normalized = normalizeCronJobPatch({
+      payload: {
+        kind: "command",
+        command: "/bin/echo",
+        successRegex: "[",
+        outputMode: "invalid",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload.kind).toBe("command");
+    expect(payload.command).toBe("/bin/echo");
+    expect(payload.successRegex).toBeUndefined();
+    expect(payload.outputMode).toBeUndefined();
+    expect(validateCronUpdateParams({ id: "job-1", patch: normalized })).toBe(true);
+  });
+
   it("preserves null sessionKey patches and trims string values", () => {
     const trimmed = normalizeCronJobPatch({
       sessionKey: "  agent:main:telegram:group:-100123  ",

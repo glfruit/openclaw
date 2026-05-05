@@ -159,18 +159,23 @@ export function assertSupportedJobSpec(job: Pick<CronJob, "sessionTarget" | "pay
       'cron job is missing sessionTarget; expected "main", "isolated", "current", or "session:<id>"',
     );
   }
-  const isIsolatedLike =
-    job.sessionTarget === "isolated" ||
-    job.sessionTarget === "current" ||
-    job.sessionTarget.startsWith("session:");
+  const isSessionBound =
+    job.sessionTarget === "current" || job.sessionTarget.startsWith("session:");
   if (job.sessionTarget.startsWith("session:")) {
     assertSafeCronSessionTargetId(job.sessionTarget.slice(8));
   }
   if (job.sessionTarget === "main" && job.payload.kind !== "systemEvent") {
     throw new Error('main cron jobs require payload.kind="systemEvent"');
   }
-  if (isIsolatedLike && job.payload.kind !== "agentTurn") {
-    throw new Error('isolated/current/session cron jobs require payload.kind="agentTurn"');
+  if (
+    job.sessionTarget === "isolated" &&
+    job.payload.kind !== "agentTurn" &&
+    job.payload.kind !== "command"
+  ) {
+    throw new Error('isolated cron jobs require payload.kind="agentTurn" or "command"');
+  }
+  if (isSessionBound && job.payload.kind !== "agentTurn") {
+    throw new Error('current/session cron jobs require payload.kind="agentTurn"');
   }
 }
 
@@ -704,6 +709,41 @@ function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch): CronP
     return { kind: "systemEvent", text };
   }
 
+  if (patch.kind === "command") {
+    if (existing.kind !== "command") {
+      return buildPayloadFromPatch(patch);
+    }
+    const next: Extract<CronPayload, { kind: "command" }> = { ...existing };
+    if (typeof patch.command === "string") {
+      next.command = patch.command;
+    }
+    if (Array.isArray(patch.args)) {
+      next.args = patch.args;
+    }
+    if (typeof patch.cwd === "string") {
+      next.cwd = patch.cwd;
+    }
+    if (patch.env && typeof patch.env === "object" && !Array.isArray(patch.env)) {
+      next.env = { ...patch.env };
+    }
+    if (typeof patch.timeoutSeconds === "number") {
+      next.timeoutSeconds = patch.timeoutSeconds;
+    }
+    if (patch.successRegex !== undefined) {
+      next.successRegex = patch.successRegex;
+    }
+    if (patch.failureRegex !== undefined) {
+      next.failureRegex = patch.failureRegex;
+    }
+    if (patch.summaryRegex !== undefined) {
+      next.summaryRegex = patch.summaryRegex;
+    }
+    if (patch.outputMode !== undefined) {
+      next.outputMode = patch.outputMode;
+    }
+    return next;
+  }
+
   if (existing.kind !== "agentTurn") {
     return buildPayloadFromPatch(patch);
   }
@@ -744,6 +784,24 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
       throw new Error('cron.update payload.kind="systemEvent" requires text');
     }
     return { kind: "systemEvent", text: patch.text };
+  }
+
+  if (patch.kind === "command") {
+    if (typeof patch.command !== "string" || patch.command.length === 0) {
+      throw new Error('cron.update payload.kind="command" requires command');
+    }
+    return {
+      kind: "command",
+      command: patch.command,
+      args: patch.args,
+      cwd: patch.cwd,
+      env: patch.env,
+      timeoutSeconds: patch.timeoutSeconds,
+      successRegex: patch.successRegex,
+      failureRegex: patch.failureRegex,
+      summaryRegex: patch.summaryRegex,
+      outputMode: patch.outputMode,
+    };
   }
 
   if (typeof patch.message !== "string" || patch.message.length === 0) {

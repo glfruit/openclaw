@@ -13,6 +13,7 @@ import {
   failTaskRunByRunId,
 } from "../../tasks/detached-task-runtime.js";
 import { clearCronJobActive, markCronJobActive } from "../active-jobs.js";
+import { executeCommandPayload } from "../command-executor.js";
 import { resolveCronDeliveryPlan } from "../delivery-plan.js";
 import { createCronExecutionId } from "../run-id.js";
 import { sweepCronRunSessions } from "../session-reaper.js";
@@ -1472,6 +1473,24 @@ async function executeDetachedCronJob(
       delivery?: CronDeliveryTrace;
     }
 > {
+  if (job.payload.kind === "command") {
+    if (job.sessionTarget !== "isolated") {
+      return { status: "skipped", error: 'command cron jobs require sessionTarget="isolated"' };
+    }
+    if (abortSignal?.aborted) {
+      return resolveAbortError();
+    }
+    const result = await executeCommandPayload(job.payload, { abortSignal });
+    if (abortSignal?.aborted) {
+      return { status: "error", error: timeoutErrorMessage() };
+    }
+    return {
+      ...result,
+      delivered: undefined,
+      deliveryAttempted: false,
+    };
+  }
+
   if (job.payload.kind !== "agentTurn") {
     return { status: "skipped", error: "isolated job requires payload.kind=agentTurn" };
   }

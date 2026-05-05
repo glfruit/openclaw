@@ -21,6 +21,40 @@ describe("cron protocol validators", () => {
     expect(validateCronAddParams(minimalAddParams)).toBe(true);
   });
 
+  it("accepts command payloads on cron add and update schemas", () => {
+    expect(
+      validateCronAddParams({
+        ...minimalAddParams,
+        sessionTarget: "isolated",
+        payload: {
+          kind: "command",
+          command: "/bin/echo",
+          args: ["OK"],
+          cwd: "/tmp",
+          env: { FOO: "bar" },
+          timeoutSeconds: 5,
+          successRegex: "^OK",
+          failureRegex: "^ERR",
+          summaryRegex: "^(OK)$",
+          outputMode: "lastLine",
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      validateCronUpdateParams({
+        id: "job-1",
+        patch: {
+          payload: {
+            kind: "command",
+            args: ["OK"],
+            outputMode: "stdout",
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("accepts current and custom session targets", () => {
     expect(
       validateCronAddParams({

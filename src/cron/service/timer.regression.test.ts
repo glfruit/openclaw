@@ -31,6 +31,133 @@ const timerRegressionFixtures = setupCronRegressionFixtures({
 });
 
 describe("cron service timer regressions", () => {
+  it("executes isolated command payloads without routing through isolated agent runner", async () => {
+    const store = timerRegressionFixtures.makeStorePath();
+    const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: store.storePath,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob,
+    });
+
+    const job: CronJob = {
+      id: "command-job",
+      name: "command-job",
+      enabled: true,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "command",
+        command: process.execPath,
+        args: ["-e", "console.log('ATLAS_INGEST_OK source=clippings errors=0')"],
+        successRegex: "ATLAS_INGEST_OK",
+        failureRegex: "errors=[1-9]",
+        summaryRegex: "(ATLAS_INGEST_OK .+)",
+        outputMode: "lastLine",
+      },
+      state: {},
+    };
+
+    const result = await executeJobCore(state, job);
+
+    expect(result.status).toBe("ok");
+    expect(result.summary).toBe("ATLAS_INGEST_OK source=clippings errors=0");
+    expect(result.error).not.toBe("isolated job requires payload.kind=agentTurn");
+    expect(runIsolatedAgentJob).not.toHaveBeenCalled();
+  });
+
+  it("records command payload delivery as unknown when announce delivery is configured", async () => {
+    const store = timerRegressionFixtures.makeStorePath();
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: store.storePath,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+    });
+
+    const job: CronJob = {
+      id: "command-delivery-job",
+      name: "command-delivery-job",
+      enabled: true,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "command",
+        command: process.execPath,
+        args: ["-e", "console.log('COMMAND_OK')"],
+        successRegex: "COMMAND_OK",
+      },
+      delivery: { mode: "announce", channel: "telegram", to: "123" },
+      state: {},
+    };
+
+    await executeJob(state, job, Date.now(), { forced: true });
+
+    expect(job.state.lastRunStatus).toBe("ok");
+    expect(job.state.lastDeliveryStatus).toBe("unknown");
+    expect(job.state.lastDelivered).toBeUndefined();
+    expect(state.deps.runIsolatedAgentJob).not.toHaveBeenCalled();
+  });
+
+  it("emits failure alerts for failed command payloads", async () => {
+    const store = timerRegressionFixtures.makeStorePath();
+    const sendCronFailureAlert = vi.fn(async (_params: { text?: string }) => undefined);
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: store.storePath,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+      sendCronFailureAlert,
+    });
+
+    const job: CronJob = {
+      id: "command-failure-alert-job",
+      name: "command-failure-alert-job",
+      enabled: true,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "command",
+        command: process.execPath,
+        args: ["-e", "console.log('COMMAND_FAIL')"],
+        failureRegex: "COMMAND_FAIL",
+      },
+      failureAlert: { after: 1, cooldownMs: 0, channel: "telegram", to: "123" },
+      state: {},
+    };
+
+    await executeJob(state, job, Date.now(), { forced: true });
+
+    expect(job.state.lastRunStatus).toBe("error");
+    expect(job.state.consecutiveErrors).toBe(1);
+    expect(sendCronFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        job,
+        channel: "telegram",
+        to: "123",
+      }),
+    );
+    const alert = sendCronFailureAlert.mock.calls[0]?.[0] as { text?: string } | undefined;
+    expect(alert?.text).toContain('Cron job "command-failure-alert-job" failed 1 times');
+    expect(state.deps.runIsolatedAgentJob).not.toHaveBeenCalled();
+  });
+
   it("caps timer delay to 60s for far-future schedules", async () => {
     const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const store = timerRegressionFixtures.makeStorePath();

@@ -55,6 +55,7 @@ vi.mock("../runtime.js", () => ({
 type CronUpdatePatch = {
   patch?: {
     schedule?: { kind?: string; expr?: string; tz?: string; staggerMs?: number };
+    sessionTarget?: string;
     payload?: {
       kind?: string;
       message?: string;
@@ -62,6 +63,15 @@ type CronUpdatePatch = {
       thinking?: string;
       lightContext?: boolean;
       toolsAllow?: string[];
+      command?: string;
+      args?: string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      timeoutSeconds?: number;
+      successRegex?: string;
+      failureRegex?: string;
+      summaryRegex?: string;
+      outputMode?: string;
     };
     delivery?: {
       mode?: string;
@@ -276,6 +286,70 @@ describe("cron cli", () => {
   ])("$name", async ({ ran, enqueued, expectedExitCode }) => {
     const { exitSpy } = await runCronRunAndCaptureExit({ ran, enqueued });
     expect(exitSpy).toHaveBeenCalledWith(expectedExitCode);
+  });
+
+  it("builds command payload params on cron add", async () => {
+    const params = await runCronAddAndGetParams([
+      "--name",
+      "command job",
+      "--every",
+      "1m",
+      "--command",
+      "/bin/echo",
+      "--args",
+      "OK",
+      "--cwd",
+      "/tmp",
+      "--env",
+      "FOO=bar",
+      "--success-regex",
+      "^OK",
+      "--failure-regex",
+      "^ERR",
+      "--summary-regex",
+      "^(OK)$",
+      "--output-mode",
+      "lastLine",
+    ]);
+
+    expect(params.sessionTarget).toBe("isolated");
+    expect(params.payload).toEqual({
+      kind: "command",
+      command: "/bin/echo",
+      args: ["OK"],
+      cwd: "/tmp",
+      env: { FOO: "bar" },
+      timeoutSeconds: undefined,
+      successRegex: "^OK",
+      failureRegex: "^ERR",
+      summaryRegex: "^(OK)$",
+      outputMode: "lastLine",
+    });
+    expect(params.delivery).toBeUndefined();
+  });
+
+  it("builds command payload patches on cron edit", async () => {
+    const patch = await runCronEditAndGetPatch([
+      "--session",
+      "isolated",
+      "--command",
+      "/bin/echo",
+      "--args",
+      "OK",
+      "--success-regex",
+      "^OK",
+      "--output-mode",
+      "stdout",
+    ]);
+
+    expect(patch.patch?.sessionTarget).toBe("isolated");
+    expect(patch.patch?.payload).toEqual({
+      kind: "command",
+      command: "/bin/echo",
+      args: ["OK"],
+      successRegex: "^OK",
+      outputMode: "stdout",
+    });
   });
 
   it("trims model and thinking on cron add", { timeout: CRON_CLI_TEST_TIMEOUT_MS }, async () => {

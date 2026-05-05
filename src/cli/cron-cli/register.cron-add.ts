@@ -95,6 +95,18 @@ export function registerCronAddCommand(cron: Command) {
       .option("--exact", "Disable cron staggering (set stagger to 0)", false)
       .option("--system-event <text>", "System event payload (main session)")
       .option("--message <text>", "Agent message payload")
+      .option("--command <path>", "Command payload executable path (runs without shell)")
+      .option("--args <args...>", "Command payload args")
+      .option("--cwd <dir>", "Command working directory")
+      .option("--env <pairs...>", "Command environment KEY=VALUE pairs")
+      .option("--success-regex <regex>", "Command output regex required for success")
+      .option("--failure-regex <regex>", "Command output regex that marks failure")
+      .option("--summary-regex <regex>", "Command stdout regex used to extract summary")
+      .option(
+        "--output-mode <mode>",
+        "Command summary output mode (lastLine|stdout|json)",
+        "lastLine",
+      )
       .option(
         "--thinking <level>",
         "Thinking level for agent jobs (off|minimal|low|medium|high|xhigh)",
@@ -141,17 +153,56 @@ export function registerCronAddCommand(cron: Command) {
             throw new Error("Choose at most one of --announce or --no-deliver");
           }
 
+          const parseEnvPairs = (raw: unknown): Record<string, string> | undefined => {
+            const entries = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+            const env: Record<string, string> = {};
+            for (const entry of entries) {
+              const text = normalizeOptionalString(entry) ?? "";
+              if (!text) continue;
+              const idx = text.indexOf("=");
+              if (idx <= 0) {
+                throw new Error("--env entries must be KEY=VALUE");
+              }
+              env[text.slice(0, idx)] = text.slice(idx + 1);
+            }
+            return Object.keys(env).length ? env : undefined;
+          };
+
           const payload = (() => {
             const systemEvent = normalizeOptionalString(opts.systemEvent) ?? "";
             const message = normalizeOptionalString(opts.message) ?? "";
-            const chosen = [Boolean(systemEvent), Boolean(message)].filter(Boolean).length;
+            const command = normalizeOptionalString(opts.command) ?? "";
+            const chosen = [Boolean(systemEvent), Boolean(message), Boolean(command)].filter(
+              Boolean,
+            ).length;
             if (chosen !== 1) {
-              throw new Error("Choose exactly one payload: --system-event or --message");
+              throw new Error(
+                "Choose exactly one payload: --system-event, --message, or --command",
+              );
             }
             if (systemEvent) {
               return { kind: "systemEvent" as const, text: systemEvent };
             }
             const timeoutSeconds = parsePositiveIntOrUndefined(opts.timeoutSeconds);
+            if (command) {
+              const outputMode = normalizeOptionalString(opts.outputMode);
+              return {
+                kind: "command" as const,
+                command,
+                args: Array.isArray(opts.args) ? opts.args.map(String) : undefined,
+                cwd: normalizeOptionalString(opts.cwd),
+                env: parseEnvPairs(opts.env),
+                timeoutSeconds:
+                  timeoutSeconds && Number.isFinite(timeoutSeconds) ? timeoutSeconds : undefined,
+                successRegex: normalizeOptionalString(opts.successRegex),
+                failureRegex: normalizeOptionalString(opts.failureRegex),
+                summaryRegex: normalizeOptionalString(opts.summaryRegex),
+                outputMode:
+                  outputMode === "lastLine" || outputMode === "stdout" || outputMode === "json"
+                    ? outputMode
+                    : undefined,
+              };
+            }
             return {
               kind: "agentTurn" as const,
               message,
@@ -170,7 +221,8 @@ export function registerCronAddCommand(cron: Command) {
               : () => undefined;
           const sessionSource = optionSource("session");
           const sessionTargetRaw = normalizeOptionalString(opts.session) ?? "";
-          const inferredSessionTarget = payload.kind === "agentTurn" ? "isolated" : "main";
+          const inferredSessionTarget =
+            payload.kind === "agentTurn" || payload.kind === "command" ? "isolated" : "main";
           const sessionTarget =
             sessionSource === "cli"
               ? normalizeCronSessionTargetOption(sessionTargetRaw) || ""
@@ -191,8 +243,18 @@ export function registerCronAddCommand(cron: Command) {
           if (sessionTarget === "main" && payload.kind !== "systemEvent") {
             throw new Error("Main jobs require --system-event (systemEvent).");
           }
-          if (isIsolatedLikeSessionTarget && payload.kind !== "agentTurn") {
-            throw new Error("Isolated/current/custom-session jobs require --message (agentTurn).");
+          if (
+            sessionTarget === "isolated" &&
+            payload.kind !== "agentTurn" &&
+            payload.kind !== "command"
+          ) {
+            throw new Error("Isolated jobs require --message (agentTurn) or --command (command).");
+          }
+          if (
+            (sessionTarget === "current" || isCustomSessionTarget) &&
+            payload.kind !== "agentTurn"
+          ) {
+            throw new Error("Current/custom-session jobs require --message (agentTurn).");
           }
           if (
             (opts.announce || typeof opts.deliver === "boolean") &&
@@ -232,7 +294,7 @@ export function registerCronAddCommand(cron: Command) {
 
           const sessionKey = normalizeOptionalString(opts.sessionKey);
 
-          if (payload.kind === "agentTurn" && !agentId) {
+          if ((payload.kind === "agentTurn" || payload.kind === "command") && !agentId) {
             defaultRuntime.error(
               theme.warn(
                 "No --agent specified; the job will run with the configured default agent. " +
