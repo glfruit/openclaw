@@ -1679,7 +1679,7 @@
     "@lydell/node-pty": "1.2.0-beta.12",
     "@mariozechner/pi-agent-core": "0.73.0",
     "@mariozechner/pi-ai": "0.73.0",
-    "@mariozechner/pi-coding-agent": "0.71.1",
+    "@mariozechner/pi-coding-agent": "0.73.0",
     "@mariozechner/pi-tui": "0.73.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@mozilla/readability": "^0.6.0",
@@ -1752,11 +1752,11 @@
   },
   "overrides": {
     "@aws-sdk/client-bedrock-runtime": "$@aws-sdk/client-bedrock-runtime",
+    "@mariozechner/pi-coding-agent": "0.73.0",
     "axios": "1.16.0",
     "follow-redirects": "1.16.0",
     "node-domexception": "npm:@nolyfill/domexception@1.0.28",
-    "uuid": "14.0.0",
-    "@mariozechner/pi-coding-agent": "0.71.1"
+    "uuid": "14.0.0"
   },
   "engines": {
     "node": ">=22.14.0"
@@ -1787,7 +1787,7 @@
       "yauzl": "3.2.1",
       "protobufjs": "7.5.5",
       "uuid": "14.0.0",
-      "@mariozechner/pi-coding-agent": "0.71.1"
+      "@mariozechner/pi-coding-agent": "0.73.0"
     },
     "onlyBuiltDependencies": [
       "@discordjs/opus",
