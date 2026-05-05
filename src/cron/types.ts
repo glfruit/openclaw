@@ -169,9 +169,50 @@ export type CronFailureAlert = {
   accountId?: string;
 };
 
-export type CronPayload = { kind: "systemEvent"; text: string } | CronAgentTurnPayload;
+export type CronCommandPayload = {
+  kind: "command";
+  /** Absolute path to the executable. */
+  command: string;
+  /** Arguments passed to the command. */
+  args?: string[];
+  /** Working directory for the command. */
+  cwd?: string;
+  /** Extra environment variables merged atop process.env. */
+  env?: Record<string, string>;
+  /** Per-command timeout in seconds. */
+  timeoutSeconds?: number;
+  /** If set, combined stdout/stderr must contain a match for this regex for the run to succeed. */
+  successRegex?: string;
+  /** If set, any combined stdout/stderr match for this regex marks the run as failed. */
+  failureRegex?: string;
+  /** If set, extract the first matching group/line from stdout as the summary. */
+  summaryRegex?: string;
+  /** How to produce the summary from stdout. Default: "lastLine". */
+  outputMode?: "lastLine" | "stdout" | "json";
+};
 
-export type CronPayloadPatch = { kind: "systemEvent"; text?: string } | CronAgentTurnPayloadPatch;
+export type CronPayload =
+  | { kind: "systemEvent"; text: string }
+  | CronAgentTurnPayload
+  | CronCommandPayload;
+
+export type CronCommandPayloadPatch = {
+  kind: "command";
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  timeoutSeconds?: number;
+  successRegex?: string;
+  failureRegex?: string;
+  summaryRegex?: string;
+  outputMode?: "lastLine" | "stdout" | "json";
+};
+
+export type CronPayloadPatch =
+  | { kind: "systemEvent"; text?: string }
+  | CronAgentTurnPayloadPatch
+  | CronCommandPayloadPatch;
 
 type CronAgentTurnPayloadFields = {
   message: string;

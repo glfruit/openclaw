@@ -102,6 +102,8 @@ export function registerCronAddCommand(cron: Command) {
       .option("--exact", "Disable cron staggering (set stagger to 0)", false)
       .option("--system-event <text>", "System event payload (main session)")
       .option("--message <text>", "Agent message payload")
+      .option("--command <path>", "Command payload executable path (runs without shell)")
+      .option("--args <args...>", "Command payload args")
       .option(
         "--thinking <level>",
         "Thinking level for agent jobs (off|minimal|low|medium|high|xhigh)",
@@ -151,14 +153,31 @@ export function registerCronAddCommand(cron: Command) {
           const payload = (() => {
             const systemEvent = normalizeOptionalString(opts.systemEvent) ?? "";
             const message = normalizeOptionalString(opts.message) ?? "";
-            const chosen = [Boolean(systemEvent), Boolean(message)].filter(Boolean).length;
+            const command = normalizeOptionalString(opts.command) ?? "";
+            const chosen = [Boolean(systemEvent), Boolean(message), Boolean(command)].filter(
+              Boolean,
+            ).length;
             if (chosen !== 1) {
-              throw new Error("Choose exactly one payload: --system-event or --message");
+              throw new Error(
+                "Choose exactly one payload: --system-event, --message, or --command",
+              );
             }
             if (systemEvent) {
               return { kind: "systemEvent" as const, text: systemEvent };
             }
             const timeoutSeconds = parsePositiveIntOrUndefined(opts.timeoutSeconds);
+            if (command) {
+              const args = Array.isArray(opts.args)
+                ? opts.args.map((arg) => String(arg))
+                : undefined;
+              return {
+                kind: "command" as const,
+                command,
+                args,
+                timeoutSeconds:
+                  timeoutSeconds && Number.isFinite(timeoutSeconds) ? timeoutSeconds : undefined,
+              };
+            }
             return {
               kind: "agentTurn" as const,
               message,
@@ -177,7 +196,8 @@ export function registerCronAddCommand(cron: Command) {
               : () => undefined;
           const sessionSource = optionSource("session");
           const sessionTargetRaw = normalizeOptionalString(opts.session) ?? "";
-          const inferredSessionTarget = payload.kind === "agentTurn" ? "isolated" : "main";
+          const inferredSessionTarget =
+            payload.kind === "agentTurn" || payload.kind === "command" ? "isolated" : "main";
           const sessionTarget =
             sessionSource === "cli"
               ? normalizeCronSessionTargetOption(sessionTargetRaw) || ""
@@ -198,8 +218,18 @@ export function registerCronAddCommand(cron: Command) {
           if (sessionTarget === "main" && payload.kind !== "systemEvent") {
             throw new Error("Main jobs require --system-event (systemEvent).");
           }
-          if (isIsolatedLikeSessionTarget && payload.kind !== "agentTurn") {
-            throw new Error("Isolated/current/custom-session jobs require --message (agentTurn).");
+          if (
+            isIsolatedLikeSessionTarget &&
+            payload.kind !== "agentTurn" &&
+            payload.kind !== "command"
+          ) {
+            throw new Error("Isolated jobs require --message (agentTurn) or --command (command).");
+          }
+          if (
+            (sessionTarget === "current" || isCustomSessionTarget) &&
+            payload.kind !== "agentTurn"
+          ) {
+            throw new Error("Current/custom-session jobs require --message (agentTurn).");
           }
           if (
             (opts.announce || typeof opts.deliver === "boolean") &&
@@ -239,7 +269,7 @@ export function registerCronAddCommand(cron: Command) {
 
           const sessionKey = normalizeOptionalString(opts.sessionKey);
 
-          if (payload.kind === "agentTurn" && !agentId) {
+          if ((payload.kind === "agentTurn" || payload.kind === "command") && !agentId) {
             defaultRuntime.error(
               theme.warn(
                 "No --agent specified; the job will run with the configured default agent. " +
