@@ -23,6 +23,44 @@ function assistantToolCall(
 }
 
 describe("transformTransportMessages synthetic tool-result policy", () => {
+  it("treats Kimi provider aliases as same-provider replay for signed thinking", () => {
+    const messages: Context["messages"] = [
+      {
+        role: "assistant",
+        provider: "kimi-coding",
+        api: "anthropic-messages",
+        model: "k2.6",
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+        content: [
+          { type: "thinking", thinking: "Need to call read.", thinkingSignature: "sig_1" },
+          { type: "toolCall", id: "tool_1", name: "read", arguments: {} },
+        ],
+      } as Extract<Context["messages"][number], { role: "assistant" }>,
+      {
+        role: "toolResult",
+        toolCallId: "tool_1",
+        toolName: "read",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: Date.now(),
+      },
+    ];
+
+    const result = transformTransportMessages(
+      messages,
+      makeModel("anthropic-messages", "kimi", "k2.6"),
+    );
+
+    expect(result[0]).toMatchObject({
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Need to call read.", thinkingSignature: "sig_1" },
+        { type: "toolCall", id: "tool_1", name: "read" },
+      ],
+    });
+  });
+
   it("synthesizes Codex-style aborted tool results for OpenAI Responses transports", () => {
     const messages: Context["messages"] = [
       assistantToolCall("call_openai_1"),

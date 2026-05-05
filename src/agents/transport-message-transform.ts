@@ -1,4 +1,5 @@
 import type { Api, Context, Model } from "@mariozechner/pi-ai";
+import { normalizeProviderId } from "./provider-id.js";
 import { repairToolUseResultPairing } from "./session-transcript-repair.js";
 
 const SYNTHETIC_TOOL_RESULT_APIS = new Set<string>([
@@ -65,7 +66,9 @@ export function transformTransportMessages(
       return msg;
     }
     const isSameModel =
-      msg.provider === model.provider && msg.api === model.api && msg.model === model.id;
+      normalizeProviderId(msg.provider) === normalizeProviderId(model.provider) &&
+      msg.api === model.api &&
+      msg.model === model.id;
     const content: typeof msg.content = [];
     for (const block of msg.content) {
       if (block.type === "thinking") {

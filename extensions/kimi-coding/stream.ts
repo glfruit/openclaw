@@ -31,6 +31,10 @@ type KimiThinkingLevel =
   | "adaptive"
   | "max";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function normalizeKimiThinkingType(value: unknown): KimiThinkingType | undefined {
   if (typeof value === "boolean") {
     return value ? "enabled" : "disabled";
@@ -66,6 +70,88 @@ export function resolveKimiThinkingType(params: {
     return "disabled";
   }
   return "enabled";
+}
+
+function isKimiK26PayloadModel(value: unknown): boolean {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalized = normalizeOptionalLowercaseString(value);
+  return normalized === "k2.6" || normalized === "kimi-k2.6";
+}
+
+function isToolCallLikeBlock(block: unknown): boolean {
+  if (!isRecord(block)) {
+    return false;
+  }
+  return ["toolCall", "tool_call", "toolUse", "tool_use"].includes(String(block.type));
+}
+
+function assistantMessageHasToolCalls(message: Record<string, unknown>): boolean {
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+    return true;
+  }
+  if (Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
+    return true;
+  }
+  return Array.isArray(message.content) && message.content.some(isToolCallLikeBlock);
+}
+
+function payloadHasAssistantToolCallReplay(payloadObj: Record<string, unknown>): boolean {
+  const messages = payloadObj.messages;
+  if (!Array.isArray(messages)) {
+    return false;
+  }
+  return messages.some(
+    (message) =>
+      isRecord(message) && message.role === "assistant" && assistantMessageHasToolCalls(message),
+  );
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function extractReplayReasoningContent(message: Record<string, unknown>): string {
+  const content = message.content;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!isRecord(block)) {
+        continue;
+      }
+      const value = firstNonEmptyString(block.thinking, block.reasoning_content, block.text);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  const value = firstNonEmptyString(message.reasoning_content, message.reasoning, message.text);
+  return value ?? "Tool call replay.";
+}
+
+function ensureKimiToolCallReplayReasoningContent(payloadObj: Record<string, unknown>): void {
+  const messages = payloadObj.messages;
+  if (!Array.isArray(messages)) {
+    return;
+  }
+
+  for (const message of messages) {
+    if (!isRecord(message) || message.role !== "assistant") {
+      continue;
+    }
+    if (!assistantMessageHasToolCalls(message)) {
+      continue;
+    }
+    if (typeof message.reasoning_content === "string" && message.reasoning_content.trim()) {
+      continue;
+    }
+    message.reasoning_content = extractReplayReasoningContent(message);
+  }
 }
 
 function stripTaggedToolCallCounter(value: string): string {
@@ -204,7 +290,19 @@ export function createKimiThinkingWrapper(
   const underlying = baseStreamFn ?? streamSimple;
   return (model, context, options) =>
     streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
-      payloadObj.thinking = { type: thinkingType };
+      // Kimi K2.6 currently rejects thinking-enabled assistant tool-call replay on
+      // the Anthropic-compatible coding endpoint, even with reasoning_content.
+      const effectiveThinkingType =
+        thinkingType === "enabled" && payloadHasAssistantToolCallReplay(payloadObj)
+          ? "disabled"
+          : thinkingType;
+      payloadObj.thinking = { type: effectiveThinkingType };
+      if (effectiveThinkingType === "enabled" && isKimiK26PayloadModel(payloadObj.model)) {
+        (payloadObj.thinking as Record<string, unknown>).keep = "all";
+      }
+      if (effectiveThinkingType === "enabled") {
+        ensureKimiToolCallReplayReasoningContent(payloadObj);
+      }
       delete payloadObj.reasoning;
       delete payloadObj.reasoning_effort;
       delete payloadObj.reasoningEffort;
