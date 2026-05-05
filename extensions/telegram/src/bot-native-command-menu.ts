@@ -312,6 +312,12 @@ export function syncTelegramMenuCommands(params: {
       return;
     }
 
+    if (commandsToRegister.length === 0) {
+      writeCachedCommandHash(accountId, botIdentity, currentHash);
+      logVerbose("telegram: command menu empty; skipping remote sync");
+      return;
+    }
+
     // Keep delete -> set ordering to avoid stale deletions racing after fresh registrations.
     const deleteSucceeded = await deleteTelegramMenuCommandsForScopes({ bot, runtime });
 
