@@ -23,6 +23,7 @@ import {
 import { deliveryContextFromSession } from "../../utils/delivery-context.shared.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { clearCronJobActive, markCronJobActive } from "../active-jobs.js";
+import { executeCommandPayload } from "../command-executor.js";
 import { resolveCronDeliveryPlan, resolveFailureDestination } from "../delivery-plan.js";
 import { resolveCronAgentSessionKey } from "../isolated-agent/session-key.js";
 import { resolveCronExecutionRetryHint } from "../retry-hint.js";
@@ -1860,6 +1861,45 @@ async function executeDetachedCronJob(
       delivery?: CronDeliveryTrace;
     }
 > {
+  if (job.payload.kind === "command") {
+    if (job.sessionTarget !== "isolated") {
+      const error = 'command cron jobs require sessionTarget="isolated"';
+      return {
+        status: "skipped",
+        error,
+        diagnostics: createCronRunDiagnosticsFromError("cron-preflight", error, {
+          severity: "warn",
+          nowMs: state.deps.nowMs,
+        }),
+      };
+    }
+    if (abortSignal?.aborted) {
+      const aborted = resolveAbortError();
+      return {
+        ...aborted,
+        diagnostics: createCronRunDiagnosticsFromError("cron-setup", aborted.error, {
+          nowMs: state.deps.nowMs,
+        }),
+      };
+    }
+    const result = await executeCommandPayload(job.payload, { abortSignal });
+    if (abortSignal?.aborted) {
+      const error = timeoutErrorMessage();
+      return {
+        status: "error",
+        error,
+        diagnostics: createCronRunDiagnosticsFromError("cron-setup", error, {
+          nowMs: state.deps.nowMs,
+        }),
+      };
+    }
+    return {
+      ...result,
+      delivered: undefined,
+      deliveryAttempted: false,
+    };
+  }
+
   if (job.payload.kind !== "agentTurn") {
     const error = "isolated job requires payload.kind=agentTurn";
     return {
