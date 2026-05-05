@@ -17,7 +17,8 @@ export const AGENT_TURN_SAFETY_TIMEOUT_MS = 60 * 60_000; // 60 minutes
 /** Resolves the wall-clock timeout for a cron job, including explicit agent-turn overrides. */
 export function resolveCronJobTimeoutMs(job: CronJob): number | undefined {
   const configuredTimeoutMs =
-    job.payload.kind === "agentTurn" && typeof job.payload.timeoutSeconds === "number"
+    (job.payload.kind === "agentTurn" || job.payload.kind === "command") &&
+    typeof job.payload.timeoutSeconds === "number"
       ? (finiteSecondsToTimerSafeMilliseconds(job.payload.timeoutSeconds) ?? 0)
       : undefined;
   if (configuredTimeoutMs === undefined) {

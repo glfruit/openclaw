@@ -66,6 +66,69 @@ function firstMockArg(mock: unknown): unknown {
 }
 
 describe("cron service timer regressions", () => {
+  it("executes isolated command payloads without routing through isolated agent runner", async () => {
+    const runIsolatedAgentJob = vi.fn(createDefaultIsolatedRunner());
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: timerRegressionFixtures.makeStorePath().storePath,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob,
+    });
+    const job: CronJob = {
+      id: "command-job",
+      name: "command-job",
+      enabled: true,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      schedule: { kind: "at", at: new Date().toISOString() },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "command",
+        command: process.execPath,
+        args: ["-e", "console.log('cron-command-ok')"],
+      },
+      state: {},
+    };
+
+    const result = await executeJobCore(state, job);
+
+    expect(result.status).toBe("ok");
+    expect(result.summary).toBe("cron-command-ok");
+    expect(result.error).not.toBe("isolated job requires payload.kind=agentTurn");
+    expect(runIsolatedAgentJob).not.toHaveBeenCalled();
+  });
+
+  it("keeps the isolated agentTurn guard for unsupported detached payloads", async () => {
+    const state = createCronServiceState({
+      cronEnabled: true,
+      storePath: timerRegressionFixtures.makeStorePath().storePath,
+      log: noopLogger,
+      enqueueSystemEvent: vi.fn(),
+      requestHeartbeat: vi.fn(),
+      runIsolatedAgentJob: vi.fn(createDefaultIsolatedRunner()),
+    });
+    const job: CronJob = {
+      id: "unsupported-isolated-job",
+      name: "unsupported-isolated-job",
+      enabled: true,
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
+      schedule: { kind: "at", at: new Date().toISOString() },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: { kind: "systemEvent", text: "not detached" },
+      state: {},
+    };
+
+    const result = await executeJobCore(state, job);
+
+    expect(result.status).toBe("skipped");
+    expect(result.error).toBe("isolated job requires payload.kind=agentTurn");
+  });
+
   it("caps timer delay to 60s for far-future schedules", async () => {
     const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const store = timerRegressionFixtures.makeStorePath();
