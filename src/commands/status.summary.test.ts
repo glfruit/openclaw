@@ -4,6 +4,11 @@ const statusSummaryMocks = vi.hoisted(() => ({
   hasConfiguredChannelsForReadOnlyScope: vi.fn(() => true),
   buildChannelSummary: vi.fn(async () => ["ok"]),
   readSessionStoreReadOnly: vi.fn(() => ({})),
+  listGatewayAgentsBasic: vi.fn(() => ({
+    defaultId: "main",
+    agents: [{ id: "main" }],
+  })),
+  parseAgentSessionKey: vi.fn((_key: string): { agentId: string } | null => null),
 }));
 
 vi.mock("../plugins/channel-plugin-ids.js", () => ({
@@ -49,10 +54,7 @@ vi.mock("../config/sessions/store-read.js", () => ({
 }));
 
 vi.mock("../gateway/agent-list.js", () => ({
-  listGatewayAgentsBasic: vi.fn(() => ({
-    defaultId: "main",
-    agents: [{ id: "main" }],
-  })),
+  listGatewayAgentsBasic: statusSummaryMocks.listGatewayAgentsBasic,
 }));
 
 vi.mock("../infra/channel-summary.js", () => ({
@@ -112,7 +114,7 @@ vi.mock("../tasks/task-registry.maintenance.js", () => ({
 vi.mock("../routing/session-key.js", () => ({
   normalizeAgentId: vi.fn((value: string) => value),
   normalizeMainKey: vi.fn((value?: string) => value ?? "main"),
-  parseAgentSessionKey: vi.fn(() => null),
+  parseAgentSessionKey: statusSummaryMocks.parseAgentSessionKey,
 }));
 
 vi.mock("../version.js", async () => {
@@ -143,6 +145,11 @@ describe("getStatusSummary", () => {
     statusSummaryMocks.hasConfiguredChannelsForReadOnlyScope.mockReturnValue(true);
     statusSummaryMocks.buildChannelSummary.mockResolvedValue(["ok"]);
     statusSummaryMocks.readSessionStoreReadOnly.mockReturnValue({});
+    statusSummaryMocks.listGatewayAgentsBasic.mockReturnValue({
+      defaultId: "main",
+      agents: [{ id: "main" }],
+    });
+    statusSummaryMocks.parseAgentSessionKey.mockReturnValue(null);
   });
 
   it("includes runtimeVersion in the status payload", async () => {
@@ -199,5 +206,21 @@ describe("getStatusSummary", () => {
     const summary = await getStatusSummary();
 
     expect(summary.sessions.recent[0]?.runtime).toBe("OpenAI Codex");
+  });
+
+  it("reuses canonical per-store session rows for byAgent and allSessions", async () => {
+    statusSummaryMocks.parseAgentSessionKey.mockReturnValue({ agentId: "main" });
+    statusSummaryMocks.readSessionStoreReadOnly.mockReturnValue({
+      "agent:main:main": {
+        sessionId: "session-1",
+        updatedAt: Date.now(),
+      },
+    });
+
+    const summary = await getStatusSummary({ includeChannelSummary: false });
+
+    expect(summary.sessions.byAgent[0]?.recent[0]).toBe(summary.sessions.recent[0]);
+    expect(vi.mocked(statusSummaryRuntime.resolveSessionModelRef)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(statusSummaryRuntime.resolveSessionRuntimeLabel)).toHaveBeenCalledTimes(1);
   });
 });

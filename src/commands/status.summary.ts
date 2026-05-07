@@ -183,28 +183,59 @@ export async function getStatusSummary(
     storeCache.set(storePath, store);
     return store;
   };
+  const sessionRowsCache = new Map<string, SessionStatus[]>();
+  const sessionModelCache = new Map<string, ReturnType<typeof resolveSessionModelRef>>();
+  const contextTokensCache = new Map<string, number | null>();
+  const runtimeLabelCache = new Map<string, string>();
   const buildSessionRows = (
+    storePath: string,
     store: Record<string, SessionEntry | undefined>,
     opts: { agentIdOverride?: string } = {},
-  ) =>
-    Object.entries(store)
+  ) => {
+    const cacheKey = `${storePath}\0${opts.agentIdOverride ?? ""}`;
+    const cached = sessionRowsCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const rows = Object.entries(store)
       .filter(([key]) => key !== "global" && key !== "unknown")
       .map(([key, entry]) => {
         const updatedAt = entry?.updatedAt ?? null;
         const age = updatedAt ? now - updatedAt : null;
         const parsedAgentId = parseAgentSessionKey(key)?.agentId;
         const agentId = opts.agentIdOverride ?? parsedAgentId;
-        const resolvedModel = resolveSessionModelRef(cfg, entry, opts.agentIdOverride);
+        const modelCacheKey = [
+          opts.agentIdOverride ?? "",
+          entry?.modelProvider ?? "",
+          entry?.model ?? "",
+          entry?.providerOverride ?? "",
+          entry?.modelOverride ?? "",
+        ].join("\0");
+        let resolvedModel = sessionModelCache.get(modelCacheKey);
+        if (!resolvedModel) {
+          resolvedModel = resolveSessionModelRef(cfg, entry, opts.agentIdOverride);
+          sessionModelCache.set(modelCacheKey, resolvedModel);
+        }
         const model = resolvedModel.model ?? configModel ?? null;
-        const contextTokens =
-          resolveContextTokensForModel({
-            cfg,
-            provider: resolvedModel.provider,
-            model,
-            contextTokensOverride: entry?.contextTokens,
-            fallbackContextTokens: configContextTokens ?? undefined,
-            allowAsyncLoad: false,
-          }) ?? null;
+        const contextTokensCacheKey = [
+          resolvedModel.provider,
+          model ?? "",
+          entry?.contextTokens ?? "",
+          configContextTokens ?? "",
+        ].join("\0");
+        let contextTokens = contextTokensCache.get(contextTokensCacheKey);
+        if (contextTokens === undefined) {
+          contextTokens =
+            resolveContextTokensForModel({
+              cfg,
+              provider: resolvedModel.provider,
+              model,
+              contextTokensOverride: entry?.contextTokens,
+              fallbackContextTokens: configContextTokens ?? undefined,
+              allowAsyncLoad: false,
+            }) ?? null;
+          contextTokensCache.set(contextTokensCacheKey, contextTokens);
+        }
         const total = resolveSessionTotalTokens(entry);
         const totalTokensFresh =
           typeof entry?.totalTokens === "number" ? entry?.totalTokensFresh !== false : false;
@@ -214,14 +245,25 @@ export async function getStatusSummary(
           contextTokens && contextTokens > 0 && total !== undefined
             ? Math.min(999, Math.round((total / contextTokens) * 100))
             : null;
-        const runtime = resolveSessionRuntimeLabel({
-          cfg,
-          entry,
-          provider: resolvedModel.provider,
-          model: model ?? "",
-          agentId,
-          sessionKey: key,
-        });
+        const runtimeCacheKey = [
+          agentId ?? key,
+          resolvedModel.provider,
+          model ?? "",
+          entry?.agentRuntimeOverride ?? "",
+          entry?.agentHarnessId ?? "",
+        ].join("\0");
+        let runtime = runtimeLabelCache.get(runtimeCacheKey);
+        if (runtime === undefined) {
+          runtime = resolveSessionRuntimeLabel({
+            cfg,
+            entry,
+            provider: resolvedModel.provider,
+            model: model ?? "",
+            agentId,
+            sessionKey: key,
+          });
+          runtimeLabelCache.set(runtimeCacheKey, runtime);
+        }
 
         return {
           agentId,
@@ -252,14 +294,32 @@ export async function getStatusSummary(
           flags: buildFlags(entry),
         } satisfies SessionStatus;
       })
-      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+      .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    sessionRowsCache.set(cacheKey, rows);
+    return rows;
+  };
 
   const paths = new Set<string>();
+  const reusableRowsByStore = new Map<string, SessionStatus[]>();
   const byAgent = agentList.agents.map((agent) => {
     const storePath = resolveStorePath(cfg.session?.store, { agentId: agent.id });
     paths.add(storePath);
     const store = loadStore(storePath);
-    const sessions = buildSessionRows(store, { agentIdOverride: agent.id });
+    const sessions = buildSessionRows(storePath, store, { agentIdOverride: agent.id });
+    const agentHasConfiguredModel = cfg.agents?.list?.some(
+      (entry) => entry?.id === agent.id && entry.model !== undefined,
+    );
+    if (!agentHasConfiguredModel) {
+      const rowsMatchAllSessionsModelScope = Object.keys(store).every((key) => {
+        if (key === "global" || key === "unknown") {
+          return true;
+        }
+        return parseAgentSessionKey(key)?.agentId === agent.id;
+      });
+      if (rowsMatchAllSessionsModelScope) {
+        reusableRowsByStore.set(storePath, sessions);
+      }
+    }
     return {
       agentId: agent.id,
       path: storePath,
@@ -269,7 +329,10 @@ export async function getStatusSummary(
   });
 
   const allSessions = Array.from(paths)
-    .flatMap((storePath) => buildSessionRows(loadStore(storePath)))
+    .flatMap(
+      (storePath) =>
+        reusableRowsByStore.get(storePath) ?? buildSessionRows(storePath, loadStore(storePath)),
+    )
     .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   const recent = allSessions.slice(0, 10);
   const totalSessions = allSessions.length;
