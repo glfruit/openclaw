@@ -442,6 +442,7 @@ export function createSessionsSpawnTool(
             params.attachAs && typeof params.attachAs === "object"
               ? readStringParam(params.attachAs as Record<string, unknown>, "mountPath")
               : undefined,
+          cwd,
         },
         {
           agentSessionKey: opts?.agentSessionKey,

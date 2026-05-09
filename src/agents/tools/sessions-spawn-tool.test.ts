@@ -360,6 +360,28 @@ describe("sessions_spawn tool", () => {
     );
   });
 
+  it("forwards cwd to native subagent spawns", async () => {
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      workspaceDir: "/parent/workspace",
+    });
+
+    await tool.execute("call-cwd", {
+      task: "inspect AGENTS",
+      cwd: ".",
+    });
+
+    expect(hoisted.spawnSubagentDirectMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task: "inspect AGENTS",
+        cwd: ".",
+      }),
+      expect.objectContaining({
+        workspaceDir: "/parent/workspace",
+      }),
+    );
+  });
+
   it("passes lightContext through to subagent spawns", async () => {
     const tool = createSessionsSpawnTool({
       agentSessionKey: "agent:main:main",

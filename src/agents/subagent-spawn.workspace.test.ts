@@ -1,6 +1,10 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSubagentSpawnTestConfig,
+  installSessionStoreCaptureMock,
   loadSubagentSpawnModuleForTest,
   setupAcceptedSubagentGatewayMock,
 } from "./subagent-spawn.test-helpers.js";
@@ -23,6 +27,7 @@ const hoisted = vi.hoisted(() => ({
   callGatewayMock: vi.fn(),
   configOverride: {} as Record<string, unknown>,
   registerSubagentRunMock: vi.fn(),
+  updateSessionStoreMock: vi.fn(),
   hookRunner: {
     hasHooks: vi.fn(() => false),
     runSubagentSpawning: vi.fn(),
@@ -117,6 +122,7 @@ describe("spawnSubagentDirect workspace inheritance", () => {
       callGatewayMock: hoisted.callGatewayMock,
       getRuntimeConfig: () => hoisted.configOverride,
       registerSubagentRunMock: hoisted.registerSubagentRunMock,
+      updateSessionStoreMock: hoisted.updateSessionStoreMock,
       hookRunner: hoisted.hookRunner,
       resolveAgentConfig: resolveTestAgentConfig,
       resolveAgentWorkspaceDir: resolveTestAgentWorkspace,
@@ -128,6 +134,8 @@ describe("spawnSubagentDirect workspace inheritance", () => {
     resetSubagentRegistryForTests();
     hoisted.callGatewayMock.mockClear();
     hoisted.registerSubagentRunMock.mockClear();
+    hoisted.updateSessionStoreMock.mockReset();
+    installSessionStoreCaptureMock(hoisted.updateSessionStoreMock);
     hoisted.hookRunner.hasHooks.mockReset();
     hoisted.hookRunner.hasHooks.mockImplementation(() => false);
     hoisted.hookRunner.runSubagentSpawning.mockReset();
@@ -181,6 +189,162 @@ describe("spawnSubagentDirect workspace inheritance", () => {
     )?.[0] as { params?: Record<string, unknown> } | undefined;
     return agentCall?.params;
   }
+
+  it("allows cross-agent cwd only when relative dot matches requester workspace and applies it to metadata/run/gateway", async () => {
+    const requesterWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-requester-ws-"));
+    const targetWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-target-ws-"));
+    let persistedStore: Record<string, Record<string, unknown>> | undefined;
+    installSessionStoreCaptureMock(hoisted.updateSessionStoreMock, {
+      onStore: (store) => {
+        persistedStore = { ...store };
+      },
+    });
+    hoisted.configOverride = createConfigOverride({
+      agents: {
+        list: [
+          {
+            id: "main",
+            workspace: requesterWorkspace,
+            subagents: {
+              allowAgents: ["ops"],
+            },
+          },
+          {
+            id: "ops",
+            workspace: targetWorkspace,
+          },
+        ],
+      },
+    });
+
+    const result = await spawnSubagentDirect(
+      {
+        task: "inspect same workspace",
+        agentId: "ops",
+        cwd: ".",
+      },
+      {
+        agentSessionKey: "agent:main:main",
+        agentChannel: "telegram",
+        agentAccountId: "123",
+        agentTo: "456",
+        workspaceDir: requesterWorkspace,
+      },
+    );
+
+    const requesterRealpath = await fs.realpath(requesterWorkspace);
+    expect(result.status).toBe("accepted");
+    expect(Object.values(persistedStore ?? {}).at(0)).toMatchObject({
+      spawnedWorkspaceDir: requesterRealpath,
+    });
+    expect(getRegisteredRun()).toMatchObject({
+      workspaceDir: requesterRealpath,
+    });
+    const agentCall = hoisted.callGatewayMock.mock.calls.find(
+      ([request]) => (request as { method?: string }).method === "agent",
+    )?.[0] as { params?: Record<string, unknown> } | undefined;
+    expect(agentCall?.params).toMatchObject({
+      workspaceDir: requesterRealpath,
+    });
+  });
+
+  it("allows absolute requester workspace cwd for cross-agent same-workspace spawns", async () => {
+    const requesterWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-requester-ws-"));
+    const targetWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-target-ws-"));
+    hoisted.configOverride = createConfigOverride({
+      agents: {
+        list: [
+          {
+            id: "main",
+            workspace: requesterWorkspace,
+            subagents: { allowAgents: ["ops"] },
+          },
+          { id: "ops", workspace: targetWorkspace },
+        ],
+      },
+    });
+
+    const result = await spawnSubagentDirect(
+      {
+        task: "inspect absolute same workspace",
+        agentId: "ops",
+        cwd: requesterWorkspace,
+      },
+      {
+        agentSessionKey: "agent:main:main",
+        agentChannel: "telegram",
+        agentAccountId: "123",
+        agentTo: "456",
+        workspaceDir: requesterWorkspace,
+      },
+    );
+
+    const requesterRealpath = await fs.realpath(requesterWorkspace);
+    expect(result.status).toBe("accepted");
+    expect(getRegisteredRun()).toMatchObject({
+      workspaceDir: requesterRealpath,
+    });
+    const agentCall = hoisted.callGatewayMock.mock.calls.find(
+      ([request]) => (request as { method?: string }).method === "agent",
+    )?.[0] as { params?: Record<string, unknown> } | undefined;
+    expect(agentCall?.params).toMatchObject({
+      workspaceDir: requesterRealpath,
+    });
+  });
+
+  it("rejects arbitrary cwd values before child/session/run/gateway side effects", async () => {
+    const requesterWorkspace = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-requester-ws-"));
+    const subdir = path.join(requesterWorkspace, "subdir");
+    await fs.mkdir(subdir);
+    const symlinkToRequester = path.join(requesterWorkspace, "link-to-requester");
+    await fs.symlink(requesterWorkspace, symlinkToRequester, "dir");
+    const missing = path.join(requesterWorkspace, "missing");
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-outside-ws-"));
+    hoisted.configOverride = createConfigOverride({
+      agents: {
+        list: [
+          {
+            id: "main",
+            workspace: requesterWorkspace,
+            subagents: { allowAgents: ["ops"] },
+          },
+          { id: "ops", workspace: outside },
+        ],
+      },
+    });
+
+    for (const cwd of [
+      subdir,
+      outside,
+      missing,
+      "subdir",
+      "subdir/..",
+      "./subdir/..",
+      "../",
+      "link-to-requester",
+      "   ",
+    ] as const) {
+      hoisted.callGatewayMock.mockClear();
+      hoisted.registerSubagentRunMock.mockClear();
+      hoisted.updateSessionStoreMock.mockClear();
+
+      const result = await spawnSubagentDirect(
+        { task: `reject ${cwd}`, agentId: "ops", cwd },
+        {
+          agentSessionKey: "agent:main:main",
+          agentChannel: "telegram",
+          agentAccountId: "123",
+          agentTo: "456",
+          workspaceDir: requesterWorkspace,
+        },
+      );
+
+      expect(result.status).toBe("forbidden");
+      expect(hoisted.updateSessionStoreMock).not.toHaveBeenCalled();
+      expect(hoisted.callGatewayMock).not.toHaveBeenCalled();
+      expect(hoisted.registerSubagentRunMock).not.toHaveBeenCalled();
+    }
+  });
 
   it("passes lightweight bootstrap context flags for lightContext subagent spawns", async () => {
     const agentParams = await spawnAndReadAgentParams({

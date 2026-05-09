@@ -137,6 +137,7 @@ export type SpawnSubagentParams = {
     mimeType?: string;
   }>;
   attachMountPath?: string;
+  cwd?: string;
 };
 
 export type SpawnSubagentContext = {
@@ -672,6 +673,68 @@ function hasRoutableDeliveryOrigin(
   return Boolean(origin?.channel && origin.to);
 }
 
+async function resolveRequestedSameWorkspaceCwd(params: {
+  requestedCwd?: string;
+  requesterWorkspaceDir?: string;
+}): Promise<{ status: "ok"; workspaceDir?: string } | { status: "error"; error: string }> {
+  const hasRequestedCwd = params.requestedCwd != null;
+  const requestedCwd = normalizeOptionalString(params.requestedCwd);
+  if (!requestedCwd) {
+    if (!hasRequestedCwd) {
+      return { status: "ok" };
+    }
+    return {
+      status: "error",
+      error: "sessions_spawn cwd must be a non-empty path.",
+    };
+  }
+  const requesterWorkspaceDir = normalizeOptionalString(params.requesterWorkspaceDir);
+  if (!requesterWorkspaceDir) {
+    return {
+      status: "error",
+      error: "sessions_spawn cwd requires an inherited requester workspace.",
+    };
+  }
+
+  const isAbsoluteCwd = path.isAbsolute(requestedCwd);
+  if (!isAbsoluteCwd && requestedCwd !== ".") {
+    return {
+      status: "error",
+      error: 'sessions_spawn relative cwd must be exactly ".".',
+    };
+  }
+
+  const requesterResolved = path.resolve(requesterWorkspaceDir);
+  const requestedResolved = isAbsoluteCwd ? path.resolve(requestedCwd) : requesterResolved;
+
+  let requesterRealpath: string;
+  let requestedRealpath: string;
+  try {
+    requesterRealpath = await fs.realpath(requesterResolved);
+  } catch {
+    return {
+      status: "error",
+      error: "sessions_spawn cwd requester workspace does not exist.",
+    };
+  }
+  try {
+    requestedRealpath = await fs.realpath(requestedResolved);
+  } catch {
+    return {
+      status: "error",
+      error: "sessions_spawn cwd must exist and match the requester workspace.",
+    };
+  }
+
+  if (requestedRealpath !== requesterRealpath) {
+    return {
+      status: "error",
+      error: "sessions_spawn cwd must match the requester workspace exactly.",
+    };
+  }
+  return { status: "ok", workspaceDir: requesterRealpath };
+}
+
 export async function spawnSubagentDirect(
   params: SpawnSubagentParams,
   ctx: SpawnSubagentContext,
@@ -816,6 +879,16 @@ export async function spawnSubagentDirect(
     return {
       status: "forbidden",
       error: targetPolicy.error,
+    };
+  }
+  const requestedWorkspaceOverride = await resolveRequestedSameWorkspaceCwd({
+    requestedCwd: params.cwd,
+    requesterWorkspaceDir: ctx.workspaceDir,
+  });
+  if (requestedWorkspaceOverride.status === "error") {
+    return {
+      status: "forbidden",
+      error: requestedWorkspaceOverride.error,
     };
   }
   const childSessionKey = `agent:${targetAgentId}:subagent:${crypto.randomUUID()}`;
@@ -1058,7 +1131,8 @@ export async function spawnSubagentDirect(
       // For cross-agent spawns, ignore the caller's inherited workspace;
       // let targetAgentId resolve the correct workspace instead.
       explicitWorkspaceDir:
-        targetAgentId !== requesterAgentId ? undefined : toolSpawnMetadata.workspaceDir,
+        requestedWorkspaceOverride.workspaceDir ??
+        (targetAgentId !== requesterAgentId ? undefined : toolSpawnMetadata.workspaceDir),
     }),
   });
   const spawnLineagePatchError = await patchChildSession({
@@ -1111,8 +1185,14 @@ export async function spawnSubagentDirect(
     const {
       spawnedBy: _spawnedBy,
       workspaceDir: _workspaceDir,
-      ...publicSpawnedMetadata
+      ...basePublicSpawnedMetadata
     } = spawnedMetadata;
+    const publicSpawnedMetadata = {
+      ...basePublicSpawnedMetadata,
+      ...(requestedWorkspaceOverride.workspaceDir
+        ? { workspaceDir: requestedWorkspaceOverride.workspaceDir }
+        : {}),
+    };
     const response = await callSubagentGateway({
       method: "agent",
       params: {
