@@ -1189,9 +1189,6 @@ export async function spawnSubagentDirect(
     } = spawnedMetadata;
     const publicSpawnedMetadata = {
       ...basePublicSpawnedMetadata,
-      ...(requestedWorkspaceOverride.workspaceDir
-        ? { workspaceDir: requestedWorkspaceOverride.workspaceDir }
-        : {}),
     };
     const response = await callSubagentGateway({
       method: "agent",

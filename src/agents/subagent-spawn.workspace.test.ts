@@ -243,9 +243,7 @@ describe("spawnSubagentDirect workspace inheritance", () => {
     const agentCall = hoisted.callGatewayMock.mock.calls.find(
       ([request]) => (request as { method?: string }).method === "agent",
     )?.[0] as { params?: Record<string, unknown> } | undefined;
-    expect(agentCall?.params).toMatchObject({
-      workspaceDir: requesterRealpath,
-    });
+    expect(agentCall?.params).not.toHaveProperty("workspaceDir");
   });
 
   it("allows absolute requester workspace cwd for cross-agent same-workspace spawns", async () => {
@@ -287,9 +285,7 @@ describe("spawnSubagentDirect workspace inheritance", () => {
     const agentCall = hoisted.callGatewayMock.mock.calls.find(
       ([request]) => (request as { method?: string }).method === "agent",
     )?.[0] as { params?: Record<string, unknown> } | undefined;
-    expect(agentCall?.params).toMatchObject({
-      workspaceDir: requesterRealpath,
-    });
+    expect(agentCall?.params).not.toHaveProperty("workspaceDir");
   });
 
   it("rejects arbitrary cwd values before child/session/run/gateway side effects", async () => {
