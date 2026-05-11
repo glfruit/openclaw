@@ -21,6 +21,21 @@ type StickerContextMetadata = {
   isVideo?: boolean;
 } & Record<string, unknown>;
 
+export type RetrievalEvidence = {
+  surface: "session-transcript" | "local-memory" | "nowledge" | "standing-order" | "task-ledger";
+  query: string;
+  scope?: {
+    agentId?: string;
+    channel?: string;
+    groupId?: string;
+    topicId?: string;
+    accountId?: string;
+  };
+  files?: string[];
+  resultCount: number;
+  timestamp: string;
+};
+
 type UntrustedStructuredContextEntry = {
   label: string;
   source?: string;

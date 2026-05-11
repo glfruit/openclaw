@@ -69,6 +69,10 @@ import { resolveBareSessionResetPromptState } from "./session-reset-prompt.js";
 import { resolveBareResetBootstrapFileAccess } from "./session-reset-prompt.js";
 import { drainFormattedSystemEvents } from "./session-system-events.js";
 import { buildSessionStartupContextPrelude, shouldApplyStartupContext } from "./startup-context.js";
+import {
+  buildTopicHistoryRecallStructuredContext,
+  resolveTelegramTopicHistoryRecall,
+} from "./topic-history.js";
 import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 import type { TypingController } from "./typing.js";
@@ -609,15 +613,39 @@ export async function runPreparedReply(
     ? (bareResetPromptState?.prompt ?? "")
     : stripPromptThinkingDirectives(baseBody);
   const envelopeOptions = resolveEnvelopeFormatOptions(cfg);
+  const topicHistoryRecall =
+    isBareSessionReset || !sessionId || !storePath
+      ? undefined
+      : await resolveTelegramTopicHistoryRecall({
+          agentId,
+          ctx,
+          sessionKey,
+          sessionId,
+          storePath,
+          sessionStore,
+          query: rawBodyTrimmed || baseBodyFinal,
+          currentSessionFile: sessionEntry?.sessionFile,
+        });
+  const sessionCtxWithTopicHistory = topicHistoryRecall
+    ? {
+        ...sessionCtx,
+        UntrustedStructuredContext: [
+          ...(Array.isArray(sessionCtx.UntrustedStructuredContext)
+            ? sessionCtx.UntrustedStructuredContext
+            : []),
+          buildTopicHistoryRecallStructuredContext(topicHistoryRecall),
+        ],
+      }
+    : sessionCtx;
   const inboundUserContext = buildInboundUserContextPrefix(
     isNewSession
       ? {
-          ...sessionCtx,
-          ...(normalizeOptionalString(sessionCtx.ThreadHistoryBody)
+          ...sessionCtxWithTopicHistory,
+          ...(normalizeOptionalString(sessionCtxWithTopicHistory.ThreadHistoryBody)
             ? { InboundHistory: undefined, ThreadStarterBody: undefined }
             : {}),
         }
-      : { ...sessionCtx, ThreadStarterBody: undefined },
+      : { ...sessionCtxWithTopicHistory, ThreadStarterBody: undefined },
     envelopeOptions,
   );
   const baseBodyForPrompt = isBareSessionReset
@@ -718,7 +746,7 @@ export async function runPreparedReply(
     }
     return buildReplyPromptBodies({
       ctx,
-      sessionCtx,
+      sessionCtx: sessionCtxWithTopicHistory,
       effectiveBaseBody,
       prefixedBody: prefixedBodyCore,
       transcriptBody: transcriptBodyBase,
