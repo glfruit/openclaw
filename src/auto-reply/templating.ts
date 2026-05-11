@@ -36,6 +36,7 @@ export type RetrievalEvidence = {
     groupId?: string;
     topicId?: string;
     accountId?: string;
+    sessionKey?: string;
   };
   files?: string[];
   resultCount: number;

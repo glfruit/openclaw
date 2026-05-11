@@ -10,6 +10,8 @@ import type { SilentReplyPromptMode } from "../../agents/system-prompt.types.js"
 import { normalizeChatType } from "../../channels/chat-type.js";
 import {
   buildCommitmentLedgerStructuredContext,
+  buildCommitmentLedgerUnavailableRecall,
+  buildCommitmentLedgerUnavailableStructuredContext,
   resolveActiveCommitmentLedgerRecall,
   type CommitmentLedgerQuery,
 } from "../../commitments/ledger.js";
@@ -151,12 +153,16 @@ function normalizeCommitmentLedgerGroupId(value: unknown): string | undefined {
     .replace(/:topic:.+$/u, "");
 }
 
+type CommitmentLedgerScopeResolution =
+  | { status: "available"; query: CommitmentLedgerQuery }
+  | { status: "unavailable"; scope?: Partial<CommitmentLedgerQuery>; detail: string };
+
 function resolveCommitmentLedgerQueryScope(params: {
   agentId: string;
   ctx: MsgContext;
   sessionKey: string;
   sessionEntry?: SessionEntry;
-}): CommitmentLedgerQuery | undefined {
+}): CommitmentLedgerScopeResolution {
   const parsed = parsePromptSessionKeyParts(params.sessionKey);
   const channel = normalizeCommitmentLedgerChannel(
     params.ctx.OriginatingChannel ??
@@ -168,7 +174,11 @@ function resolveCommitmentLedgerQueryScope(params: {
       parsed.channel,
   );
   if (!channel) {
-    return undefined;
+    return {
+      status: "unavailable",
+      scope: { agentId: params.agentId },
+      detail: "Commitment ledger lookup skipped because channel scope could not be resolved.",
+    };
   }
   const groupId = normalizeCommitmentLedgerGroupId(
     params.ctx.OriginatingTo ??
@@ -189,13 +199,28 @@ function resolveCommitmentLedgerQueryScope(params: {
       params.sessionEntry?.origin?.accountId ??
       params.sessionEntry?.lastAccountId,
   );
-  return {
+  const baseScope = {
     agentId: params.agentId,
     channel,
     ...(accountId ? { accountId } : {}),
-    ...(groupId ? { groupId } : {}),
-    ...(topicId ? { topicId } : {}),
   };
+  if (groupId || topicId) {
+    const groupScope = {
+      ...baseScope,
+      ...(groupId ? { groupId } : {}),
+      ...(topicId ? { topicId } : {}),
+    };
+    return groupId && topicId
+      ? { status: "available", query: groupScope }
+      : {
+          status: "unavailable",
+          scope: groupScope,
+          detail:
+            "Commitment ledger lookup skipped because exact group/topic scope could not be resolved.",
+        };
+  }
+  const sessionScope = { ...baseScope, sessionKey: params.sessionKey };
+  return { status: "available", query: sessionScope };
 }
 
 function normalizeToolProgressDetail(value: unknown): "explain" | "raw" | undefined {
@@ -720,15 +745,30 @@ export async function runPreparedReply(
   const commitmentLedgerScope = isBareSessionReset
     ? undefined
     : resolveCommitmentLedgerQueryScope({ agentId, ctx, sessionKey, sessionEntry });
-  const commitmentLedgerRecall = commitmentLedgerScope
-    ? await resolveActiveCommitmentLedgerRecall({
-        query: commitmentLedgerScope,
-        queryText: rawBodyTrimmed || baseBodyFinal,
-      }).catch((err) => {
-        logVerbose(`commitment ledger recall skipped: ${String(err)}`);
-        return undefined;
-      })
-    : undefined;
+  const commitmentLedgerQueryText = rawBodyTrimmed || baseBodyFinal;
+  const commitmentLedgerRecall =
+    commitmentLedgerScope?.status === "available"
+      ? await resolveActiveCommitmentLedgerRecall({
+          query: commitmentLedgerScope.query,
+          queryText: commitmentLedgerQueryText,
+        }).catch((err) => {
+          logVerbose(`commitment ledger recall unavailable: ${String(err)}`);
+          const detail = String(err);
+          return buildCommitmentLedgerUnavailableRecall({
+            reason: detail.includes("Invalid commitment") ? "corrupt_ledger" : "read_error",
+            queryText: commitmentLedgerQueryText,
+            scope: commitmentLedgerScope.query,
+            detail,
+          });
+        })
+      : commitmentLedgerScope?.status === "unavailable"
+        ? buildCommitmentLedgerUnavailableRecall({
+            reason: "insufficient_scope",
+            queryText: commitmentLedgerQueryText,
+            scope: commitmentLedgerScope.scope,
+            detail: commitmentLedgerScope.detail,
+          })
+        : undefined;
   const structuredRetrievalContext = [
     ...(Array.isArray(sessionCtx.UntrustedStructuredContext)
       ? sessionCtx.UntrustedStructuredContext
@@ -736,6 +776,9 @@ export async function runPreparedReply(
     ...(topicHistoryRecall ? [buildTopicHistoryRecallStructuredContext(topicHistoryRecall)] : []),
     ...(commitmentLedgerRecall?.status === "match"
       ? [buildCommitmentLedgerStructuredContext(commitmentLedgerRecall)]
+      : []),
+    ...(commitmentLedgerRecall?.status === "unavailable"
+      ? [buildCommitmentLedgerUnavailableStructuredContext(commitmentLedgerRecall)]
       : []),
   ];
   const sessionCtxWithRetrieval =

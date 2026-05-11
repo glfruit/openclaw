@@ -135,6 +135,43 @@ describe("commitment ledger v1", () => {
     ).resolves.toEqual([]);
   });
 
+  it("does not use omitted optional scope fields as wildcards", async () => {
+    await appendCommitmentLedgerEntry({
+      ledgerPath,
+      input: {
+        ...baseScope,
+        summary: "check the Plan C validation result",
+        creationSource: "explicit_user_request",
+      },
+    });
+
+    await expect(
+      queryActiveCommitments({
+        ledgerPath,
+        query: {
+          agentId: baseScope.agentId,
+          channel: baseScope.channel,
+          groupId: baseScope.groupId,
+          topicId: baseScope.topicId,
+        },
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it("returns unavailable instead of none when query scope is insufficient", async () => {
+    const result = await resolveActiveCommitmentLedgerRecall({
+      ledgerPath,
+      query: {
+        agentId: baseScope.agentId,
+        channel: baseScope.channel,
+        groupId: baseScope.groupId,
+      },
+      queryText: "what did you commit to?",
+    });
+
+    expect(result).toMatchObject({ status: "unavailable", reason: "insufficient_scope" });
+  });
+
   it("does not match a different agent", async () => {
     await appendCommitmentLedgerEntry({
       ledgerPath,
@@ -204,6 +241,40 @@ describe("commitment ledger v1", () => {
     await updateCommitmentLedgerStatus({ ledgerPath, id: first.id, status: "completed" });
     await expect(queryActiveCommitments({ ledgerPath, query: baseScope })).resolves.toEqual([]);
     await expect(readCommitmentLedger(ledgerPath)).resolves.toHaveLength(1);
+  });
+
+  it("dedupes concurrent appends under the ledger lock", async () => {
+    const commitments = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        appendCommitmentLedgerEntry({
+          ledgerPath,
+          input: {
+            ...baseScope,
+            summary: `check the Plan C validation result ${index}`,
+            creationSource: "explicit_user_request",
+            dedupeKey: "plan-c-validation",
+          },
+        }),
+      ),
+    );
+
+    expect(new Set(commitments.map((commitment) => commitment.id)).size).toBe(1);
+    await expect(readCommitmentLedger(ledgerPath)).resolves.toHaveLength(1);
+  });
+
+  it("surfaces malformed and invalid ledger lines", async () => {
+    await fs.mkdir(path.dirname(ledgerPath), { recursive: true });
+    await fs.writeFile(ledgerPath, '{"version":1,"type":"commitment.created"}\nnot-json\n');
+
+    await expect(readCommitmentLedger(ledgerPath)).rejects.toThrow(/Invalid commitment.created/);
+    await fs.writeFile(ledgerPath, "not-json\n");
+    await expect(
+      resolveActiveCommitmentLedgerRecall({
+        ledgerPath,
+        query: baseScope,
+        queryText: "what did you commit to?",
+      }),
+    ).rejects.toThrow(/Invalid commitment ledger JSON/);
   });
 
   it("resolves the default ledger path under OPENCLAW_STATE_DIR", () => {

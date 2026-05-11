@@ -74,10 +74,21 @@ export type AppendCommitmentLedgerInput = CommitmentLedgerScope & {
 
 export type CommitmentLedgerQuery = CommitmentLedgerScope;
 
+export type CommitmentLedgerUnavailableReason =
+  | "read_error"
+  | "corrupt_ledger"
+  | "insufficient_scope";
+
 export type CommitmentLedgerQueryResult =
   | { status: "none"; evidence: RetrievalEvidence }
   | { status: "match"; commitment: CommitmentLedgerRecord; evidence: RetrievalEvidence }
-  | { status: "ambiguous"; count: number; evidence: RetrievalEvidence };
+  | { status: "ambiguous"; count: number; evidence: RetrievalEvidence }
+  | {
+      status: "unavailable";
+      reason: CommitmentLedgerUnavailableReason;
+      evidence: RetrievalEvidence;
+      detail?: string;
+    };
 
 const LEDGER_VERSION = 1 as const;
 const LEDGER_RELATIVE_PATH = path.join("commitments", "commitment-ledger.jsonl");
@@ -282,7 +293,7 @@ function coerceRecord(value: unknown): CommitmentLedgerRecord | undefined {
   };
 }
 
-function coerceEvent(line: string): CommitmentLedgerEvent | undefined {
+function coerceEvent(line: string, lineNumber: number): CommitmentLedgerEvent | undefined {
   const trimmed = line.trim();
   if (!trimmed) {
     return undefined;
@@ -290,23 +301,24 @@ function coerceEvent(line: string): CommitmentLedgerEvent | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed) as unknown;
-  } catch {
-    return undefined;
+  } catch (err) {
+    throw new Error(`Invalid commitment ledger JSON on line ${lineNumber}`, { cause: err });
   }
   if (!isRecord(parsed) || parsed.version !== LEDGER_VERSION) {
-    return undefined;
+    throw new Error(`Invalid commitment ledger event schema on line ${lineNumber}`);
   }
   if (parsed.type === "commitment.created") {
     const commitment = coerceRecord(parsed.commitment);
-    return commitment
-      ? { version: LEDGER_VERSION, type: "commitment.created", commitment }
-      : undefined;
+    if (!commitment) {
+      throw new Error(`Invalid commitment.created event on line ${lineNumber}`);
+    }
+    return { version: LEDGER_VERSION, type: "commitment.created", commitment };
   }
   if (parsed.type === "commitment.status") {
     const id = normalizeRequiredString(parsed.id);
     const updatedAt = normalizeRequiredString(parsed.updatedAt);
     if (!id || !updatedAt || !isStatus(parsed.status)) {
-      return undefined;
+      throw new Error(`Invalid commitment.status event on line ${lineNumber}`);
     }
     return {
       version: LEDGER_VERSION,
@@ -316,7 +328,7 @@ function coerceEvent(line: string): CommitmentLedgerEvent | undefined {
       updatedAt,
     };
   }
-  return undefined;
+  throw new Error(`Unknown commitment ledger event type on line ${lineNumber}`);
 }
 
 function applyEvents(events: CommitmentLedgerEvent[]): CommitmentLedgerRecord[] {
@@ -349,8 +361,8 @@ async function readLedgerEvents(ledgerPath: string): Promise<CommitmentLedgerEve
     throw err;
   }
   const events: CommitmentLedgerEvent[] = [];
-  for (const line of raw.split("\n")) {
-    const event = coerceEvent(line);
+  for (const [index, line] of raw.split("\n").entries()) {
+    const event = coerceEvent(line, index + 1);
     if (event) {
       events.push(event);
     }
@@ -358,20 +370,27 @@ async function readLedgerEvents(ledgerPath: string): Promise<CommitmentLedgerEve
   return events;
 }
 
+async function writeLedgerEventUnlocked(
+  ledgerPath: string,
+  event: CommitmentLedgerEvent,
+): Promise<void> {
+  const handle = await fs.promises.open(ledgerPath, "a", 0o600);
+  try {
+    await handle.chmod(0o600).catch(() => undefined);
+    await handle.write(`${JSON.stringify(event)}\n`, undefined, "utf-8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fs.promises.chmod(ledgerPath, 0o600).catch(() => undefined);
+}
+
 async function appendLedgerEvent(ledgerPath: string, event: CommitmentLedgerEvent): Promise<void> {
   const dir = path.dirname(ledgerPath);
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
   await fs.promises.chmod(dir, 0o700).catch(() => undefined);
   await withLedgerLock(ledgerPath, async () => {
-    const handle = await fs.promises.open(ledgerPath, "a", 0o600);
-    try {
-      await handle.chmod(0o600).catch(() => undefined);
-      await handle.write(`${JSON.stringify(event)}\n`, undefined, "utf-8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await fs.promises.chmod(ledgerPath, 0o600).catch(() => undefined);
+    await writeLedgerEventUnlocked(ledgerPath, event);
   });
 }
 
@@ -379,16 +398,26 @@ export async function readCommitmentLedger(ledgerPath?: string): Promise<Commitm
   return applyEvents(await readLedgerEvents(resolveCommitmentLedgerPath(ledgerPath)));
 }
 
+function hasSufficientQueryScope(scope: CommitmentLedgerQuery): boolean {
+  if (scope.channel === "telegram" && (scope.groupId || scope.topicId)) {
+    return Boolean(scope.groupId && scope.topicId);
+  }
+  return Boolean(scope.sessionKey || (scope.groupId && scope.topicId));
+}
+
 function matchesActiveScope(record: CommitmentLedgerRecord, query: CommitmentLedgerQuery): boolean {
   const scope = normalizeScope(query);
+  if (!hasSufficientQueryScope(scope)) {
+    return false;
+  }
   return (
     record.status === "active" &&
     record.agentId === scope.agentId &&
     record.channel === scope.channel &&
-    (scope.accountId === undefined || record.accountId === scope.accountId) &&
-    (scope.groupId === undefined || record.groupId === scope.groupId) &&
-    (scope.topicId === undefined || record.topicId === scope.topicId) &&
-    (scope.sessionKey === undefined || record.sessionKey === scope.sessionKey)
+    record.accountId === scope.accountId &&
+    record.groupId === scope.groupId &&
+    record.topicId === scope.topicId &&
+    record.sessionKey === scope.sessionKey
   );
 }
 
@@ -409,29 +438,36 @@ export async function appendCommitmentLedgerEntry(params: {
   const summary = normalizeSummary(params.input.summary);
   const dedupeKey = normalizeDedupeKey({ ...params.input, ...scope }, summary);
   const ledgerPath = resolveCommitmentLedgerPath(params.ledgerPath);
-  const existing = await queryActiveCommitments({ query: scope, ledgerPath });
-  const duplicate = existing.find((record) => record.dedupeKey === dedupeKey);
-  if (duplicate) {
-    return duplicate;
-  }
-  const timestamp = now.toISOString();
-  const commitment: CommitmentLedgerRecord = {
-    id: generateCommitmentLedgerId(now),
-    ...scope,
-    status: "active",
-    summary,
-    creationSource: params.input.creationSource,
-    dedupeKey,
-    references: params.input.references ?? [],
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-  await appendLedgerEvent(ledgerPath, {
-    version: LEDGER_VERSION,
-    type: "commitment.created",
-    commitment,
+  const dir = path.dirname(ledgerPath);
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+  await fs.promises.chmod(dir, 0o700).catch(() => undefined);
+  return withLedgerLock(ledgerPath, async () => {
+    const existing = applyEvents(await readLedgerEvents(ledgerPath)).filter((record) =>
+      matchesActiveScope(record, scope),
+    );
+    const duplicate = existing.find((record) => record.dedupeKey === dedupeKey);
+    if (duplicate) {
+      return duplicate;
+    }
+    const timestamp = now.toISOString();
+    const commitment: CommitmentLedgerRecord = {
+      id: generateCommitmentLedgerId(now),
+      ...scope,
+      status: "active",
+      summary,
+      creationSource: params.input.creationSource,
+      dedupeKey,
+      references: params.input.references ?? [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    await writeLedgerEventUnlocked(ledgerPath, {
+      version: LEDGER_VERSION,
+      type: "commitment.created",
+      commitment,
+    });
+    return commitment;
   });
-  return commitment;
 }
 
 export async function updateCommitmentLedgerStatus(params: {
@@ -464,6 +500,7 @@ export function buildCommitmentLedgerEvidence(params: {
       ...(params.scope.groupId ? { groupId: params.scope.groupId } : {}),
       ...(params.scope.topicId ? { topicId: params.scope.topicId } : {}),
       ...(params.scope.accountId ? { accountId: params.scope.accountId } : {}),
+      ...(params.scope.sessionKey ? { sessionKey: params.scope.sessionKey } : {}),
     },
     resultCount: params.resultCount,
     timestamp: (params.now ?? new Date()).toISOString(),
@@ -476,13 +513,23 @@ export async function resolveActiveCommitmentLedgerRecall(params: {
   ledgerPath?: string;
   now?: Date;
 }): Promise<CommitmentLedgerQueryResult> {
+  const scope = normalizeScope(params.query);
+  if (!hasSufficientQueryScope(scope)) {
+    return buildCommitmentLedgerUnavailableRecall({
+      reason: "insufficient_scope",
+      queryText: params.queryText,
+      scope,
+      now: params.now,
+      detail: "Commitment ledger lookup requires exact group/topic scope or exact session scope.",
+    });
+  }
   const commitments = await queryActiveCommitments({
-    query: params.query,
+    query: scope,
     ledgerPath: params.ledgerPath,
   });
   const evidence = buildCommitmentLedgerEvidence({
     queryText: params.queryText,
-    scope: params.query,
+    scope,
     resultCount: commitments.length,
     now: params.now,
   });
@@ -493,6 +540,36 @@ export async function resolveActiveCommitmentLedgerRecall(params: {
     return { status: "ambiguous", count: commitments.length, evidence };
   }
   return { status: "match", commitment: commitments[0], evidence };
+}
+
+export function buildCommitmentLedgerUnavailableRecall(params: {
+  reason: CommitmentLedgerUnavailableReason;
+  queryText: string;
+  scope?: Partial<CommitmentLedgerQuery>;
+  now?: Date;
+  detail?: string;
+}): Extract<CommitmentLedgerQueryResult, { status: "unavailable" }> {
+  return {
+    status: "unavailable",
+    reason: params.reason,
+    detail: params.detail,
+    evidence: {
+      surface: "commitment-ledger",
+      query: params.queryText,
+      scope: params.scope
+        ? {
+            ...(params.scope.agentId ? { agentId: params.scope.agentId } : {}),
+            ...(params.scope.channel ? { channel: params.scope.channel } : {}),
+            ...(params.scope.groupId ? { groupId: params.scope.groupId } : {}),
+            ...(params.scope.topicId ? { topicId: params.scope.topicId } : {}),
+            ...(params.scope.accountId ? { accountId: params.scope.accountId } : {}),
+            ...(params.scope.sessionKey ? { sessionKey: params.scope.sessionKey } : {}),
+          }
+        : undefined,
+      resultCount: 0,
+      timestamp: (params.now ?? new Date()).toISOString(),
+    },
+  };
 }
 
 export function buildCommitmentLedgerStructuredContext(
@@ -522,6 +599,28 @@ export function buildCommitmentLedgerStructuredContext(
         created_at: recall.commitment.createdAt,
         updated_at: recall.commitment.updatedAt,
       },
+    },
+  };
+}
+
+export function buildCommitmentLedgerUnavailableStructuredContext(
+  recall: Extract<CommitmentLedgerQueryResult, { status: "unavailable" }>,
+): {
+  label: string;
+  source: string;
+  type: string;
+  payload: unknown;
+} {
+  return {
+    label: "Commitment ledger unavailable",
+    source: "commitment-ledger",
+    type: "retrieval-warning",
+    payload: {
+      warning:
+        "Commitment-ledger retrieval failed or was skipped fail-closed. Do not claim no active commitments exist from this surface.",
+      reason: recall.reason,
+      detail: recall.detail,
+      retrieval_evidence: [recall.evidence],
     },
   };
 }
