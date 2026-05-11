@@ -8,12 +8,18 @@ import type { EmbeddedFullAccessBlockedReason } from "../../agents/pi-embedded-r
 import { resolveIngressWorkspaceOverrideForSpawnedRun } from "../../agents/spawned-context.js";
 import type { SilentReplyPromptMode } from "../../agents/system-prompt.types.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
+import {
+  buildCommitmentLedgerStructuredContext,
+  resolveActiveCommitmentLedgerRecall,
+  type CommitmentLedgerQuery,
+} from "../../commitments/ledger.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import {
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
 } from "../../config/sessions/paths.js";
 import { resolveSessionStoreEntry } from "../../config/sessions/store.js";
+import { parseSessionThreadInfo } from "../../config/sessions/thread-info.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { resolveSilentReplySettings } from "../../config/silent-reply.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -26,7 +32,10 @@ import {
 } from "../../routing/session-key.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SilentReplyConversationType } from "../../shared/silent-reply-policy.js";
-import { normalizeOptionalString } from "../../shared/string-coerce.js";
+import {
+  normalizeOptionalString,
+  normalizeOptionalStringifiedId,
+} from "../../shared/string-coerce.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
@@ -105,6 +114,88 @@ export function resolvePromptSilentReplyConversationType(params: {
 function normalizePromptRouteChannel(raw?: string | null): string | undefined {
   const normalized = normalizeOptionalString(raw);
   return normalized && normalized !== "none" ? normalized : undefined;
+}
+
+function parsePromptSessionKeyParts(sessionKey: string): {
+  channel?: string;
+  groupId?: string;
+  topicId?: string;
+} {
+  const parts = sessionKey.split(":");
+  const telegramIndex = parts.indexOf("telegram");
+  const groupIndex = parts.indexOf("group");
+  const topicIndex = parts.indexOf("topic");
+  return {
+    ...(telegramIndex >= 0 ? { channel: "telegram" } : {}),
+    ...(groupIndex >= 0 && parts[groupIndex + 1] ? { groupId: parts[groupIndex + 1] } : {}),
+    ...(topicIndex >= 0 && parts[topicIndex + 1] ? { topicId: parts[topicIndex + 1] } : {}),
+  };
+}
+
+function normalizeCommitmentLedgerChannel(value: unknown): string | undefined {
+  const normalized = normalizeOptionalString(value)?.toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.includes("telegram") ? "telegram" : normalized;
+}
+
+function normalizeCommitmentLedgerGroupId(value: unknown): string | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized
+    .replace(/^telegram:/u, "")
+    .replace(/^group:/u, "")
+    .replace(/:topic:.+$/u, "");
+}
+
+function resolveCommitmentLedgerQueryScope(params: {
+  agentId: string;
+  ctx: MsgContext;
+  sessionKey: string;
+  sessionEntry?: SessionEntry;
+}): CommitmentLedgerQuery | undefined {
+  const parsed = parsePromptSessionKeyParts(params.sessionKey);
+  const channel = normalizeCommitmentLedgerChannel(
+    params.ctx.OriginatingChannel ??
+      params.ctx.Surface ??
+      params.ctx.Provider ??
+      params.sessionEntry?.channel ??
+      params.sessionEntry?.lastChannel ??
+      params.sessionEntry?.origin?.provider ??
+      parsed.channel,
+  );
+  if (!channel) {
+    return undefined;
+  }
+  const groupId = normalizeCommitmentLedgerGroupId(
+    params.ctx.OriginatingTo ??
+      params.sessionEntry?.origin?.to ??
+      params.sessionEntry?.lastTo ??
+      params.sessionEntry?.groupId ??
+      parsed.groupId,
+  );
+  const topicId = normalizeOptionalStringifiedId(
+    params.ctx.MessageThreadId ??
+      params.sessionEntry?.origin?.threadId ??
+      params.sessionEntry?.lastThreadId ??
+      parseSessionThreadInfo(params.sessionKey).threadId ??
+      parsed.topicId,
+  );
+  const accountId = normalizeOptionalString(
+    params.ctx.AccountId ??
+      params.sessionEntry?.origin?.accountId ??
+      params.sessionEntry?.lastAccountId,
+  );
+  return {
+    agentId: params.agentId,
+    channel,
+    ...(accountId ? { accountId } : {}),
+    ...(groupId ? { groupId } : {}),
+    ...(topicId ? { topicId } : {}),
+  };
 }
 
 function normalizeToolProgressDetail(value: unknown): "explain" | "raw" | undefined {
@@ -626,26 +717,43 @@ export async function runPreparedReply(
           query: rawBodyTrimmed || baseBodyFinal,
           currentSessionFile: sessionEntry?.sessionFile,
         });
-  const sessionCtxWithTopicHistory = topicHistoryRecall
-    ? {
-        ...sessionCtx,
-        UntrustedStructuredContext: [
-          ...(Array.isArray(sessionCtx.UntrustedStructuredContext)
-            ? sessionCtx.UntrustedStructuredContext
-            : []),
-          buildTopicHistoryRecallStructuredContext(topicHistoryRecall),
-        ],
-      }
-    : sessionCtx;
+  const commitmentLedgerScope = isBareSessionReset
+    ? undefined
+    : resolveCommitmentLedgerQueryScope({ agentId, ctx, sessionKey, sessionEntry });
+  const commitmentLedgerRecall = commitmentLedgerScope
+    ? await resolveActiveCommitmentLedgerRecall({
+        query: commitmentLedgerScope,
+        queryText: rawBodyTrimmed || baseBodyFinal,
+      }).catch((err) => {
+        logVerbose(`commitment ledger recall skipped: ${String(err)}`);
+        return undefined;
+      })
+    : undefined;
+  const structuredRetrievalContext = [
+    ...(Array.isArray(sessionCtx.UntrustedStructuredContext)
+      ? sessionCtx.UntrustedStructuredContext
+      : []),
+    ...(topicHistoryRecall ? [buildTopicHistoryRecallStructuredContext(topicHistoryRecall)] : []),
+    ...(commitmentLedgerRecall?.status === "match"
+      ? [buildCommitmentLedgerStructuredContext(commitmentLedgerRecall)]
+      : []),
+  ];
+  const sessionCtxWithRetrieval =
+    structuredRetrievalContext.length > 0
+      ? {
+          ...sessionCtx,
+          UntrustedStructuredContext: structuredRetrievalContext,
+        }
+      : sessionCtx;
   const inboundUserContext = buildInboundUserContextPrefix(
     isNewSession
       ? {
-          ...sessionCtxWithTopicHistory,
-          ...(normalizeOptionalString(sessionCtxWithTopicHistory.ThreadHistoryBody)
+          ...sessionCtxWithRetrieval,
+          ...(normalizeOptionalString(sessionCtxWithRetrieval.ThreadHistoryBody)
             ? { InboundHistory: undefined, ThreadStarterBody: undefined }
             : {}),
         }
-      : { ...sessionCtxWithTopicHistory, ThreadStarterBody: undefined },
+      : { ...sessionCtxWithRetrieval, ThreadStarterBody: undefined },
     envelopeOptions,
   );
   const baseBodyForPrompt = isBareSessionReset
@@ -746,7 +854,7 @@ export async function runPreparedReply(
     }
     return buildReplyPromptBodies({
       ctx,
-      sessionCtx: sessionCtxWithTopicHistory,
+      sessionCtx: sessionCtxWithRetrieval,
       effectiveBaseBody,
       prefixedBody: prefixedBodyCore,
       transcriptBody: transcriptBodyBase,

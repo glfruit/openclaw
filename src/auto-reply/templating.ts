@@ -22,7 +22,13 @@ type StickerContextMetadata = {
 } & Record<string, unknown>;
 
 export type RetrievalEvidence = {
-  surface: "session-transcript" | "local-memory" | "nowledge" | "standing-order" | "task-ledger";
+  surface:
+    | "session-transcript"
+    | "local-memory"
+    | "nowledge"
+    | "standing-order"
+    | "task-ledger"
+    | "commitment-ledger";
   query: string;
   scope?: {
     agentId?: string;
