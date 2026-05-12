@@ -67,20 +67,45 @@ export async function executeCommandPayload(
     let stdoutBytes = 0;
     let stderrBytes = 0;
 
+    const usePosixProcessGroup = process.platform !== "win32";
     const proc = spawn(payload.command, payload.args ?? [], {
       cwd: payload.cwd,
       env,
       shell: false,
+      // POSIX detached spawn creates a new process group/session so timeout/abort
+      // cleanup can kill descendants without using a shell. On Windows, avoid
+      // detached because Node cannot safely kill the whole job tree here.
+      detached: usePosixProcessGroup,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
     let settled = false;
+
+    const killProcessTree = () => {
+      if (proc.pid && usePosixProcessGroup) {
+        try {
+          process.kill(-proc.pid, "SIGKILL");
+          return;
+        } catch {
+          // Fall through to direct child kill as a best-effort fallback.
+        }
+      }
+      proc.kill("SIGKILL");
+    };
+
+    const cleanup = () => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (abortListener && options?.abortSignal) {
+        options.abortSignal.removeEventListener("abort", abortListener);
+      }
+    };
 
     const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
       settled = true;
-      if (timeoutTimer) clearTimeout(timeoutTimer);
+      cleanup();
 
       if (killed) {
         resolve({
@@ -164,7 +189,7 @@ export async function executeCommandPayload(
     proc.on("error", (err) => {
       if (settled) return;
       settled = true;
-      if (timeoutTimer) clearTimeout(timeoutTimer);
+      cleanup();
       resolve({ status: "error", error: `command spawn error: ${err.message}` });
     });
 
@@ -172,21 +197,21 @@ export async function executeCommandPayload(
     if (timeoutMs != null && timeoutMs > 0) {
       timeoutTimer = setTimeout(() => {
         killed = true;
-        proc.kill("SIGKILL");
+        killProcessTree();
       }, timeoutMs);
     }
 
     // Abort signal handling
     if (options?.abortSignal) {
-      const onAbort = () => {
+      abortListener = () => {
         if (settled) return;
         killed = true;
-        proc.kill("SIGKILL");
+        killProcessTree();
       };
       if (options.abortSignal.aborted) {
-        onAbort();
+        abortListener();
       } else {
-        options.abortSignal.addEventListener("abort", onAbort, { once: true });
+        options.abortSignal.addEventListener("abort", abortListener, { once: true });
       }
     }
   });

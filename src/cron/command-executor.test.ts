@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { executeCommandPayload, validateCommandPayload } from "./command-executor.js";
 
@@ -93,6 +96,38 @@ describe("executeCommandPayload", () => {
     expect(result.status).toBe("error");
     expect(result.error).toMatch(/timed out/);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "kills the spawned POSIX process group on timeout",
+    async () => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-command-timeout-"));
+      const childPidFile = path.join(tmpDir, "child.pid");
+      try {
+        const result = await executeCommandPayload({
+          kind: "command",
+          command: NODE,
+          args: [
+            "-e",
+            `const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+setInterval(() => {}, 1000);`,
+          ],
+          timeoutSeconds: 0.2,
+        });
+        expect(result.status).toBe("error");
+        expect(result.error).toMatch(/timed out/);
+
+        const childPid = Number(await fs.readFile(childPidFile, "utf8"));
+        expect(childPid).toBeGreaterThan(0);
+        await waitForProcessExit(childPid);
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+    5_000,
+  );
 
   it("respects successRegex", async () => {
     const result = await executeCommandPayload({
@@ -199,3 +234,23 @@ describe("executeCommandPayload", () => {
     expect(result.summary).toBe("hello_env");
   });
 });
+
+async function waitForProcessExit(pid: number): Promise<void> {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`process ${pid} was still alive after timeout cleanup`);
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
