@@ -891,6 +891,48 @@ describe("normalizeCronJobPatch", () => {
     expectPayloadDeliveryHintsCleared(payload);
   });
 
+  it("accepts command payloads for create and defaults them to isolated", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "command job",
+      schedule: { kind: "every", everyMs: 60_000 },
+      payload: {
+        kind: "command",
+        command: " /bin/echo ",
+        args: ["hello"],
+        env: { FOO: "bar", BAD: 1 },
+        outputMode: "lastLine",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    expect(normalized.sessionTarget).toBe("isolated");
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload.kind).toBe("command");
+    expect(payload.command).toBe("/bin/echo");
+    expect(payload.args).toEqual(["hello"]);
+    expect(payload.env).toEqual({ FOO: "bar" });
+    expect(validateCronAddParams(normalized)).toBe(true);
+  });
+
+  it("accepts command payload patches and prunes invalid regex/output mode", () => {
+    const normalized = normalizeCronJobPatch({
+      payload: {
+        kind: "command",
+        command: "/bin/echo",
+        successRegex: "[",
+        failureRegex: "ok",
+        outputMode: "bad",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload.kind).toBe("command");
+    expect(payload.command).toBe("/bin/echo");
+    expect(payload.successRegex).toBeUndefined();
+    expect(payload.failureRegex).toBe("ok");
+    expect(payload.outputMode).toBeUndefined();
+    expect(validateCronUpdateParams({ id: "job-1", patch: normalized })).toBe(true);
+  });
+
   it("preserves null sessionKey patches and trims string values", () => {
     const trimmed = normalizeCronJobPatch({
       sessionKey: "  agent:main:telegram:group:-100123  ",

@@ -8,6 +8,7 @@ import {
   normalizeOptionalString,
 } from "../../shared/string-coerce.js";
 import { addGatewayClientOptions, callGatewayFromCli } from "../gateway-rpc.js";
+import { parsePositiveIntOrUndefined } from "../program/helpers.js";
 import {
   applyExistingCronSchedulePatch,
   resolveCronEditScheduleRequest,
@@ -89,6 +90,8 @@ export function registerCronEditCommand(cron: Command) {
       .option("--exact", "Disable cron staggering (set stagger to 0)")
       .option("--system-event <text>", "Set systemEvent payload")
       .option("--message <text>", "Set agentTurn payload message")
+      .option("--command <path>", "Set command payload executable path (runs without shell)")
+      .option("--args <args...>", "Set command payload args")
       .option(
         "--thinking <level>",
         "Thinking level for agent jobs (off|minimal|low|medium|high|xhigh)",
@@ -136,9 +139,9 @@ export function registerCronEditCommand(cron: Command) {
           if (typeof opts.session === "string" && !sessionTarget) {
             throw new Error("--session must be main, isolated, current, or session:<id>");
           }
-          if (sessionTarget === "main" && opts.message) {
+          if (sessionTarget === "main" && (opts.message || opts.command)) {
             throw new Error(
-              "Main jobs cannot use --message; use --system-event or --session isolated.",
+              "Main jobs cannot use --message or --command; use --system-event or --session isolated.",
             );
           }
           if (
@@ -148,7 +151,15 @@ export function registerCronEditCommand(cron: Command) {
             opts.systemEvent
           ) {
             throw new Error(
-              "Isolated jobs cannot use --system-event; use --message or --session main.",
+              "Isolated jobs cannot use --system-event; use --message/--command or --session main.",
+            );
+          }
+          if (
+            (sessionTarget === "current" || sessionTarget?.startsWith("session:")) &&
+            opts.command
+          ) {
+            throw new Error(
+              "Current/custom-session jobs cannot use --command; use --message or --session isolated.",
             );
           }
           if (opts.announce && typeof opts.deliver === "boolean") {
@@ -223,12 +234,12 @@ export function registerCronEditCommand(cron: Command) {
           }
 
           const hasSystemEventPatch = typeof opts.systemEvent === "string";
+          const command = normalizeOptionalString(opts.command);
+          const hasCommandPatch = Boolean(command) || Array.isArray(opts.args);
           const model = normalizeOptionalString(opts.model);
           const thinking = normalizeOptionalString(opts.thinking);
           const toolsAllow = parseCronToolsAllow(opts.tools);
-          const timeoutSeconds = opts.timeoutSeconds
-            ? Number.parseInt(String(opts.timeoutSeconds), 10)
-            : undefined;
+          const timeoutSeconds = parsePositiveIntOrUndefined(opts.timeoutSeconds);
           const hasTimeoutSeconds = Boolean(timeoutSeconds && Number.isFinite(timeoutSeconds));
           const hasDeliveryModeFlag = opts.announce || typeof opts.deliver === "boolean";
           const threadId = parseCronThreadIdOption(opts.threadId);
@@ -241,7 +252,7 @@ export function registerCronEditCommand(cron: Command) {
             typeof opts.message === "string" ||
             Boolean(model) ||
             Boolean(thinking) ||
-            hasTimeoutSeconds ||
+            (hasTimeoutSeconds && !hasCommandPatch) ||
             typeof opts.lightContext === "boolean" ||
             typeof opts.tools === "string" ||
             Array.isArray(opts.tools) ||
@@ -250,7 +261,12 @@ export function registerCronEditCommand(cron: Command) {
             hasDeliveryTarget ||
             hasDeliveryAccount ||
             hasBestEffort;
-          if (hasSystemEventPatch && hasAgentTurnPatch) {
+          const payloadPatchCount = [
+            hasSystemEventPatch,
+            hasCommandPatch,
+            hasAgentTurnPatch,
+          ].filter(Boolean).length;
+          if (payloadPatchCount > 1) {
             throw new Error("Choose at most one payload change");
           }
           if (hasSystemEventPatch) {
@@ -258,6 +274,17 @@ export function registerCronEditCommand(cron: Command) {
               kind: "systemEvent",
               text: String(opts.systemEvent),
             };
+          } else if (hasCommandPatch) {
+            const payload: Record<string, unknown> = { kind: "command" };
+            assignIf(payload, "command", command, Boolean(command));
+            assignIf(
+              payload,
+              "args",
+              Array.isArray(opts.args) ? opts.args.map((arg: unknown) => String(arg)) : undefined,
+              Array.isArray(opts.args),
+            );
+            assignIf(payload, "timeoutSeconds", timeoutSeconds, hasTimeoutSeconds);
+            patch.payload = payload;
           } else if (hasAgentTurnPatch) {
             const payload: Record<string, unknown> = { kind: "agentTurn" };
             assignIf(payload, "message", String(opts.message), typeof opts.message === "string");
@@ -276,6 +303,13 @@ export function registerCronEditCommand(cron: Command) {
               payload.toolsAllow = toolsAllow;
             }
             patch.payload = payload;
+          }
+
+          if (
+            hasCommandPatch &&
+            (hasDeliveryModeFlag || hasDeliveryTarget || hasDeliveryAccount || hasBestEffort)
+          ) {
+            throw new Error("Command cron jobs do not support delivery options.");
           }
 
           if (hasDeliveryModeFlag || hasDeliveryTarget || hasDeliveryAccount || hasBestEffort) {

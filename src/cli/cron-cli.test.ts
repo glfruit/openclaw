@@ -62,6 +62,9 @@ type CronUpdatePatch = {
       thinking?: string;
       lightContext?: boolean;
       toolsAllow?: string[];
+      command?: string;
+      args?: string[];
+      timeoutSeconds?: number;
     };
     delivery?: {
       mode?: string;
@@ -81,6 +84,9 @@ type CronAddParams = {
     thinking?: string;
     lightContext?: boolean;
     toolsAllow?: string[];
+    command?: string;
+    args?: string[];
+    timeoutSeconds?: number;
   };
   delivery?: {
     mode?: string;
@@ -556,6 +562,30 @@ describe("cron cli", () => {
     );
   });
 
+  it("sets command payload on cron add", async () => {
+    const params = await runCronAddAndGetParams([
+      "--name",
+      "command-job",
+      "--every",
+      "1h",
+      "--command",
+      "/bin/echo",
+      "--args",
+      "hello",
+      "world",
+      "--timeout-seconds",
+      "30",
+    ]);
+
+    expect(params?.sessionTarget).toBe("isolated");
+    expect(params?.payload).toEqual({
+      kind: "command",
+      command: "/bin/echo",
+      args: ["hello", "world"],
+      timeoutSeconds: 30,
+    });
+  });
+
   it("warns when --agent is not specified on cron add with --message", async () => {
     await runCronCommand([
       "cron",
@@ -718,6 +748,40 @@ describe("cron cli", () => {
     ]);
 
     expect(patch?.patch?.payload?.toolsAllow).toEqual(["exec", "read", "write"]);
+  });
+
+  it("sets command payload on cron edit", async () => {
+    const patch = await runCronEditAndGetPatch([
+      "--session",
+      "isolated",
+      "--command",
+      "/bin/echo",
+      "--args",
+      "hello",
+      "world",
+      "--timeout-seconds",
+      "30",
+    ]);
+
+    expect(patch?.patch?.sessionTarget).toBe("isolated");
+    expect(patch?.patch?.payload).toEqual({
+      kind: "command",
+      command: "/bin/echo",
+      args: ["hello", "world"],
+      timeoutSeconds: 30,
+    });
+  });
+
+  it("rejects command payload with session-bound cron edit", async () => {
+    await expectCronCommandExit([
+      "cron",
+      "edit",
+      "job-1",
+      "--session",
+      "current",
+      "--command",
+      "/bin/echo",
+    ]);
   });
 
   it("sets and clears agent id on cron edit", async () => {
