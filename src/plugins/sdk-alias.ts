@@ -95,6 +95,14 @@ function readPluginSdkSubpathsFromPackageRoot(packageRoot: string): string[] | n
   return subpaths.length > 0 ? subpaths : null;
 }
 
+function isTrustedOpenClawPackageRoot(packageRoot: string): boolean {
+  const packageJson = readPluginSdkPackageJson(packageRoot);
+  if (!packageJson) {
+    return false;
+  }
+  return hasTrustedOpenClawRootIndicator({ packageRoot, packageJson });
+}
+
 function resolveTrustedOpenClawRootFromArgvHint(params: {
   argv1?: string;
   cwd: string;
@@ -106,14 +114,36 @@ function resolveTrustedOpenClawRootFromArgvHint(params: {
     cwd: params.cwd,
     argv1: params.argv1,
   });
-  if (!packageRoot) {
+  if (packageRoot && isTrustedOpenClawPackageRoot(packageRoot)) {
+    return packageRoot;
+  }
+  return findNearestTrustedOpenClawPackageRoot(path.dirname(params.argv1));
+}
+
+function resolveTrustedOpenClawRootFromModuleUrlHint(moduleUrl?: string): string | null {
+  if (!moduleUrl) {
     return null;
   }
-  const packageJson = readPluginSdkPackageJson(packageRoot);
-  if (!packageJson) {
+  try {
+    return findNearestTrustedOpenClawPackageRoot(path.dirname(fileURLToPath(moduleUrl)));
+  } catch {
     return null;
   }
-  return hasTrustedOpenClawRootIndicator({ packageRoot, packageJson }) ? packageRoot : null;
+}
+
+function findNearestTrustedOpenClawPackageRoot(startDir: string, maxDepth = 12): string | null {
+  let cursor = path.resolve(startDir);
+  for (let i = 0; i < maxDepth; i += 1) {
+    if (isTrustedOpenClawPackageRoot(cursor)) {
+      return cursor;
+    }
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      break;
+    }
+    cursor = parent;
+  }
+  return null;
 }
 
 function findNearestPluginSdkPackageRoot(startDir: string, maxDepth = 12): string | null {
@@ -790,28 +820,66 @@ export function buildPluginLoaderAliasMap(
   return result;
 }
 
+function resolveLoaderTrustedOpenClawPackageRoot(
+  params: LoaderModuleResolveParams & { modulePath: string },
+): string | null {
+  const cwd = params.cwd ?? path.dirname(params.modulePath);
+  const packageRoots = [
+    resolveOpenClawPackageRootSync({ cwd }),
+    resolveTrustedOpenClawRootFromArgvHint({ cwd, argv1: params.argv1 }),
+    params.moduleUrl
+      ? resolveOpenClawPackageRootSync({
+          cwd,
+          moduleUrl: params.moduleUrl,
+        })
+      : null,
+    resolveTrustedOpenClawRootFromModuleUrlHint(params.moduleUrl),
+    findNearestTrustedOpenClawPackageRoot(path.dirname(params.modulePath)),
+    params.cwd ? findNearestTrustedOpenClawPackageRoot(params.cwd) : null,
+  ];
+  return (
+    packageRoots.find((packageRoot) => packageRoot && isTrustedOpenClawPackageRoot(packageRoot)) ??
+    null
+  );
+}
+
+function listPluginRuntimeModuleCandidates(
+  params: LoaderModuleResolveParams & { modulePath: string },
+) {
+  const orderedKinds = resolvePluginSdkAliasCandidateOrder({
+    modulePath: params.modulePath,
+    isProduction: process.env.NODE_ENV === "production",
+    pluginSdkResolution: params.pluginSdkResolution,
+  });
+  const packageRoots = [
+    resolveLoaderTrustedOpenClawPackageRoot(params),
+    resolveLoaderPackageRoot(params),
+  ].filter((packageRoot, index, roots): packageRoot is string =>
+    Boolean(packageRoot && roots.indexOf(packageRoot) === index),
+  );
+  const candidates: string[] = [];
+  for (const packageRoot of packageRoots) {
+    for (const kind of orderedKinds) {
+      candidates.push(
+        kind === "src"
+          ? path.join(packageRoot, "src", "plugins", "runtime", "index.ts")
+          : path.join(packageRoot, "dist", "plugins", "runtime", "index.js"),
+      );
+    }
+  }
+  const loaderRuntimeDir = path.join(path.dirname(params.modulePath), "runtime");
+  for (const kind of orderedKinds) {
+    candidates.push(path.join(loaderRuntimeDir, kind === "src" ? "index.ts" : "index.js"));
+  }
+  return candidates;
+}
+
 export function resolvePluginRuntimeModulePath(
   params: LoaderModuleResolveParams = {},
 ): string | null {
   try {
     const modulePath = resolveLoaderModulePath(params);
-    const orderedKinds = resolvePluginSdkAliasCandidateOrder({
-      modulePath,
-      isProduction: process.env.NODE_ENV === "production",
-      pluginSdkResolution: params.pluginSdkResolution,
-    });
-    const packageRoot = resolveLoaderPackageRoot({ ...params, modulePath });
-    const candidates = packageRoot
-      ? orderedKinds.map((kind) =>
-          kind === "src"
-            ? path.join(packageRoot, "src", "plugins", "runtime", "index.ts")
-            : path.join(packageRoot, "dist", "plugins", "runtime", "index.js"),
-        )
-      : [
-          path.join(path.dirname(modulePath), "runtime", "index.ts"),
-          path.join(path.dirname(modulePath), "runtime", "index.js"),
-        ];
-    for (const candidate of candidates) {
+    for (const candidate of listPluginRuntimeModuleCandidates({ ...params, modulePath })) {
       if (fs.existsSync(candidate)) {
         return candidate;
       }
