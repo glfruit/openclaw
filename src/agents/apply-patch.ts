@@ -11,6 +11,7 @@ import {
 } from "../infra/fs-safe.js";
 import { PATH_ALIAS_POLICIES, type PathAliasPolicy } from "../infra/path-alias-guards.js";
 import { applyUpdateHunk } from "./apply-patch-update.js";
+import { assertNoRawJsonEditTarget } from "./json-edit-guard.js";
 import { toRelativeSandboxPath, resolvePathFromInput } from "./path-policy.js";
 import { assertSandboxPath } from "./sandbox-paths.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
@@ -134,6 +135,9 @@ export async function applyPatch(
   if (parsed.hunks.length === 0) {
     throw new Error("No files were modified.");
   }
+  assertNoRawJsonEditTarget(
+    parsed.hunks.flatMap((hunk) => [hunk.path, "movePath" in hunk ? hunk.movePath : undefined]),
+  );
 
   const summary: ApplyPatchSummary = {
     added: [],

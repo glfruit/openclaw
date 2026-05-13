@@ -16,6 +16,7 @@ import { hasEncodedFileUrlSeparator, trySafeFileURLToPath } from "../infra/local
 import { detectMime } from "../media/mime.js";
 import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
 import type { ImageSanitizationLimits } from "./image-sanitization.js";
+import { assertNoRawJsonEditTarget } from "./json-edit-guard.js";
 import { toRelativeWorkspacePath } from "./path-policy.js";
 import { wrapEditToolWithRecovery } from "./pi-tools.host-edit.js";
 import {
@@ -645,7 +646,19 @@ export function createSandboxedEditTool(params: SandboxToolParams) {
   const base = createEditTool(params.root, {
     operations: createSandboxEditOperations(params),
   }) as unknown as AnyAgentTool;
-  const withRecovery = wrapEditToolWithRecovery(base, {
+  const withJsonGuard: AnyAgentTool = {
+    ...base,
+    execute: async (toolCallId, toolParams, signal) => {
+      const record = getToolParamsRecord(toolParams);
+      const requestedPath = typeof record?.path === "string" ? record.path : undefined;
+      const resolved = requestedPath
+        ? params.bridge.resolvePath({ filePath: requestedPath, cwd: params.root })
+        : undefined;
+      assertNoRawJsonEditTarget([requestedPath, resolved?.relativePath, resolved?.containerPath]);
+      return base.execute(toolCallId, toolParams, signal);
+    },
+  };
+  const withRecovery = wrapEditToolWithRecovery(withJsonGuard, {
     root: params.root,
     readFile: async (absolutePath: string) =>
       (await params.bridge.readFile({ filePath: absolutePath, cwd: params.root })).toString("utf8"),
@@ -664,7 +677,19 @@ export function createHostWorkspaceEditTool(root: string, options?: { workspaceO
   const base = createEditTool(root, {
     operations: createHostEditOperations(root, options),
   }) as unknown as AnyAgentTool;
-  const withRecovery = wrapEditToolWithRecovery(base, {
+  const withJsonGuard: AnyAgentTool = {
+    ...base,
+    execute: async (toolCallId, toolParams, signal) => {
+      const record = getToolParamsRecord(toolParams);
+      const requestedPath = typeof record?.path === "string" ? record.path : undefined;
+      assertNoRawJsonEditTarget([
+        requestedPath,
+        requestedPath ? path.resolve(root, requestedPath) : undefined,
+      ]);
+      return base.execute(toolCallId, toolParams, signal);
+    },
+  };
+  const withRecovery = wrapEditToolWithRecovery(withJsonGuard, {
     root,
     readFile: (absolutePath: string) => fs.readFile(absolutePath, "utf-8"),
   });

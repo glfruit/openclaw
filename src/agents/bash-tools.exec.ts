@@ -61,6 +61,7 @@ import {
   resolveWorkdir,
   truncateMiddle,
 } from "./bash-tools.shared.js";
+import { assertNoRawJsonExecWrite } from "./json-edit-guard.js";
 import { EXEC_TOOL_DISPLAY_SUMMARY } from "./tool-description-presets.js";
 import { type AgentToolWithMeta, failedTextResult, textResult } from "./tools/common.js";
 
@@ -1403,6 +1404,7 @@ export function createExecTool(
         workdir = resolveWorkdir(rawWorkdir, warnings);
       }
       rejectUnsafeControlShellCommand(params.command);
+      assertNoRawJsonExecWrite(params.command);
 
       const inheritedBaseEnv = coerceEnv(process.env);
       const hostEnvResult =
