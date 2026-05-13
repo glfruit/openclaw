@@ -130,17 +130,32 @@ function createExtensionApiAliasFixture(params?: {
   return { root, srcFile, distFile };
 }
 
-function createPluginRuntimeAliasFixture(params?: { srcBody?: string; distBody?: string }) {
+function createPluginRuntimeAliasFixture(params?: {
+  srcBody?: string;
+  distBody?: string;
+  packageName?: string;
+  trustedRootIndicators?: boolean;
+}) {
   const root = makeTempDir();
   const srcFile = path.join(root, "src", "plugins", "runtime", "index.ts");
   const distFile = path.join(root, "dist", "plugins", "runtime", "index.js");
   mkdirSafeDir(path.dirname(srcFile));
   mkdirSafeDir(path.dirname(distFile));
-  fs.writeFileSync(
-    path.join(root, "package.json"),
-    JSON.stringify({ name: "openclaw", type: "module" }, null, 2),
-    "utf-8",
-  );
+  const packageJson: Record<string, unknown> = {
+    name: params?.packageName ?? "openclaw",
+    type: "module",
+  };
+  if (params?.trustedRootIndicators) {
+    packageJson.bin = { openclaw: "openclaw.mjs" };
+    packageJson.exports = {
+      "./plugin-sdk": { default: "./dist/plugin-sdk/index.js" },
+      "./cli-entry": { default: "./dist/cli-entry.js" },
+    };
+  }
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify(packageJson, null, 2), "utf-8");
+  if (params?.trustedRootIndicators) {
+    fs.writeFileSync(path.join(root, "openclaw.mjs"), "export {};\n", "utf-8");
+  }
   fs.writeFileSync(
     srcFile,
     params?.srcBody ?? "export const createPluginRuntime = () => ({});\n",
@@ -1298,8 +1313,17 @@ export const syntheticRuntimeMarker = {
       env: { NODE_ENV: undefined },
       expected: "src" as const,
     },
-  ])("$name", ({ modulePath, argv1, env, expected }) => {
-    const fixture = createPluginRuntimeAliasFixture();
+    {
+      name: "resolves packaged plugin runtime from trusted OpenClaw root when package-name lookup misses",
+      modulePath: (root: string) =>
+        path.join(root, "dist", "plugins", "channel", "runtime-loader.js"),
+      env: { NODE_ENV: "production" },
+      packageName: "@glfruit/openclaw",
+      trustedRootIndicators: true,
+      expected: "dist" as const,
+    },
+  ])("$name", ({ modulePath, argv1, env, packageName, trustedRootIndicators, expected }) => {
+    const fixture = createPluginRuntimeAliasFixture({ packageName, trustedRootIndicators });
     const resolved = resolvePluginRuntimeModule({
       modulePath: modulePath(fixture.root),
       argv1: argv1?.(fixture.root),
