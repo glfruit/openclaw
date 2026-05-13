@@ -1,0 +1,319 @@
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SOURCE_ROOT = path.resolve(SCRIPT_DIR, "..");
+const SCOPED_NAME = "@glfruit/openclaw";
+
+function usage() {
+  return `Usage: node scripts/package-openclaw-glfruit-local.mjs [--out-dir <dir>] [--dry-run]\n\nCreates a local ${SCOPED_NAME} tarball from a temporary staging copy. The source tree package.json is never mutated.`;
+}
+
+function parseArgs(argv) {
+  const args = {
+    outDir: path.join(SOURCE_ROOT, ".artifacts", "glfruit-local-release"),
+    dryRun: false,
+  };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--help" || arg === "-h") {
+      console.log(usage());
+      process.exit(0);
+    }
+    if (arg === "--dry-run") {
+      args.dryRun = true;
+      continue;
+    }
+    if (arg === "--out-dir") {
+      const value = argv[++i];
+      if (!value) throw new Error("--out-dir requires a value");
+      args.outDir = path.resolve(value);
+      continue;
+    }
+    throw new Error(`Unknown argument: ${arg}\n${usage()}`);
+  }
+  return args;
+}
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { encoding: "utf8", ...options });
+  if (result.status !== 0) {
+    throw new Error(
+      `${command} ${args.join(" ")} failed: ${result.stderr || result.stdout || result.status}`,
+    );
+  }
+  return result;
+}
+
+function sha256(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function readJson(file) {
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function copySourceToStage(stageDir) {
+  const excluded = new Set([".git", "node_modules", ".artifacts"]);
+  fs.cpSync(SOURCE_ROOT, stageDir, {
+    recursive: true,
+    dereference: false,
+    filter(source) {
+      const relative = path.relative(SOURCE_ROOT, source).split(path.sep)[0];
+      return !excluded.has(relative);
+    },
+  });
+}
+
+function writeScopedPackageJson(stageDir, sourcePackage) {
+  const scopedPackage = {
+    ...sourcePackage,
+    name: SCOPED_NAME,
+  };
+  fs.writeFileSync(
+    path.join(stageDir, "package.json"),
+    `${JSON.stringify(scopedPackage, null, 2)}\n`,
+  );
+  return scopedPackage;
+}
+
+function getCommit() {
+  try {
+    return run("git", ["-C", SOURCE_ROOT, "rev-parse", "HEAD"]).stdout.trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+function ensureScopedBuildInfo(stageDir, sourcePackage, commit, builtAt) {
+  const distDir = path.join(stageDir, "dist");
+  fs.mkdirSync(distDir, { recursive: true });
+  const buildInfoPath = path.join(distDir, "build-info.json");
+  let existing = {};
+  if (fs.existsSync(buildInfoPath)) {
+    try {
+      existing = readJson(buildInfoPath);
+    } catch {
+      existing = {};
+    }
+  }
+  const buildInfo = {
+    ...existing,
+    packageName: SCOPED_NAME,
+    version: sourcePackage.version,
+    commit,
+    sourceRoot: SOURCE_ROOT,
+    builtAt,
+  };
+  fs.writeFileSync(buildInfoPath, `${JSON.stringify(buildInfo, null, 2)}\n`);
+  return buildInfo;
+}
+
+function commandName(name) {
+  return process.platform === "win32" ? `${name}.cmd` : name;
+}
+
+function runStage(command, args, stageDir, env = {}) {
+  return run(command, args, {
+    cwd: stageDir,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, ...env },
+  });
+}
+
+function prepareStageDependencies(stageDir) {
+  const sourceNodeModules = path.join(SOURCE_ROOT, "node_modules");
+  const stageNodeModules = path.join(stageDir, "node_modules");
+  if (fs.existsSync(sourceNodeModules) && !fs.existsSync(stageNodeModules)) {
+    fs.symlinkSync(sourceNodeModules, stageNodeModules, "dir");
+    return {
+      command: "symlink node_modules",
+      source: sourceNodeModules,
+      target: stageNodeModules,
+      reason:
+        "reuse the already-installed repo dependency graph without copying dependencies or reaching the network",
+    };
+  }
+  const pnpm = commandName("pnpm");
+  runStage(pnpm, ["install", "--frozen-lockfile", "--offline", "--ignore-scripts"], stageDir);
+  return {
+    command: "pnpm install --frozen-lockfile --offline --ignore-scripts",
+    reason:
+      "hydrate staging dependencies from the local pnpm store when source node_modules is unavailable",
+  };
+}
+
+function collectFileEvidence(stageDir, relativeFiles) {
+  return Object.fromEntries(
+    relativeFiles.map((relativePath) => {
+      const file = path.join(stageDir, relativePath);
+      if (!fs.existsSync(file)) {
+        throw new Error(`fresh build missing expected runtime artifact: ${relativePath}`);
+      }
+      const stat = fs.statSync(file);
+      return [
+        relativePath,
+        {
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          sha256: sha256(file),
+        },
+      ];
+    }),
+  );
+}
+
+function writeFreshBuildMarker(stageDir, marker) {
+  const markerPath = path.join(stageDir, "dist", "glfruit-release-fresh-build.json");
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+  return markerPath;
+}
+
+function runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt) {
+  const dependencyPreparation = prepareStageDependencies(stageDir);
+  const prepackCommand = [process.execPath, "--import", "tsx", "scripts/openclaw-prepack.ts"];
+  const prepackStartedAt = new Date().toISOString();
+  runStage(prepackCommand[0], prepackCommand.slice(1), stageDir, {
+    GIT_COMMIT: commit,
+    GIT_SHA: commit,
+  });
+  const prepackCompletedAt = new Date().toISOString();
+  const buildInfo = ensureScopedBuildInfo(stageDir, sourcePackage, commit, prepackCompletedAt);
+  const markerBase = {
+    packageName: SCOPED_NAME,
+    version: sourcePackage.version,
+    commit,
+    startedAt: prepackStartedAt,
+    completedAt: prepackCompletedAt,
+    prepackEquivalent: true,
+    commands: [
+      dependencyPreparation.command,
+      "node --import tsx scripts/openclaw-prepack.ts",
+      "npm pack --ignore-scripts --pack-destination <out-dir>",
+    ],
+    dependencyPreparation,
+    buildInfo,
+  };
+  const markerPath = writeFreshBuildMarker(stageDir, markerBase);
+  const runtimeFileEvidence = collectFileEvidence(stageDir, [
+    "openclaw.mjs",
+    "dist/index.js",
+    "dist/build-info.json",
+    "dist/plugin-sdk/index.js",
+  ]);
+  const marker = { ...markerBase, runtimeFileEvidence };
+  fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`);
+  return marker;
+}
+
+function findPackedTarball(packOutput, outDir, version) {
+  const candidates = packOutput
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.endsWith(".tgz"))
+    .map((line) => (path.isAbsolute(line) ? line : path.join(outDir, line)));
+  const expected = path.join(outDir, `glfruit-openclaw-${version}.tgz`);
+  for (const candidate of [expected, ...candidates]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(`npm pack completed but no tarball was found in ${outDir}`);
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const sourcePackagePath = path.join(SOURCE_ROOT, "package.json");
+  const beforePackageJson = fs.readFileSync(sourcePackagePath, "utf8");
+  const sourcePackage = JSON.parse(beforePackageJson);
+  const commit = getCommit();
+  const builtAt = new Date().toISOString();
+  const outDir = args.outDir;
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const dryRunBuildInfo = {
+    packageName: SCOPED_NAME,
+    version: sourcePackage.version,
+    commit,
+    sourceRoot: SOURCE_ROOT,
+    builtAt,
+  };
+  const manifestBase = {
+    packageName: SCOPED_NAME,
+    version: sourcePackage.version,
+    sourceCommit: commit,
+    sourceRoot: SOURCE_ROOT,
+    buildTime: builtAt,
+    buildInfo: dryRunBuildInfo,
+    packageMetadata: {
+      name: SCOPED_NAME,
+      version: sourcePackage.version,
+      bin: sourcePackage.bin,
+      exports: sourcePackage.exports,
+      files: sourcePackage.files,
+    },
+    sourcePackageJsonUnchanged: fs.readFileSync(sourcePackagePath, "utf8") === beforePackageJson,
+  };
+
+  if (args.dryRun) {
+    const manifestPath = path.join(
+      outDir,
+      `glfruit-openclaw-${sourcePackage.version}.dry-run.manifest.json`,
+    );
+    fs.writeFileSync(
+      manifestPath,
+      `${JSON.stringify({ ...manifestBase, dryRun: true }, null, 2)}\n`,
+    );
+    console.log(JSON.stringify({ ...manifestBase, dryRun: true, manifestPath }, null, 2));
+    return;
+  }
+
+  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-glfruit-pack-stage-"));
+  try {
+    copySourceToStage(stageDir);
+    const scopedPackage = writeScopedPackageJson(stageDir, sourcePackage);
+    const freshBuild = runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt);
+    const pack = run("npm", ["pack", "--ignore-scripts", "--pack-destination", outDir], {
+      cwd: stageDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const tarballPath = findPackedTarball(pack.stdout, outDir, sourcePackage.version);
+    const manifest = {
+      ...manifestBase,
+      buildInfo: freshBuild.buildInfo,
+      freshBuild,
+      packageMetadata: {
+        name: scopedPackage.name,
+        version: scopedPackage.version,
+        bin: scopedPackage.bin,
+        exports: scopedPackage.exports,
+        files: scopedPackage.files,
+      },
+      dryRun: false,
+      tarballPath,
+      sha256: sha256(tarballPath),
+    };
+    const manifestPath = path.join(
+      outDir,
+      `glfruit-openclaw-${sourcePackage.version}.manifest.json`,
+    );
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    if (fs.readFileSync(sourcePackagePath, "utf8") !== beforePackageJson) {
+      throw new Error("source package.json changed during packaging");
+    }
+    console.log(JSON.stringify({ ...manifest, manifestPath }, null, 2));
+  } finally {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+  }
+}
+
+try {
+  main();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
