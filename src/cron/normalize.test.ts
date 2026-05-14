@@ -77,6 +77,92 @@ function normalizeMainSystemEventCreateJob(params: {
 }
 
 describe("normalizeCronJobCreate", () => {
+  it("normalizes command payloads without default announce delivery", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "script sync",
+      enabled: true,
+      schedule: { kind: "cron", expr: "*/5 * * * *" },
+      payload: {
+        kind: "command",
+        command: " /tmp/sync.sh --fast ",
+        cwd: " /tmp ",
+        timeoutSeconds: 30,
+        successRegex: "DONE",
+        failureRegex: "FAIL",
+        summaryRegex: "summary: (.*)",
+        outputMode: "lastline",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    expect(normalized.sessionTarget).toBe("isolated");
+    expect(normalized.delivery).toBeUndefined();
+    expect(normalized.payload).toEqual({
+      kind: "command",
+      command: "/tmp/sync.sh --fast",
+      cwd: "/tmp",
+      timeoutSeconds: 30,
+      successRegex: "DONE",
+      failureRegex: "FAIL",
+      summaryRegex: "summary: (.*)",
+      outputMode: "lastLine",
+    });
+  });
+
+  it("strips agent-turn fields from command payloads", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "script sync",
+      enabled: true,
+      schedule: { kind: "every", everyMs: 60_000 },
+      payload: {
+        kind: "command",
+        command: "node sync.mjs",
+        message: "do not run agent",
+        model: "opus",
+        thinking: "high",
+        toolsAllow: ["exec"],
+        lightContext: true,
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload).toEqual({ kind: "command", command: "node sync.mjs" });
+  });
+
+  it("strips command-only payload fields from agentTurn jobs", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "agent job",
+      enabled: true,
+      schedule: { kind: "every", everyMs: 60_000 },
+      payload: {
+        kind: "agentTurn",
+        message: "do work",
+        command: "node sync.mjs",
+        cwd: "/tmp",
+        outputMode: "full",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload).toEqual({ kind: "agentTurn", message: "do work" });
+  });
+
+  it("strips command-only payload fields from systemEvent jobs", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "main job",
+      enabled: true,
+      schedule: { kind: "every", everyMs: 60_000 },
+      payload: {
+        kind: "systemEvent",
+        text: "tick",
+        command: "node sync.mjs",
+        cwd: "/tmp",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    const payload = normalized.payload as Record<string, unknown>;
+    expect(payload).toEqual({ kind: "systemEvent", text: "tick" });
+  });
+
   it("strips payload-level legacy delivery hints from live input", () => {
     const normalized = normalizeIsolatedAgentTurnCreateJob({
       name: "legacy",

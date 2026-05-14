@@ -1496,8 +1496,176 @@ async function executeDetachedCronJob(
       delivery?: CronDeliveryTrace;
     }
 > {
+  if (job.payload.kind === "command") {
+    const cmdPayload = job.payload;
+    const { spawn } = await import("node:child_process");
+    const timeoutSeconds =
+      typeof cmdPayload.timeoutSeconds === "number" && Number.isFinite(cmdPayload.timeoutSeconds)
+        ? cmdPayload.timeoutSeconds
+        : 180;
+    const timeoutMs = Math.max(1, timeoutSeconds) * 1000;
+
+    return await new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      let childKilledByTimeout = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let onAbort: (() => void) | undefined;
+
+      const finish = (
+        outcome: CronRunOutcome &
+          CronRunTelemetry & {
+            delivered?: boolean;
+            deliveryAttempted?: boolean;
+            delivery?: CronDeliveryTrace;
+          },
+      ) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        if (onAbort) {
+          abortSignal?.removeEventListener("abort", onAbort);
+        }
+        resolve(outcome);
+      };
+
+      const args = cmdPayload.command.trim().split(/\s+/).filter(Boolean);
+      if (args.length === 0) {
+        const error = 'cron command payload requires a non-empty "command"';
+        finish({
+          status: "error",
+          error,
+          diagnostics: createCronRunDiagnosticsFromError("cron-preflight", error, {
+            nowMs: state.deps.nowMs,
+          }),
+        });
+        return;
+      }
+
+      const executable = args[0];
+      const child = spawn(executable, args.slice(1), {
+        cwd: cmdPayload.cwd,
+        env: { ...process.env },
+      });
+
+      timer = setTimeout(() => {
+        childKilledByTimeout = true;
+        child.kill("SIGKILL");
+        finish({
+          status: "error",
+          error: `command timed out after ${timeoutSeconds}s`,
+          diagnostics: createCronRunDiagnosticsFromError("exec", "timeout", {
+            nowMs: state.deps.nowMs,
+            toolName: executable,
+          }),
+        });
+      }, timeoutMs);
+
+      onAbort = () => {
+        child.kill("SIGKILL");
+        const aborted = resolveAbortError();
+        finish({
+          ...aborted,
+          diagnostics: createCronRunDiagnosticsFromError("cron-setup", aborted.error, {
+            nowMs: state.deps.nowMs,
+          }),
+        });
+      };
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+      child.stdout?.on("data", (data: Buffer) => {
+        stdout += data.toString();
+      });
+      child.stderr?.on("data", (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      child.on("close", (code) => {
+        if (childKilledByTimeout) {
+          return;
+        }
+        let status: "ok" | "error" = code === 0 ? "ok" : "error";
+        let summary = "";
+        const output = stdout.trim();
+
+        try {
+          if (cmdPayload.failureRegex) {
+            const failRe = new RegExp(cmdPayload.failureRegex, "m");
+            if (failRe.test(output)) {
+              status = "error";
+            }
+          }
+          if (cmdPayload.successRegex) {
+            const succRe = new RegExp(cmdPayload.successRegex, "m");
+            if (succRe.test(output)) {
+              status = "ok";
+            }
+          }
+          if (cmdPayload.summaryRegex) {
+            const sumRe = new RegExp(cmdPayload.summaryRegex, "m");
+            const match = sumRe.exec(output);
+            if (match) {
+              summary = match[1] || match[0];
+            }
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          finish({
+            status: "error",
+            error: `invalid command payload regex: ${message}`,
+            diagnostics: createCronRunDiagnosticsFromError("cron-preflight", message, {
+              nowMs: state.deps.nowMs,
+            }),
+          });
+          return;
+        }
+
+        if (!summary) {
+          if (cmdPayload.outputMode === "full") {
+            summary = output.slice(-500);
+          } else if (cmdPayload.outputMode !== "summary") {
+            const lines = output.split("\n").filter((line) => line.trim());
+            summary = lines[lines.length - 1] || "";
+          }
+        }
+
+        finish({
+          status,
+          summary: summary || undefined,
+          error: status === "error" ? stderr.trim().slice(-300) || `exit code ${code}` : undefined,
+          diagnostics: createCronRunDiagnosticsFromError(
+            status === "error" ? "exec" : "cron-setup",
+            status === "error" ? `command failed: exit ${code}` : "ok",
+            {
+              nowMs: state.deps.nowMs,
+              severity: status === "error" ? "error" : "info",
+              toolName: executable,
+              exitCode: code,
+            },
+          ),
+        });
+      });
+
+      child.on("error", (err) => {
+        finish({
+          status: "error",
+          error: `spawn failed: ${err.message}`,
+          diagnostics: createCronRunDiagnosticsFromError("exec", err.message, {
+            nowMs: state.deps.nowMs,
+            toolName: executable,
+          }),
+        });
+      });
+    });
+  }
+
   if (job.payload.kind !== "agentTurn") {
-    const error = "isolated job requires payload.kind=agentTurn";
+    const error = "isolated job requires payload.kind=agentTurn or command";
     return {
       status: "skipped",
       error,

@@ -21,6 +21,37 @@ describe("cron protocol validators", () => {
     expect(validateCronAddParams(minimalAddParams)).toBe(true);
   });
 
+  it("accepts command payloads", () => {
+    expect(
+      validateCronAddParams({
+        ...minimalAddParams,
+        sessionTarget: "isolated",
+        payload: {
+          kind: "command",
+          command: "node sync.mjs",
+          cwd: "/tmp",
+          timeoutSeconds: 30,
+          successRegex: "DONE",
+          failureRegex: "FAIL",
+          summaryRegex: "summary: (.*)",
+          outputMode: "lastLine",
+        },
+      }),
+    ).toBe(true);
+    expect(
+      validateCronUpdateParams({
+        id: "job-1",
+        patch: {
+          payload: {
+            kind: "command",
+            cwd: "/tmp",
+            outputMode: "summary",
+          },
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("accepts current and custom session targets", () => {
     expect(
       validateCronAddParams({

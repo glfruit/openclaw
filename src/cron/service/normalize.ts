@@ -70,5 +70,8 @@ export function normalizePayloadToSystemText(payload: CronPayload) {
     const legacyMessage = (payload as { message?: unknown }).message;
     return typeof legacyMessage === "string" ? legacyMessage.trim() : "";
   }
-  return typeof payload.message === "string" ? payload.message.trim() : "";
+  if (payload.kind === "agentTurn") {
+    return typeof payload.message === "string" ? payload.message.trim() : "";
+  }
+  return "";
 }

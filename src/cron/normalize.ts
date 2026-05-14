@@ -45,6 +45,28 @@ function hasAgentTurnPayloadHint(payload: UnknownRecord) {
   );
 }
 
+function hasCommandPayloadHint(payload: UnknownRecord) {
+  return (
+    hasTrimmedStringValue(payload.command) ||
+    hasTrimmedStringValue(payload.cwd) ||
+    hasTrimmedStringValue(payload.successRegex) ||
+    hasTrimmedStringValue(payload.failureRegex) ||
+    hasTrimmedStringValue(payload.summaryRegex) ||
+    normalizeOptionalOutputMode(payload.outputMode) !== undefined
+  );
+}
+
+function normalizeOptionalOutputMode(value: unknown) {
+  const normalized = normalizeOptionalLowercaseString(value);
+  if (normalized === "lastline") {
+    return "lastLine";
+  }
+  if (normalized === "full" || normalized === "summary") {
+    return normalized;
+  }
+  return undefined;
+}
+
 function normalizeTrimmedStringArray(
   value: unknown,
   options?: { allowNull?: boolean },
@@ -172,8 +194,12 @@ function coercePayload(payload: UnknownRecord) {
   if (!next.kind) {
     const message = normalizeOptionalString(next.message);
     const text = normalizeOptionalString(next.text);
+    const command = normalizeOptionalString(next.command);
     const hasAgentTurnHint = hasAgentTurnPayloadHint(next);
-    if (message) {
+    const hasCommandHint = hasCommandPayloadHint(next);
+    if (command || hasCommandHint) {
+      next.kind = "command";
+    } else if (message) {
       next.kind = "agentTurn";
     } else if (text && hasAgentTurnHint) {
       next.kind = "agentTurn";
@@ -195,6 +221,16 @@ function coercePayload(payload: UnknownRecord) {
     const trimmed = normalizeOptionalString(next.text) ?? "";
     if (trimmed) {
       next.text = trimmed;
+    }
+  }
+  for (const field of ["command", "cwd", "successRegex", "failureRegex", "summaryRegex"]) {
+    if (field in next) {
+      const value = normalizeOptionalString(next[field]);
+      if (value) {
+        next[field] = value;
+      } else {
+        delete next[field];
+      }
     }
   }
   if ("model" in next) {
@@ -237,6 +273,14 @@ function coercePayload(payload: UnknownRecord) {
       delete next.toolsAllow;
     }
   }
+  if ("outputMode" in next) {
+    const outputMode = normalizeOptionalOutputMode(next.outputMode);
+    if (outputMode !== undefined) {
+      next.outputMode = outputMode;
+    } else {
+      delete next.outputMode;
+    }
+  }
   if (
     "allowUnsafeExternalContent" in next &&
     typeof next.allowUnsafeExternalContent !== "boolean"
@@ -252,8 +296,29 @@ function coercePayload(payload: UnknownRecord) {
     delete next.lightContext;
     delete next.allowUnsafeExternalContent;
     delete next.toolsAllow;
+    delete next.command;
+    delete next.cwd;
+    delete next.successRegex;
+    delete next.failureRegex;
+    delete next.summaryRegex;
+    delete next.outputMode;
   } else if (next.kind === "agentTurn") {
     delete next.text;
+    delete next.command;
+    delete next.cwd;
+    delete next.successRegex;
+    delete next.failureRegex;
+    delete next.summaryRegex;
+    delete next.outputMode;
+  } else if (next.kind === "command") {
+    delete next.text;
+    delete next.message;
+    delete next.model;
+    delete next.fallbacks;
+    delete next.thinking;
+    delete next.lightContext;
+    delete next.allowUnsafeExternalContent;
+    delete next.toolsAllow;
   }
   if ("deliver" in next) {
     delete next.deliver;
@@ -308,6 +373,25 @@ function coerceDelivery(delivery: UnknownRecord) {
 }
 
 function inferTopLevelPayload(next: UnknownRecord) {
+  const command = normalizeOptionalString(next.command) ?? "";
+  if (command) {
+    const payload: UnknownRecord = { kind: "command", command };
+    for (const field of ["cwd", "successRegex", "failureRegex", "summaryRegex"]) {
+      const value = normalizeOptionalString(next[field]);
+      if (value) {
+        payload[field] = value;
+      }
+    }
+    if (typeof next.timeoutSeconds === "number") {
+      payload.timeoutSeconds = next.timeoutSeconds;
+    }
+    const outputMode = normalizeOptionalOutputMode(next.outputMode);
+    if (outputMode) {
+      payload.outputMode = outputMode;
+    }
+    return payload;
+  }
+
   const message = normalizeOptionalString(next.message) ?? "";
   if (message) {
     return { kind: "agentTurn", message } satisfies UnknownRecord;
@@ -319,6 +403,10 @@ function inferTopLevelPayload(next: UnknownRecord) {
       return { kind: "agentTurn", message: text } satisfies UnknownRecord;
     }
     return { kind: "systemEvent", text } satisfies UnknownRecord;
+  }
+
+  if (hasCommandPayloadHint(next)) {
+    return { kind: "command" } satisfies UnknownRecord;
   }
 
   if (hasAgentTurnPayloadHint(next)) {
@@ -417,6 +505,12 @@ function stripLegacyTopLevelFields(next: UnknownRecord) {
   delete next.allowUnsafeExternalContent;
   delete next.message;
   delete next.text;
+  delete next.command;
+  delete next.cwd;
+  delete next.successRegex;
+  delete next.failureRegex;
+  delete next.summaryRegex;
+  delete next.outputMode;
   delete next.kind;
   delete next.cron;
   delete next.tz;
@@ -572,11 +666,11 @@ export function normalizeCronJobInput(
       const kind = typeof next.payload.kind === "string" ? next.payload.kind : "";
       // Keep default behavior unchanged for backward compatibility:
       // - systemEvent defaults to "main"
-      // - agentTurn defaults to "isolated" (NOT "current", to avoid token accumulation)
+      // - agentTurn and command default to "isolated" (NOT "current", to avoid token accumulation)
       // Users must explicitly specify "current" or "session:xxx" for custom session binding
       if (kind === "systemEvent") {
         next.sessionTarget = "main";
-      } else if (kind === "agentTurn") {
+      } else if (kind === "agentTurn" || kind === "command") {
         next.sessionTarget = "isolated";
       }
     }
@@ -629,13 +723,13 @@ export function normalizeCronJobInput(
     const payloadKind = payload && typeof payload.kind === "string" ? payload.kind : "";
     const sessionTarget = typeof next.sessionTarget === "string" ? next.sessionTarget : "";
     // Support "isolated", custom session IDs (session:xxx), and resolved "current" as isolated-like targets
-    const isIsolatedAgentTurn =
+    const isIsolatedLike =
       sessionTarget === "isolated" ||
       sessionTarget === "current" ||
       sessionTarget.startsWith("session:") ||
-      (sessionTarget === "" && payloadKind === "agentTurn");
+      (sessionTarget === "" && (payloadKind === "agentTurn" || payloadKind === "command"));
     const hasDelivery = "delivery" in next && next.delivery !== undefined;
-    if (!hasDelivery && isIsolatedAgentTurn && payloadKind === "agentTurn") {
+    if (!hasDelivery && isIsolatedLike && payloadKind === "agentTurn") {
       next.delivery = { mode: "announce" };
     }
   }

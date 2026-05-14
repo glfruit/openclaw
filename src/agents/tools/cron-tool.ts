@@ -33,7 +33,7 @@ const CRON_ACTIONS = ["status", "list", "add", "update", "remove", "run", "runs"
 
 const CRON_SCHEDULE_KINDS = ["at", "every", "cron"] as const;
 const CRON_WAKE_MODES = ["now", "next-heartbeat"] as const;
-const CRON_PAYLOAD_KINDS = ["systemEvent", "agentTurn"] as const;
+const CRON_PAYLOAD_KINDS = ["systemEvent", "agentTurn", "command"] as const;
 const CRON_DELIVERY_MODES = ["none", "announce", "webhook"] as const;
 const CRON_RUN_MODES = ["due", "force"] as const;
 const CRON_FLAT_PAYLOAD_KEYS = [
@@ -46,6 +46,12 @@ const CRON_FLAT_PAYLOAD_KEYS = [
   "timeoutSeconds",
   "lightContext",
   "allowUnsafeExternalContent",
+  "command",
+  "cwd",
+  "successRegex",
+  "failureRegex",
+  "summaryRegex",
+  "outputMode",
 ] as const;
 const CRON_FLAT_SCHEDULE_KEYS = [
   "kind",
@@ -145,6 +151,16 @@ function cronPayloadObjectSchema(params: { toolsAllow: TSchema }) {
       model: Type.Optional(Type.String({ description: "Model override" })),
       thinking: Type.Optional(Type.String({ description: "Thinking level override" })),
       timeoutSeconds: Type.Optional(Type.Number()),
+      command: Type.Optional(Type.String({ description: "Command to execute (kind=command)" })),
+      cwd: Type.Optional(Type.String({ description: "Working directory for command payloads" })),
+      successRegex: Type.Optional(Type.String({ description: "Stdout regex that marks success" })),
+      failureRegex: Type.Optional(Type.String({ description: "Stdout regex that marks failure" })),
+      summaryRegex: Type.Optional(
+        Type.String({ description: "Stdout regex used to extract summary" }),
+      ),
+      outputMode: optionalStringEnum(["lastLine", "full", "summary"] as const, {
+        description: "Command summary output mode",
+      }),
       lightContext: Type.Optional(Type.Boolean()),
       allowUnsafeExternalContent: Type.Optional(Type.Boolean()),
       fallbacks: Type.Optional(Type.Array(Type.String(), { description: "Fallback model ids" })),
@@ -590,13 +606,14 @@ JOB SCHEMA (for add action):
 
 SESSION TARGET OPTIONS:
 - "main": Run in the main session (requires payload.kind="systemEvent")
-- "isolated": Run in an ephemeral isolated session (requires payload.kind="agentTurn")
+- "isolated": Run in an ephemeral isolated session (requires payload.kind="agentTurn" or "command")
 - "current": Bind to the current session where the cron is created (resolved at creation time)
 - "session:<custom-id>": Run in a persistent named session (e.g., "session:project-alpha-daily")
 
 DEFAULT BEHAVIOR (unchanged for backward compatibility):
 - payload.kind="systemEvent" → defaults to "main"
 - payload.kind="agentTurn" → defaults to "isolated"
+- payload.kind="command" → defaults to "isolated"
 To use current session binding, explicitly set sessionTarget="current".
 
 SCHEDULE TYPES (schedule.kind):
@@ -617,6 +634,8 @@ PAYLOAD TYPES (payload.kind):
   { "kind": "systemEvent", "text": "<message>" }
 - "agentTurn": Runs agent with message (isolated sessions only)
   { "kind": "agentTurn", "message": "<prompt>", "model": "<optional>", "thinking": "<optional>", "timeoutSeconds": <optional, 0 means no timeout> }
+- "command": Runs a local command without an LLM (isolated/current/session targets only)
+  { "kind": "command", "command": "<script-or-command>", "cwd": "<optional>", "timeoutSeconds": <optional, default 180>, "successRegex": "<optional>", "failureRegex": "<optional>", "summaryRegex": "<optional>", "outputMode": "lastLine|full|summary" }
 
 DELIVERY (top-level):
   { "mode": "none|announce|webhook", "channel": "<optional>", "to": "<optional>", "threadId": "<optional>", "bestEffort": <optional-bool> }
@@ -628,7 +647,7 @@ DELIVERY (top-level):
 
 CRITICAL CONSTRAINTS:
 - sessionTarget="main" REQUIRES payload.kind="systemEvent"
-- sessionTarget="isolated" | "current" | "session:xxx" REQUIRES payload.kind="agentTurn"
+- sessionTarget="isolated" | "current" | "session:xxx" REQUIRES payload.kind="agentTurn" or "command"
 - For webhook callbacks, use delivery.mode="webhook" with delivery.to set to a URL.
 Default: prefer isolated agentTurn jobs unless the user explicitly wants current-session binding.
 

@@ -145,9 +145,15 @@ export type CronFailureAlert = {
   accountId?: string;
 };
 
-export type CronPayload = { kind: "systemEvent"; text: string } | CronAgentTurnPayload;
+export type CronPayload =
+  | { kind: "systemEvent"; text: string }
+  | CronAgentTurnPayload
+  | CronCommandPayload;
 
-export type CronPayloadPatch = { kind: "systemEvent"; text?: string } | CronAgentTurnPayloadPatch;
+export type CronPayloadPatch =
+  | { kind: "systemEvent"; text?: string }
+  | CronAgentTurnPayloadPatch
+  | CronCommandPayloadPatch;
 
 type CronAgentTurnPayloadFields = {
   message: string;
@@ -175,6 +181,28 @@ type CronAgentTurnPayloadPatch = {
 } & Partial<Omit<CronAgentTurnPayloadFields, "toolsAllow">> & {
     toolsAllow?: string[] | null;
   };
+
+export type CronCommandPayload = {
+  kind: "command";
+  /** Command to execute. Parsed as shell-like whitespace-separated executable + args. */
+  command: string;
+  /** Working directory for the command. */
+  cwd?: string;
+  /** Process timeout in seconds. Defaults to 180. */
+  timeoutSeconds?: number;
+  /** Regex matched against stdout to force success. */
+  successRegex?: string;
+  /** Regex matched against stdout to force failure. */
+  failureRegex?: string;
+  /** Regex matched against stdout to extract the run summary. */
+  summaryRegex?: string;
+  /** Summary output mode. Defaults to lastLine. */
+  outputMode?: "lastLine" | "full" | "summary";
+};
+
+type CronCommandPayloadPatch = {
+  kind: "command";
+} & Partial<Omit<CronCommandPayload, "kind">>;
 export type CronJobState = {
   nextRunAtMs?: number;
   runningAtMs?: number;

@@ -18,6 +18,22 @@ function expectCronStaggerMs(job: CronJob, expected: number): void {
 }
 
 describe("applyJobPatch", () => {
+  const createIsolatedCommandJob = (id: string): CronJob => {
+    const now = Date.now();
+    return {
+      id,
+      name: id,
+      enabled: true,
+      createdAtMs: now,
+      updatedAtMs: now,
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: { kind: "command", command: "node sync.mjs", timeoutSeconds: 30 },
+      state: {},
+    };
+  };
+
   const createIsolatedAgentTurnJob = (
     id: string,
     delivery: CronJob["delivery"],
@@ -51,6 +67,37 @@ describe("applyJobPatch", () => {
       payload: { kind: "systemEvent", text: "ping" },
     });
   };
+
+  it("allows command payloads for isolated jobs", () => {
+    const job = createIsolatedCommandJob("command-job");
+
+    expect(() =>
+      applyJobPatch(job, {
+        payload: {
+          kind: "command",
+          cwd: "/tmp",
+          successRegex: "DONE",
+          outputMode: "full",
+        },
+      }),
+    ).not.toThrow();
+    expect(job.payload).toEqual({
+      kind: "command",
+      command: "node sync.mjs",
+      cwd: "/tmp",
+      timeoutSeconds: 30,
+      successRegex: "DONE",
+      outputMode: "full",
+    });
+  });
+
+  it("requires command payloads to stay off main jobs", () => {
+    const job = createIsolatedCommandJob("main-command-job");
+
+    expect(() => applyJobPatch(job, { sessionTarget: "main" })).toThrow(
+      'main cron jobs require payload.kind="systemEvent"',
+    );
+  });
 
   it("clears delivery when switching to main session", () => {
     const job = createIsolatedAgentTurnJob("job-1", {
