@@ -64,6 +64,18 @@ function run(command, args, options = {}) {
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
+function dirtySourceIsDirty(value) {
+  return value && typeof value === "object" && value.dirty === true;
+}
+
+function dirtySourceSummary(value) {
+  if (!dirtySourceIsDirty(value)) return "";
+  const files = Array.isArray(value.files)
+    ? value.files.map((file) => file.path || file).join(", ")
+    : "<unknown>";
+  return `hash=${value.hash || "<missing>"} files=${files}`;
+}
+
 function assertInstalledResolves(tarball) {
   const prefix = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-glfruit-install-"));
   try {
@@ -119,6 +131,10 @@ try {
         errors.push(
           `commit mismatch: expected ${args.expectedCommit}, got ${buildInfo.commit || "<missing>"}`,
         );
+      if (dirtySourceIsDirty(buildInfo.dirtySource))
+        errors.push(
+          `dirty artifact identity in dist/build-info.json cannot be release-ready: ${dirtySourceSummary(buildInfo.dirtySource)}`,
+        );
     }
     const freshBuildPath = path.join(packageRoot, "dist", "glfruit-release-fresh-build.json");
     if (fs.existsSync(freshBuildPath)) {
@@ -137,6 +153,10 @@ try {
       if (args.expectedCommit && freshBuild.commit !== args.expectedCommit)
         errors.push(
           `fresh build marker commit mismatch: expected ${args.expectedCommit}, got ${freshBuild.commit || "<missing>"}`,
+        );
+      if (dirtySourceIsDirty(freshBuild.dirtySource))
+        errors.push(
+          `dirty artifact identity in fresh build marker cannot be release-ready: ${dirtySourceSummary(freshBuild.dirtySource)}`,
         );
     }
     if (errors.length) fail(errors.join("\n"));

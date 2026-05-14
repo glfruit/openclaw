@@ -11,13 +11,14 @@ const SOURCE_ROOT = path.resolve(SCRIPT_DIR, "..");
 const SCOPED_NAME = "@glfruit/openclaw";
 
 function usage() {
-  return `Usage: node scripts/package-openclaw-glfruit-local.mjs [--out-dir <dir>] [--dry-run]\n\nCreates a local ${SCOPED_NAME} tarball from a temporary staging copy. The source tree package.json is never mutated.`;
+  return `Usage: node scripts/package-openclaw-glfruit-local.mjs [--out-dir <dir>] [--dry-run] [--allow-dirty-for-local-canary]\n\nCreates a local ${SCOPED_NAME} tarball from a temporary staging copy. The source tree package.json is never mutated. Dirty package-relevant tracked source is refused unless --allow-dirty-for-local-canary is passed for non-release local canary testing.`;
 }
 
 function parseArgs(argv) {
   const args = {
     outDir: path.join(SOURCE_ROOT, ".artifacts", "glfruit-local-release"),
     dryRun: false,
+    allowDirtyForLocalCanary: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -27,6 +28,10 @@ function parseArgs(argv) {
     }
     if (arg === "--dry-run") {
       args.dryRun = true;
+      continue;
+    }
+    if (arg === "--allow-dirty-for-local-canary") {
+      args.allowDirtyForLocalCanary = true;
       continue;
     }
     if (arg === "--out-dir") {
@@ -56,6 +61,101 @@ function sha256(file) {
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function trackedDirtyFiles() {
+  try {
+    const output = run("git", [
+      "-C",
+      SOURCE_ROOT,
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=no",
+    ]).stdout;
+    return output
+      .split(/\r?\n/u)
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .map((line) => line.slice(3).replace(/^.* -> /u, ""))
+      .filter(isPackageRelevantDirtyPath)
+      .sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+function isPackageRelevantDirtyPath(relativePath) {
+  const normalized = relativePath.split(path.sep).join("/");
+  if (
+    normalized.startsWith("test/") ||
+    normalized.startsWith("reports/") ||
+    normalized === "task_plan.md" ||
+    normalized === "progress.md" ||
+    normalized === "findings.md"
+  ) {
+    return false;
+  }
+  return (
+    normalized === "package.json" ||
+    normalized === "pnpm-lock.yaml" ||
+    normalized === "tsconfig.json" ||
+    normalized === "tsdown.config.ts" ||
+    normalized === "openclaw.mjs" ||
+    normalized === "README.md" ||
+    normalized === "CHANGELOG.md" ||
+    normalized === "LICENSE" ||
+    normalized.startsWith("src/") ||
+    normalized.startsWith("dist/") ||
+    normalized.startsWith("docs/") ||
+    normalized.startsWith("patches/") ||
+    normalized.startsWith("skills/") ||
+    normalized === "scripts/package-openclaw-glfruit-local.mjs" ||
+    normalized === "scripts/check-openclaw-glfruit-tarball.mjs" ||
+    normalized === "scripts/openclaw-prepack.ts" ||
+    normalized === "scripts/npm-runner.mjs" ||
+    normalized === "scripts/preinstall-package-manager-warning.mjs" ||
+    normalized === "scripts/postinstall-bundled-plugins.mjs" ||
+    normalized === "scripts/windows-cmd-helpers.mjs" ||
+    normalized.startsWith("scripts/lib/")
+  );
+}
+
+function dirtyFileEvidence(relativePath) {
+  const absolute = path.join(SOURCE_ROOT, relativePath);
+  if (!fs.existsSync(absolute)) {
+    return { path: relativePath, state: "deleted" };
+  }
+  const stat = fs.statSync(absolute);
+  if (stat.isDirectory()) {
+    return { path: relativePath, state: "directory" };
+  }
+  return {
+    path: relativePath,
+    state: "modified",
+    size: stat.size,
+    sha256: sha256(absolute),
+  };
+}
+
+function dirtySourceIdentity() {
+  const files = trackedDirtyFiles().map(dirtyFileEvidence);
+  const dirty = files.length > 0;
+  return {
+    dirty,
+    policy: dirty ? "explicit-local-canary-only" : "clean-release",
+    files,
+    hash: dirty ? crypto.createHash("sha256").update(JSON.stringify(files)).digest("hex") : "",
+  };
+}
+
+function assertCleanOrAllowedForLocalCanary(identity, allowDirtyForLocalCanary) {
+  if (!identity.dirty) return;
+  if (allowDirtyForLocalCanary) return;
+  throw new Error(
+    `refusing to package dirty package-relevant tracked source without --allow-dirty-for-local-canary: ${identity.files
+      .map((file) => file.path)
+      .join(", ")}`,
+  );
 }
 
 function copySourceToStage(stageDir) {
@@ -90,7 +190,7 @@ function getCommit() {
   }
 }
 
-function ensureScopedBuildInfo(stageDir, sourcePackage, commit, builtAt) {
+function ensureScopedBuildInfo(stageDir, sourcePackage, commit, builtAt, dirtySource) {
   const distDir = path.join(stageDir, "dist");
   fs.mkdirSync(distDir, { recursive: true });
   const buildInfoPath = path.join(distDir, "build-info.json");
@@ -109,6 +209,7 @@ function ensureScopedBuildInfo(stageDir, sourcePackage, commit, builtAt) {
     commit,
     sourceRoot: SOURCE_ROOT,
     builtAt,
+    dirtySource,
   };
   fs.writeFileSync(buildInfoPath, `${JSON.stringify(buildInfo, null, 2)}\n`);
   return buildInfo;
@@ -175,7 +276,7 @@ function writeFreshBuildMarker(stageDir, marker) {
   return markerPath;
 }
 
-function runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt) {
+function runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt, dirtySource) {
   const dependencyPreparation = prepareStageDependencies(stageDir);
   const prepackCommand = [process.execPath, "--import", "tsx", "scripts/openclaw-prepack.ts"];
   const prepackStartedAt = new Date().toISOString();
@@ -184,7 +285,13 @@ function runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt) {
     GIT_SHA: commit,
   });
   const prepackCompletedAt = new Date().toISOString();
-  const buildInfo = ensureScopedBuildInfo(stageDir, sourcePackage, commit, prepackCompletedAt);
+  const buildInfo = ensureScopedBuildInfo(
+    stageDir,
+    sourcePackage,
+    commit,
+    prepackCompletedAt,
+    dirtySource,
+  );
   const markerBase = {
     packageName: SCOPED_NAME,
     version: sourcePackage.version,
@@ -199,6 +306,7 @@ function runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt) {
     ],
     dependencyPreparation,
     buildInfo,
+    dirtySource,
   };
   const markerPath = writeFreshBuildMarker(stageDir, markerBase);
   const runtimeFileEvidence = collectFileEvidence(stageDir, [
@@ -232,6 +340,8 @@ function main() {
   const sourcePackage = JSON.parse(beforePackageJson);
   const commit = getCommit();
   const builtAt = new Date().toISOString();
+  const dirtySource = dirtySourceIdentity();
+  assertCleanOrAllowedForLocalCanary(dirtySource, args.allowDirtyForLocalCanary);
   const outDir = args.outDir;
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -241,6 +351,7 @@ function main() {
     commit,
     sourceRoot: SOURCE_ROOT,
     builtAt,
+    dirtySource,
   };
   const manifestBase = {
     packageName: SCOPED_NAME,
@@ -248,6 +359,7 @@ function main() {
     sourceCommit: commit,
     sourceRoot: SOURCE_ROOT,
     buildTime: builtAt,
+    dirtySource,
     buildInfo: dryRunBuildInfo,
     packageMetadata: {
       name: SCOPED_NAME,
@@ -276,7 +388,7 @@ function main() {
   try {
     copySourceToStage(stageDir);
     const scopedPackage = writeScopedPackageJson(stageDir, sourcePackage);
-    const freshBuild = runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt);
+    const freshBuild = runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt, dirtySource);
     const pack = run("npm", ["pack", "--ignore-scripts", "--pack-destination", outDir], {
       cwd: stageDir,
       stdio: ["ignore", "pipe", "pipe"],
