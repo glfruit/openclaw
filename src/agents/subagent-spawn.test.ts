@@ -1,4 +1,6 @@
+import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createSubagentSpawnTestConfig,
@@ -254,6 +256,100 @@ describe("spawnSubagentDirect seam flow", () => {
         }),
       }),
     );
+  });
+
+  it("keeps explicit same-workspace cwd internal and omits workspaceDir from Gateway agent params", async () => {
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-cwd-"));
+    const requesterWorkspace = path.join(tmpRoot, "daily-devops");
+    await fs.mkdir(requesterWorkspace, { recursive: true });
+    const requesterWorkspaceRealpath = await fs.realpath(requesterWorkspace);
+    const calls: Array<{ method?: string; params?: Record<string, unknown> }> = [];
+    let persistedStore: Record<string, Record<string, unknown>> | undefined;
+
+    try {
+      hoisted.configOverride = createConfigOverride({
+        agents: {
+          defaults: {
+            workspace: os.tmpdir(),
+            subagents: {
+              allowAgents: ["code-specialist"],
+            },
+          },
+          list: [
+            {
+              id: "main",
+              workspace: "/tmp/workspace-main",
+              subagents: {
+                allowAgents: ["code-specialist"],
+              },
+            },
+            {
+              id: "code-specialist",
+              workspace: "/tmp/workspace-code-specialist",
+            },
+          ],
+        },
+      });
+      hoisted.callGatewayMock.mockImplementation(
+        async (request: { method?: string; params?: Record<string, unknown> }) => {
+          calls.push(request);
+          if (request.method === "agent") {
+            return { runId: "run-cwd", status: "accepted", acceptedAt: 1000 };
+          }
+          if (request.method?.startsWith("sessions.")) {
+            return { ok: true };
+          }
+          return {};
+        },
+      );
+      installSessionStoreCaptureMock(hoisted.updateSessionStoreMock, {
+        onStore: (store) => {
+          persistedStore = store;
+        },
+      });
+
+      const result = await spawnSubagentDirect(
+        {
+          task: "match canary: cross-agent explicit same-workspace cwd",
+          agentId: "code-specialist",
+          cwd: requesterWorkspace,
+          sandbox: "inherit",
+        },
+        {
+          agentSessionKey: "agent:main:main",
+          workspaceDir: requesterWorkspace,
+        },
+      );
+
+      expect(result).toMatchObject({
+        status: "accepted",
+        runId: "run-cwd",
+        childSessionKey: expect.stringMatching(/^agent:code-specialist:subagent:/),
+      });
+      const childSessionKey = result.childSessionKey as string;
+      const agentCall = calls.find((call) => call.method === "agent");
+      expect(agentCall?.params).toEqual(
+        expect.objectContaining({
+          sessionKey: childSessionKey,
+          lane: "subagent",
+        }),
+      );
+      expect(agentCall?.params).not.toHaveProperty("workspaceDir");
+      expect(persistedStore?.[childSessionKey]).toMatchObject({
+        spawnedBy: "agent:main:main",
+        spawnedWorkspaceDir: requesterWorkspaceRealpath,
+      });
+      expect(hoisted.registerSubagentRunMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: "run-cwd",
+          childSessionKey,
+          requesterSessionKey: "agent:main:main",
+          workspaceDir: requesterWorkspaceRealpath,
+        }),
+      );
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it("omits requesterOrigin threadId when no requester thread is provided", async () => {
