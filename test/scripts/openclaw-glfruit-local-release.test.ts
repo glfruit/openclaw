@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -15,6 +17,7 @@ import { gatewayLocalHealthzReadyzProbe } from "../../scripts/canary-openclaw-lo
 import {
   assertCanaryMatchesPack,
   assertCanaryReportReleaseReady,
+  selectCanaryReportPromoteTarget,
 } from "../../scripts/promote-openclaw-local-release.mjs";
 
 const PACK_SCRIPT = "scripts/package-openclaw-glfruit-local.mjs";
@@ -22,6 +25,48 @@ const CHECK_SCRIPT = "scripts/check-openclaw-glfruit-tarball.mjs";
 const PROMOTE_SCRIPT = "scripts/promote-openclaw-local-release.mjs";
 const ROLLBACK_SCRIPT = "scripts/rollback-openclaw-local-release.mjs";
 const CANARY_SCRIPT = "scripts/canary-openclaw-local-release.mjs";
+
+function sha256(file: string) {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function writePassCanaryReport(
+  dir: string,
+  tarball: string,
+  overrides: Record<string, unknown> = {},
+) {
+  const report = {
+    verdict: "PASS",
+    tarball: resolve(tarball),
+    sha256: sha256(tarball),
+    started: true,
+    canaryGatewayVerdict: "PASS",
+    releaseReadinessVerdict: "PASS",
+    readinessBlockers: [],
+    gateway: {
+      status: "TCP_READYZ_READY",
+      statusProbe: {
+        status: "PASS",
+        probeKind: "gateway-healthz-readyz-local",
+        rpc: { ok: true },
+        health: { healthy: true },
+        healthz: { ok: true, statusCode: 200, body: { ok: true, status: "live" } },
+        readyz: { ready: true, statusCode: 200, body: { ready: true } },
+      },
+    },
+    artifactIdentity: {
+      packageName: "@glfruit/openclaw",
+      version: "2026.5.7-glfruit.1",
+      sourceCommit: "abc123",
+      dirtySource: { dirty: false },
+    },
+    package: { name: "@glfruit/openclaw", version: "2026.5.7-glfruit.1" },
+    ...overrides,
+  };
+  const reportPath = join(dir, "canary-report.json");
+  writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  return { report, reportPath };
+}
 
 function runNode(args: string[], options: { env?: NodeJS.ProcessEnv } = {}) {
   return spawnSync("node", args, {
@@ -390,6 +435,88 @@ describe("glfruit local release scripts", () => {
     });
   });
 
+  it("promote with a canary report selects the reported tarball and does not repack", () => {
+    withTemp((dir) => {
+      const tarball = writePackageTarball(dir, validPackageJson, validFiles);
+      const { reportPath, report } = writePassCanaryReport(dir, tarball);
+      const outDir = join(dir, "promote-out");
+      const result = runNode([PROMOTE_SCRIPT, "--out-dir", outDir, "--canary-report", reportPath]);
+      expect(result.status, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.verdict).toBe("PASS");
+      expect(parsed.releaseReadinessVerdict).toBe("PASS");
+      expect(parsed.steps.selectedTarget).toMatchObject({
+        source: "canary-report",
+        repack: false,
+        tarballPath: resolve(tarball),
+        sha256: report.sha256,
+        version: "2026.5.7-glfruit.1",
+        sourceCommit: "abc123",
+      });
+      expect(parsed.steps.pack).toBeUndefined();
+      expect(parsed.steps.canary).toMatchObject({ source: "canary-report", verdict: "PASS" });
+      expect(parsed.steps.rollback.target).toBe(resolve(tarball));
+      expect(parsed.steps.rollback.actions.join("\n")).toContain(resolve(tarball));
+      expect(existsSync(join(outDir, "package-output.json"))).toBe(false);
+    });
+  });
+
+  it("rejects canary reports whose tarball is missing or whose sha does not match", () => {
+    withTemp((dir) => {
+      const tarball = writePackageTarball(dir, validPackageJson, validFiles);
+      const missing = join(dir, "missing.tgz");
+      const { reportPath: missingReport } = writePassCanaryReport(dir, tarball, {
+        tarball: missing,
+      });
+      const missingResult = runNode([PROMOTE_SCRIPT, "--canary-report", missingReport]);
+      expect(missingResult.status).not.toBe(0);
+      expect(missingResult.stderr).toContain("canary report tarball does not exist");
+
+      const mismatchReport = join(dir, "mismatch-report.json");
+      const report = JSON.parse(readFileSync(missingReport, "utf8"));
+      writeFileSync(
+        mismatchReport,
+        `${JSON.stringify({ ...report, tarball: resolve(tarball), sha256: "0".repeat(64) }, null, 2)}\n`,
+      );
+      const mismatchResult = runNode([PROMOTE_SCRIPT, "--canary-report", mismatchReport]);
+      expect(mismatchResult.status).not.toBe(0);
+      expect(mismatchResult.stderr).toContain("canary report tarball sha256 mismatch");
+    });
+  });
+
+  it("selectCanaryReportPromoteTarget exposes exact canary artifact identity", () => {
+    withTemp((dir) => {
+      const tarball = writePackageTarball(dir, validPackageJson, validFiles);
+      const { report } = writePassCanaryReport(dir, tarball);
+      expect(selectCanaryReportPromoteTarget(report)).toMatchObject({
+        source: "canary-report",
+        repack: false,
+        tarballPath: resolve(tarball),
+        sha256: sha256(tarball),
+        version: "2026.5.7-glfruit.1",
+        sourceCommit: "abc123",
+      });
+    });
+  });
+
+  it("planning mode without report may package but is not live-ready", () => {
+    withTemp((dir) => {
+      const result = runNode([
+        PROMOTE_SCRIPT,
+        "--dry-run",
+        "--out-dir",
+        dir,
+        "--allow-dirty-for-local-canary",
+      ]);
+      expect(result.status, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.verdict).toBe("BLOCKED");
+      expect(parsed.releaseReadinessVerdict).toBe("BLOCKED");
+      expect(parsed.steps.selectedTarget).toMatchObject({ source: "local-pack", repack: true });
+      expect(parsed.steps.pack).toBeDefined();
+    });
+  });
+
   it("promote refuses live without explicit flags and canary PASS", () => {
     const noConfirm = runNode([PROMOTE_SCRIPT, "--live"]);
     expect(noConfirm.status).not.toBe(0);
@@ -612,7 +739,7 @@ describe("promote live gate report binding", () => {
           sha256: "a",
         },
       ),
-    ).toThrow("selected pack artifact version must match");
+    ).toThrow("selected artifact version must match");
 
     expect(() =>
       assertCanaryMatchesPack(

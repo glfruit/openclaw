@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -64,6 +65,18 @@ function run(args) {
     );
   return result.stdout.trim();
 }
+
+function runCommand(command, args) {
+  const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8" });
+  if (result.status !== 0)
+    throw new Error(
+      `${command} ${args.join(" ")} failed: ${result.stderr || result.stdout || result.status}`,
+    );
+  return result.stdout.trim();
+}
+function sha256File(file) {
+  return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
 function normalizeArtifactPath(file) {
   return file ? path.resolve(file) : "";
 }
@@ -85,7 +98,40 @@ export function readCanaryReport(reportPath) {
   const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
   if (!report.tarball || !report.sha256)
     throw new Error("refusing promote with incomplete canary report; missing tarball or sha256");
+  if (!path.isAbsolute(report.tarball))
+    throw new Error(
+      `refusing promote with canary report tarball that is not absolute: ${report.tarball}`,
+    );
   return report;
+}
+function reportArtifactIdentity(report) {
+  return report?.artifactIdentity || report?.buildInfo || report?.package || {};
+}
+export function selectCanaryReportPromoteTarget(report) {
+  if (!report) return null;
+  const tarballPath = normalizeArtifactPath(report.tarball);
+  if (!fs.existsSync(tarballPath))
+    throw new Error(`canary report tarball does not exist: ${tarballPath}`);
+  const actualSha256 = sha256File(tarballPath);
+  if (actualSha256 !== String(report.sha256).toLowerCase())
+    throw new Error(
+      `canary report tarball sha256 mismatch: expected ${report.sha256}, got ${actualSha256}`,
+    );
+  const identity = reportArtifactIdentity(report);
+  assertGlfruitArtifactIdentity(identity, "canary artifact");
+  const version = identity.version || report.package?.version;
+  const sourceCommit = identity.sourceCommit || identity.commit || report.buildInfo?.commit || "";
+  if (!sourceCommit) throw new Error("canary report artifact identity missing source commit");
+  return {
+    source: "canary-report",
+    repack: false,
+    packageName: identity.packageName || report.package?.name || "@glfruit/openclaw",
+    version,
+    sourceCommit,
+    tarballPath,
+    sha256: actualSha256,
+    reportSha256: report.sha256,
+  };
 }
 export function assertCanaryReportReleaseReady(report) {
   if (!report) throw new Error("refusing live promote without --canary-report");
@@ -143,7 +189,7 @@ export function assertCanaryMatchesPack(report, packOutput) {
   if (!report) return;
   if (!packOutput?.tarballPath || !packOutput?.sha256) {
     throw new Error(
-      "cannot verify canary report against selected pack artifact; missing tarballPath or sha256",
+      "cannot verify canary report against selected artifact; missing tarballPath or sha256",
     );
   }
   const selectedTarball = normalizeArtifactPath(packOutput.tarballPath);
@@ -153,14 +199,14 @@ export function assertCanaryMatchesPack(report, packOutput) {
       `refusing stale canary report for different tarball: report=${reportTarball} selected=${selectedTarball}`,
     );
   }
-  if (report.sha256 !== packOutput.sha256) {
+  if (String(report.sha256).toLowerCase() !== String(packOutput.sha256).toLowerCase()) {
     throw new Error(
       `refusing stale canary report sha256 mismatch: report=${report.sha256} selected=${packOutput.sha256}`,
     );
   }
-  assertGlfruitArtifactIdentity(packOutput, "selected pack artifact");
-  assertGlfruitArtifactIdentity(report.artifactIdentity || report.package, "canary artifact");
-  const reportVersion = report.artifactIdentity?.version || report.package?.version;
+  assertGlfruitArtifactIdentity(packOutput, "selected artifact");
+  assertGlfruitArtifactIdentity(reportArtifactIdentity(report), "canary artifact");
+  const reportVersion = reportArtifactIdentity(report).version || report.package?.version;
   if (reportVersion !== packOutput.version) {
     throw new Error(
       `refusing stale canary report version mismatch: report=${reportVersion || "<missing>"} selected=${packOutput.version || "<missing>"}`,
@@ -178,18 +224,34 @@ async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const externalCanaryReport = readCanaryReport(args.canaryReport);
   assertLiveAllowed(args, externalCanaryReport);
-  const packOutput = JSON.parse(
-    run([
-      "scripts/package-openclaw-glfruit-local.mjs",
-      "--out-dir",
-      args.outDir,
-      ...(args.dryRun ? ["--dry-run"] : []),
-      ...(args.allowDirtyForLocalCanary ? ["--allow-dirty-for-local-canary"] : []),
-    ]),
-  );
-  assertGlfruitArtifactIdentity(packOutput, "selected pack artifact");
+  let selectedTarget;
+  let packOutput = null;
+  if (externalCanaryReport) {
+    selectedTarget = selectCanaryReportPromoteTarget(externalCanaryReport);
+  } else {
+    packOutput = JSON.parse(
+      run([
+        "scripts/package-openclaw-glfruit-local.mjs",
+        "--out-dir",
+        args.outDir,
+        ...(args.dryRun ? ["--dry-run"] : []),
+        ...(args.allowDirtyForLocalCanary ? ["--allow-dirty-for-local-canary"] : []),
+      ]),
+    );
+    assertGlfruitArtifactIdentity(packOutput, "selected pack artifact");
+    selectedTarget = {
+      source: "local-pack",
+      repack: true,
+      packageName: packOutput.packageName,
+      version: packOutput.version,
+      sourceCommit: packOutput.sourceCommit,
+      tarballPath: packOutput.tarballPath,
+      sha256: packOutput.sha256,
+    };
+  }
   const steps = {
-    pack: packOutput,
+    selectedTarget,
+    ...(packOutput ? { pack: packOutput } : {}),
     ...(externalCanaryReport
       ? {
           canaryReport: {
@@ -206,59 +268,75 @@ async function main(argv = process.argv.slice(2)) {
         }
       : {}),
   };
-  if (externalCanaryReport) assertCanaryMatchesPack(externalCanaryReport, packOutput);
+  if (externalCanaryReport) assertCanaryMatchesPack(externalCanaryReport, selectedTarget);
   if (!args.dryRun) {
     run([
       "scripts/check-openclaw-glfruit-tarball.mjs",
-      packOutput.tarballPath,
+      selectedTarget.tarballPath,
       "--expected-version",
-      packOutput.version,
+      selectedTarget.version,
       "--expected-commit",
-      packOutput.sourceCommit,
+      selectedTarget.sourceCommit,
     ]);
     steps.check = "PASS";
-    const canaryReport = path.join(args.outDir, "canary-dry-run-report.json");
-    const canaryOutput = spawnSync(
-      "node",
-      [
-        "scripts/canary-openclaw-local-release.mjs",
-        "--tarball",
-        packOutput.tarballPath,
-        "--sha256",
-        packOutput.sha256,
-        "--dry-run",
-        "--report",
-        canaryReport,
-      ],
-      { cwd: ROOT, encoding: "utf8" },
-    );
-    if (canaryOutput.stdout.trim()) steps.canary = JSON.parse(canaryOutput.stdout.trim());
-    if (canaryOutput.status !== 0 && !steps.canary) {
-      throw new Error(
-        `node scripts/canary-openclaw-local-release.mjs failed: ${canaryOutput.stderr || canaryOutput.status}`,
+    if (externalCanaryReport) {
+      steps.canary = {
+        source: "canary-report",
+        verdict: externalCanaryReport.verdict,
+        releaseReadinessVerdict: externalCanaryReport.releaseReadinessVerdict,
+        canaryGatewayVerdict: externalCanaryReport.canaryGatewayVerdict,
+      };
+    } else {
+      const canaryReport = path.join(args.outDir, "canary-dry-run-report.json");
+      const canaryOutput = spawnSync(
+        "node",
+        [
+          "scripts/canary-openclaw-local-release.mjs",
+          "--tarball",
+          selectedTarget.tarballPath,
+          "--sha256",
+          selectedTarget.sha256,
+          "--dry-run",
+          "--report",
+          canaryReport,
+        ],
+        { cwd: ROOT, encoding: "utf8" },
       );
+      if (canaryOutput.stdout.trim()) steps.canary = JSON.parse(canaryOutput.stdout.trim());
+      if (canaryOutput.status !== 0 && !steps.canary) {
+        throw new Error(
+          `node scripts/canary-openclaw-local-release.mjs failed: ${canaryOutput.stderr || canaryOutput.status}`,
+        );
+      }
     }
     steps.rollback = JSON.parse(
       run([
         "scripts/rollback-openclaw-local-release.mjs",
         "--target",
-        packOutput.tarballPath,
+        selectedTarget.tarballPath,
         "--expected-sha256",
-        packOutput.sha256,
+        selectedTarget.sha256,
       ]),
     );
   }
-  if (args.live)
-    throw new Error(
-      "live promote execution is stop-gated in slice 2 after release-readiness verification",
-    );
-  const releaseReady = steps.canary?.releaseReadinessVerdict === "PASS";
+  if (args.live) {
+    runCommand("npm", ["install", "-g", "--no-audit", "--no-fund", selectedTarget.tarballPath]);
+    steps.liveInstall = {
+      status: "PASS",
+      tarball: selectedTarget.tarballPath,
+      sha256: selectedTarget.sha256,
+    };
+  }
+  const releaseReady = externalCanaryReport
+    ? externalCanaryReport.releaseReadinessVerdict === "PASS" &&
+      externalCanaryReport.verdict === "PASS"
+    : false;
   const verdict = args.live || releaseReady ? "PASS" : "BLOCKED";
   console.log(
     JSON.stringify(
       {
         verdict,
-        live: false,
+        live: args.live,
         releaseReadinessVerdict: releaseReady ? "PASS" : "BLOCKED",
         steps,
       },
