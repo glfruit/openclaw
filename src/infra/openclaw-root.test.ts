@@ -137,6 +137,17 @@ describe("resolveOpenClawPackageRoot", () => {
       },
     },
     {
+      name: "resolves owned scoped package root from .bin argv1",
+      setup: () => {
+        const project = fx("owned-scoped-bin-scenario");
+        const argv1 = path.join(project, "node_modules", ".bin", "openclaw");
+        const pkgRoot = path.join(project, "node_modules", "@glfruit", "openclaw");
+        state.realpaths.set(abs(argv1), abs(path.join(pkgRoot, "openclaw.mjs")));
+        setPackageRoot(pkgRoot, "@glfruit/openclaw");
+        return { opts: { argv1 }, expected: pkgRoot };
+      },
+    },
+    {
       name: "resolves package root via symlinked argv1",
       setup: () => {
         const project = fx("symlink-scenario");

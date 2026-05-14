@@ -130,7 +130,11 @@ function createExtensionApiAliasFixture(params?: {
   return { root, srcFile, distFile };
 }
 
-function createPluginRuntimeAliasFixture(params?: { srcBody?: string; distBody?: string }) {
+function createPluginRuntimeAliasFixture(params?: {
+  packageName?: string;
+  srcBody?: string;
+  distBody?: string;
+}) {
   const root = makeTempDir();
   const srcFile = path.join(root, "src", "plugins", "runtime", "index.ts");
   const distFile = path.join(root, "dist", "plugins", "runtime", "index.js");
@@ -138,7 +142,7 @@ function createPluginRuntimeAliasFixture(params?: { srcBody?: string; distBody?:
   mkdirSafeDir(path.dirname(distFile));
   fs.writeFileSync(
     path.join(root, "package.json"),
-    JSON.stringify({ name: "openclaw", type: "module" }, null, 2),
+    JSON.stringify({ name: params?.packageName ?? "openclaw", type: "module" }, null, 2),
     "utf-8",
   );
   fs.writeFileSync(
@@ -533,7 +537,7 @@ describe("plugin sdk alias helpers", () => {
       env: { NODE_ENV: undefined },
       expected: "src" as const,
     },
-  ])("$name", ({ modulePath, argv1, env, expected }) => {
+  ])("$name", ({ modulePath, argv1, env, expected, packageName }) => {
     const fixture = createExtensionApiAliasFixture();
     expectExtensionApiAliasResolution({
       fixture,
@@ -1298,8 +1302,14 @@ export const syntheticRuntimeMarker = {
       env: { NODE_ENV: undefined },
       expected: "src" as const,
     },
-  ])("$name", ({ modulePath, argv1, env, expected }) => {
-    const fixture = createPluginRuntimeAliasFixture();
+    {
+      name: "resolves plugin runtime module from owned scoped package root",
+      packageName: "@glfruit/openclaw",
+      modulePath: (root: string) => path.join(root, "dist", "sdk-alias.js"),
+      expected: "dist" as const,
+    },
+  ])("$name", ({ modulePath, argv1, env, expected, packageName }) => {
+    const fixture = createPluginRuntimeAliasFixture({ packageName });
     const resolved = resolvePluginRuntimeModule({
       modulePath: modulePath(fixture.root),
       argv1: argv1?.(fixture.root),
