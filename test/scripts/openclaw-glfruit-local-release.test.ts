@@ -99,9 +99,14 @@ function writePackageTarball(
 
 const validFiles = {
   "openclaw.mjs": "#!/usr/bin/env node\n",
-  "dist/build-info.json": JSON.stringify({ commit: "abc123", packageName: "@glfruit/openclaw" }),
+  "dist/build-info.json": JSON.stringify({
+    commit: "abc123",
+    packageName: "@glfruit/openclaw",
+    version: "2026.5.7-glfruit.1",
+  }),
   "dist/glfruit-release-fresh-build.json": JSON.stringify({
     packageName: "@glfruit/openclaw",
+    version: "2026.5.7-glfruit.1",
     commit: "abc123",
     completedAt: "2026-05-13T00:00:00.000Z",
     prepackEquivalent: true,
@@ -115,7 +120,7 @@ const validFiles = {
 
 const validPackageJson = {
   name: "@glfruit/openclaw",
-  version: "1.2.3",
+  version: "2026.5.7-glfruit.1",
   bin: { openclaw: "openclaw.mjs" },
   exports: {
     "./plugin-sdk": { default: "./dist/plugin-sdk/index.js" },
@@ -135,6 +140,42 @@ describe("glfruit local release scripts", () => {
       const result = runNode([CHECK_SCRIPT, tarball, "--skip-install-resolve"]);
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("package name mismatch");
+    });
+  });
+
+  it("check script rejects plain upstream version for scoped glfruit artifact", () => {
+    withTemp((dir) => {
+      const tarball = writePackageTarball(
+        dir,
+        { ...validPackageJson, version: "2026.5.7" },
+        {
+          ...validFiles,
+          "dist/build-info.json": JSON.stringify({
+            commit: "abc123",
+            packageName: "@glfruit/openclaw",
+            version: "2026.5.7",
+          }),
+          "dist/glfruit-release-fresh-build.json": JSON.stringify({
+            packageName: "@glfruit/openclaw",
+            version: "2026.5.7",
+            commit: "abc123",
+            completedAt: "2026-05-13T00:00:00.000Z",
+            prepackEquivalent: true,
+            commands: ["node --import tsx scripts/openclaw-prepack.ts"],
+            runtimeFileEvidence: { "dist/index.js": { sha256: "abc", mtimeMs: 1, size: 1 } },
+          }),
+        },
+      );
+      const result = runNode([
+        CHECK_SCRIPT,
+        tarball,
+        "--expected-version",
+        "2026.5.7-glfruit.1",
+        "--skip-install-resolve",
+      ]);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("version mismatch");
+      expect(result.stderr).toContain("glfruit scoped package version must match");
     });
   });
 
@@ -181,6 +222,7 @@ describe("glfruit local release scripts", () => {
         ...validFiles,
         "dist/glfruit-release-fresh-build.json": JSON.stringify({
           packageName: "@glfruit/openclaw",
+          version: "2026.5.7-glfruit.1",
           commit: "stale",
           completedAt: "2026-05-13T00:00:00.000Z",
           prepackEquivalent: true,
@@ -213,10 +255,12 @@ describe("glfruit local release scripts", () => {
         "dist/build-info.json": JSON.stringify({
           commit: "abc123",
           packageName: "@glfruit/openclaw",
+          version: "2026.5.7-glfruit.1",
           dirtySource,
         }),
         "dist/glfruit-release-fresh-build.json": JSON.stringify({
           packageName: "@glfruit/openclaw",
+          version: "2026.5.7-glfruit.1",
           commit: "abc123",
           completedAt: "2026-05-13T00:00:00.000Z",
           prepackEquivalent: true,
@@ -247,9 +291,13 @@ describe("glfruit local release scripts", () => {
       const manifest = JSON.parse(result.stdout);
       expect(after).toBe(before);
       expect(manifest.packageName).toBe("@glfruit/openclaw");
+      expect(manifest.version).toBe("2026.5.7-glfruit.1");
+      expect(manifest.baseVersion).toBe("2026.5.7");
+      expect(manifest.packageMetadata.version).toBe("2026.5.7-glfruit.1");
       expect(manifest.sourcePackageJsonUnchanged).toBe(true);
       expect(manifest.sourceCommit).toMatch(/^[0-9a-f]{40}$/);
       expect(manifest.buildInfo.packageName).toBe("@glfruit/openclaw");
+      expect(manifest.buildInfo.version).toBe("2026.5.7-glfruit.1");
     });
   });
 
@@ -319,6 +367,27 @@ describe("glfruit local release scripts", () => {
       script.indexOf("scripts/rollback-openclaw-local-release.mjs"),
     );
     expect(script).toContain('"--dry-run"');
+  });
+
+  it("promote dry-run exposes the expected glfruit version identity", () => {
+    withTemp((dir) => {
+      const result = runNode([
+        PROMOTE_SCRIPT,
+        "--dry-run",
+        "--out-dir",
+        dir,
+        "--allow-dirty-for-local-canary",
+      ]);
+      expect(result.status, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.verdict).toBe("BLOCKED");
+      expect(parsed.steps.pack).toMatchObject({
+        packageName: "@glfruit/openclaw",
+        version: "2026.5.7-glfruit.1",
+        baseVersion: "2026.5.7",
+      });
+      expect(parsed.steps.pack.packageMetadata.version).toBe("2026.5.7-glfruit.1");
+    });
   });
 
   it("promote refuses live without explicit flags and canary PASS", () => {
@@ -458,6 +527,15 @@ describe("glfruit local release scripts", () => {
       expect(parsed.isolated.home).toContain("openclaw-glfruit-canary-");
       expect(parsed.isolated.prefix).toContain("prefix");
       expect(parsed.isolated.port).toBeGreaterThan(0);
+      expect(parsed.package).toMatchObject({
+        name: "@glfruit/openclaw",
+        version: "2026.5.7-glfruit.1",
+      });
+      expect(parsed.artifactIdentity).toMatchObject({
+        packageName: "@glfruit/openclaw",
+        version: "2026.5.7-glfruit.1",
+      });
+      expect(parsed.readinessBlockers).not.toContain("artifact-version-missing-glfruit-suffix");
       expect(parsed.pluginRuntimeSmoke.length).toBeGreaterThan(0);
       expect(parsed.jsonGuardSmoke.status).toBe("BLOCKED");
       expect(parsed.canaryGatewayVerdict).toBe("FAIL");
@@ -472,24 +550,85 @@ describe("promote live gate report binding", () => {
   it("rejects stale canary reports for a different tarball or sha256", () => {
     expect(() =>
       assertCanaryMatchesPack(
-        { tarball: "/tmp/stale.tgz", sha256: "a" },
-        { tarballPath: "/tmp/selected.tgz", sha256: "a" },
+        {
+          tarball: "/tmp/stale.tgz",
+          sha256: "a",
+          package: { name: "@glfruit/openclaw", version: "2026.5.7-glfruit.1" },
+        },
+        {
+          packageName: "@glfruit/openclaw",
+          version: "2026.5.7-glfruit.1",
+          tarballPath: "/tmp/selected.tgz",
+          sha256: "a",
+        },
       ),
     ).toThrow("different tarball");
 
     expect(() =>
       assertCanaryMatchesPack(
-        { tarball: "/tmp/selected.tgz", sha256: "a" },
-        { tarballPath: "/tmp/selected.tgz", sha256: "b" },
+        {
+          tarball: "/tmp/selected.tgz",
+          sha256: "a",
+          package: { name: "@glfruit/openclaw", version: "2026.5.7-glfruit.1" },
+        },
+        {
+          packageName: "@glfruit/openclaw",
+          version: "2026.5.7-glfruit.1",
+          tarballPath: "/tmp/selected.tgz",
+          sha256: "b",
+        },
       ),
     ).toThrow("sha256 mismatch");
 
     expect(() =>
       assertCanaryMatchesPack(
-        { tarball: "/tmp/selected.tgz", sha256: "b" },
-        { tarballPath: resolve("/tmp/selected.tgz"), sha256: "b" },
+        {
+          tarball: "/tmp/selected.tgz",
+          sha256: "b",
+          package: { name: "@glfruit/openclaw", version: "2026.5.7-glfruit.1" },
+        },
+        {
+          packageName: "@glfruit/openclaw",
+          version: "2026.5.7-glfruit.1",
+          tarballPath: resolve("/tmp/selected.tgz"),
+          sha256: "b",
+        },
       ),
     ).not.toThrow();
+  });
+
+  it("rejects canary binding when selected or reported versions are not glfruit-local", () => {
+    expect(() =>
+      assertCanaryMatchesPack(
+        {
+          tarball: "/tmp/selected.tgz",
+          sha256: "a",
+          package: { name: "@glfruit/openclaw", version: "2026.5.7-glfruit.1" },
+        },
+        {
+          packageName: "@glfruit/openclaw",
+          version: "2026.5.7",
+          tarballPath: "/tmp/selected.tgz",
+          sha256: "a",
+        },
+      ),
+    ).toThrow("selected pack artifact version must match");
+
+    expect(() =>
+      assertCanaryMatchesPack(
+        {
+          tarball: "/tmp/selected.tgz",
+          sha256: "a",
+          package: { name: "@glfruit/openclaw", version: "2026.5.7" },
+        },
+        {
+          packageName: "@glfruit/openclaw",
+          version: "2026.5.7-glfruit.1",
+          tarballPath: "/tmp/selected.tgz",
+          sha256: "a",
+        },
+      ),
+    ).toThrow("canary artifact version must match");
   });
 
   it("does not allow gateway-only or blocked readiness reports to satisfy live promote", () => {

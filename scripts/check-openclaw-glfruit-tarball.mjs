@@ -64,6 +64,10 @@ function run(command, args, options = {}) {
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
+function isGlfruitVersion(version) {
+  return /^\d+(?:\.\d+){1,2}-glfruit\.[1-9]\d*$/u.test(String(version || ""));
+}
+
 function dirtySourceIsDirty(value) {
   return value && typeof value === "object" && value.dirty === true;
 }
@@ -112,6 +116,10 @@ try {
       errors.push(
         `version mismatch: expected ${args.expectedVersion}, got ${pkg.version || "<missing>"}`,
       );
+    if (pkg.name === SCOPED_NAME && !isGlfruitVersion(pkg.version))
+      errors.push(
+        `glfruit scoped package version must match <base>-glfruit.N, got ${pkg.version || "<missing>"}`,
+      );
     if (pkg.bin?.openclaw !== "openclaw.mjs") errors.push("bin.openclaw must equal openclaw.mjs");
     for (const surface of REQUIRED_EXPORTS) {
       const key = `./${surface}`;
@@ -126,6 +134,10 @@ try {
       if (buildInfo.packageName !== SCOPED_NAME)
         errors.push(
           `dist/build-info.json packageName mismatch: expected ${SCOPED_NAME}, got ${buildInfo.packageName || "<missing>"}`,
+        );
+      if (buildInfo.version !== pkg.version)
+        errors.push(
+          `dist/build-info.json version mismatch: expected ${pkg.version || "<missing>"}, got ${buildInfo.version || "<missing>"}`,
         );
       if (args.expectedCommit && buildInfo.commit !== args.expectedCommit)
         errors.push(
@@ -142,6 +154,10 @@ try {
       if (freshBuild.packageName !== SCOPED_NAME)
         errors.push(
           `fresh build marker packageName mismatch: expected ${SCOPED_NAME}, got ${freshBuild.packageName || "<missing>"}`,
+        );
+      if (freshBuild.version !== pkg.version)
+        errors.push(
+          `fresh build marker version mismatch: expected ${pkg.version || "<missing>"}, got ${freshBuild.version || "<missing>"}`,
         );
       if (!freshBuild.completedAt) errors.push("fresh build marker missing completedAt");
       if (!freshBuild.prepackEquivalent)

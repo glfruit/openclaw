@@ -62,7 +62,7 @@ function makeFakeTarball(
     `${JSON.stringify(
       {
         name: "@glfruit/openclaw",
-        version: "0.0.0-canary-test",
+        version: "2026.5.7-glfruit.1",
         type: "module",
         bin: { openclaw: "openclaw.mjs" },
         exports: {
@@ -73,6 +73,29 @@ function makeFakeTarball(
       null,
       2,
     )}\n`,
+  );
+
+  writeFile(
+    path.join(pkg, "dist", "build-info.json"),
+    JSON.stringify({
+      packageName: "@glfruit/openclaw",
+      version: "2026.5.7-glfruit.1",
+      commit: "canary-test",
+      dirtySource: { dirty: false },
+    }),
+  );
+  writeFile(
+    path.join(pkg, "dist", "glfruit-release-fresh-build.json"),
+    JSON.stringify({
+      packageName: "@glfruit/openclaw",
+      version: "2026.5.7-glfruit.1",
+      commit: "canary-test",
+      completedAt: "2026-05-14T00:00:00.000Z",
+      prepackEquivalent: true,
+      commands: ["node --import tsx scripts/openclaw-prepack.ts"],
+      runtimeFileEvidence: { "dist/index.js": { sha256: "abc", mtimeMs: 1, size: 1 } },
+      dirtySource: { dirty: false },
+    }),
   );
   writeFile(path.join(pkg, "dist", "plugin-sdk", "runtime.js"), "export const runtime = true;\n");
   writeFile(

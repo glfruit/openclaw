@@ -11,7 +11,7 @@ const SOURCE_ROOT = path.resolve(SCRIPT_DIR, "..");
 const SCOPED_NAME = "@glfruit/openclaw";
 
 function usage() {
-  return `Usage: node scripts/package-openclaw-glfruit-local.mjs [--out-dir <dir>] [--dry-run] [--allow-dirty-for-local-canary]\n\nCreates a local ${SCOPED_NAME} tarball from a temporary staging copy. The source tree package.json is never mutated. Dirty package-relevant tracked source is refused unless --allow-dirty-for-local-canary is passed for non-release local canary testing.`;
+  return `Usage: node scripts/package-openclaw-glfruit-local.mjs [--out-dir <dir>] [--dry-run] [--allow-dirty-for-local-canary] [--glfruit-build <n>]\n\nCreates a local ${SCOPED_NAME} tarball from a temporary staging copy. The source tree package.json is never mutated. Dirty package-relevant tracked source is refused unless --allow-dirty-for-local-canary is passed for non-release local canary testing. ${SCOPED_NAME} artifacts are stamped as <baseVersion>-glfruit.N before npm pack.`;
 }
 
 function parseArgs(argv) {
@@ -19,6 +19,7 @@ function parseArgs(argv) {
     outDir: path.join(SOURCE_ROOT, ".artifacts", "glfruit-local-release"),
     dryRun: false,
     allowDirtyForLocalCanary: false,
+    glfruitBuild: process.env.GLFRUIT_BUILD || "1",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -40,6 +41,10 @@ function parseArgs(argv) {
       args.outDir = path.resolve(value);
       continue;
     }
+    if (arg === "--glfruit-build") {
+      args.glfruitBuild = argv[++i] || "";
+      continue;
+    }
     throw new Error(`Unknown argument: ${arg}\n${usage()}`);
   }
   return args;
@@ -57,6 +62,20 @@ function run(command, args, options = {}) {
 
 function sha256(file) {
   return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function assertGlfruitBuild(value) {
+  if (!/^[1-9]\d*$/u.test(String(value))) {
+    throw new Error(
+      `--glfruit-build/GLFRUIT_BUILD must be a positive integer, got ${value || "<missing>"}`,
+    );
+  }
+  return String(value);
+}
+
+function glfruitVersion(baseVersion, build) {
+  const cleanBase = String(baseVersion).replace(/-glfruit\.\d+$/u, "");
+  return `${cleanBase}-glfruit.${assertGlfruitBuild(build)}`;
 }
 
 function readJson(file) {
@@ -170,10 +189,11 @@ function copySourceToStage(stageDir) {
   });
 }
 
-function writeScopedPackageJson(stageDir, sourcePackage) {
+function writeScopedPackageJson(stageDir, sourcePackage, version) {
   const scopedPackage = {
     ...sourcePackage,
     name: SCOPED_NAME,
+    version,
   };
   fs.writeFileSync(
     path.join(stageDir, "package.json"),
@@ -190,7 +210,7 @@ function getCommit() {
   }
 }
 
-function ensureScopedBuildInfo(stageDir, sourcePackage, commit, builtAt, dirtySource) {
+function ensureScopedBuildInfo(stageDir, sourcePackage, version, commit, builtAt, dirtySource) {
   const distDir = path.join(stageDir, "dist");
   fs.mkdirSync(distDir, { recursive: true });
   const buildInfoPath = path.join(distDir, "build-info.json");
@@ -205,7 +225,8 @@ function ensureScopedBuildInfo(stageDir, sourcePackage, commit, builtAt, dirtySo
   const buildInfo = {
     ...existing,
     packageName: SCOPED_NAME,
-    version: sourcePackage.version,
+    version,
+    baseVersion: sourcePackage.version,
     commit,
     sourceRoot: SOURCE_ROOT,
     builtAt,
@@ -276,7 +297,7 @@ function writeFreshBuildMarker(stageDir, marker) {
   return markerPath;
 }
 
-function runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt, dirtySource) {
+function runFreshBuildInStage(stageDir, sourcePackage, version, commit, builtAt, dirtySource) {
   const dependencyPreparation = prepareStageDependencies(stageDir);
   const prepackCommand = [process.execPath, "--import", "tsx", "scripts/openclaw-prepack.ts"];
   const prepackStartedAt = new Date().toISOString();
@@ -288,13 +309,15 @@ function runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt, dirtySou
   const buildInfo = ensureScopedBuildInfo(
     stageDir,
     sourcePackage,
+    version,
     commit,
     prepackCompletedAt,
     dirtySource,
   );
   const markerBase = {
     packageName: SCOPED_NAME,
-    version: sourcePackage.version,
+    version,
+    baseVersion: sourcePackage.version,
     commit,
     startedAt: prepackStartedAt,
     completedAt: prepackCompletedAt,
@@ -338,6 +361,7 @@ function main() {
   const sourcePackagePath = path.join(SOURCE_ROOT, "package.json");
   const beforePackageJson = fs.readFileSync(sourcePackagePath, "utf8");
   const sourcePackage = JSON.parse(beforePackageJson);
+  const version = glfruitVersion(sourcePackage.version, args.glfruitBuild);
   const commit = getCommit();
   const builtAt = new Date().toISOString();
   const dirtySource = dirtySourceIdentity();
@@ -347,7 +371,8 @@ function main() {
 
   const dryRunBuildInfo = {
     packageName: SCOPED_NAME,
-    version: sourcePackage.version,
+    version,
+    baseVersion: sourcePackage.version,
     commit,
     sourceRoot: SOURCE_ROOT,
     builtAt,
@@ -355,7 +380,9 @@ function main() {
   };
   const manifestBase = {
     packageName: SCOPED_NAME,
-    version: sourcePackage.version,
+    version,
+    baseVersion: sourcePackage.version,
+    glfruitBuild: assertGlfruitBuild(args.glfruitBuild),
     sourceCommit: commit,
     sourceRoot: SOURCE_ROOT,
     buildTime: builtAt,
@@ -363,7 +390,8 @@ function main() {
     buildInfo: dryRunBuildInfo,
     packageMetadata: {
       name: SCOPED_NAME,
-      version: sourcePackage.version,
+      version,
+      baseVersion: sourcePackage.version,
       bin: sourcePackage.bin,
       exports: sourcePackage.exports,
       files: sourcePackage.files,
@@ -372,10 +400,7 @@ function main() {
   };
 
   if (args.dryRun) {
-    const manifestPath = path.join(
-      outDir,
-      `glfruit-openclaw-${sourcePackage.version}.dry-run.manifest.json`,
-    );
+    const manifestPath = path.join(outDir, `glfruit-openclaw-${version}.dry-run.manifest.json`);
     fs.writeFileSync(
       manifestPath,
       `${JSON.stringify({ ...manifestBase, dryRun: true }, null, 2)}\n`,
@@ -387,13 +412,20 @@ function main() {
   const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-glfruit-pack-stage-"));
   try {
     copySourceToStage(stageDir);
-    const scopedPackage = writeScopedPackageJson(stageDir, sourcePackage);
-    const freshBuild = runFreshBuildInStage(stageDir, sourcePackage, commit, builtAt, dirtySource);
+    const scopedPackage = writeScopedPackageJson(stageDir, sourcePackage, version);
+    const freshBuild = runFreshBuildInStage(
+      stageDir,
+      sourcePackage,
+      version,
+      commit,
+      builtAt,
+      dirtySource,
+    );
     const pack = run("npm", ["pack", "--ignore-scripts", "--pack-destination", outDir], {
       cwd: stageDir,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const tarballPath = findPackedTarball(pack.stdout, outDir, sourcePackage.version);
+    const tarballPath = findPackedTarball(pack.stdout, outDir, version);
     const manifest = {
       ...manifestBase,
       buildInfo: freshBuild.buildInfo,
@@ -409,10 +441,7 @@ function main() {
       tarballPath,
       sha256: sha256(tarballPath),
     };
-    const manifestPath = path.join(
-      outDir,
-      `glfruit-openclaw-${sourcePackage.version}.manifest.json`,
-    );
+    const manifestPath = path.join(outDir, `glfruit-openclaw-${version}.manifest.json`);
     fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     if (fs.readFileSync(sourcePackagePath, "utf8") !== beforePackageJson) {
       throw new Error("source package.json changed during packaging");

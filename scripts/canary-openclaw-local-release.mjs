@@ -261,6 +261,10 @@ function runNodeProbe(code, cwd, env) {
   };
 }
 
+function isGlfruitVersion(version) {
+  return /^\d+(?:\.\d+){1,2}-glfruit\.[1-9]\d*$/u.test(String(version || ""));
+}
+
 function readArtifactIdentity(packageRoot) {
   const readOptionalJson = (relativePath) => {
     const file = path.join(packageRoot, relativePath);
@@ -271,13 +275,24 @@ function readArtifactIdentity(packageRoot) {
       return null;
     }
   };
+  const packageJson = readOptionalJson("package.json");
   const buildInfo = readOptionalJson("dist/build-info.json");
   const freshBuild = readOptionalJson("dist/glfruit-release-fresh-build.json");
   const dirtySource = buildInfo?.dirtySource || freshBuild?.dirtySource || { dirty: false };
   return {
+    packageName: packageJson?.name || "",
+    version: packageJson?.version || "",
+    buildInfoVersion: buildInfo?.version || "",
+    freshBuildVersion: freshBuild?.version || "",
     sourceCommit: buildInfo?.commit || freshBuild?.commit || "",
     dirtySource,
-    releaseEligible: dirtySource?.dirty === true ? false : true,
+    releaseEligible:
+      dirtySource?.dirty === true
+        ? false
+        : packageJson?.name === SCOPED_NAME &&
+          isGlfruitVersion(packageJson?.version) &&
+          buildInfo?.version === packageJson?.version &&
+          freshBuild?.version === packageJson?.version,
   };
 }
 
@@ -473,6 +488,18 @@ function readinessBlockers(report) {
   }
   if (report.artifactIdentity?.dirtySource?.dirty === true) {
     blockers.push("dirty-artifact-identity");
+  }
+  if (report.artifactIdentity?.packageName !== SCOPED_NAME) {
+    blockers.push("artifact-name-mismatch");
+  }
+  if (!isGlfruitVersion(report.artifactIdentity?.version)) {
+    blockers.push("artifact-version-missing-glfruit-suffix");
+  }
+  if (
+    report.artifactIdentity?.buildInfoVersion !== report.artifactIdentity?.version ||
+    report.artifactIdentity?.freshBuildVersion !== report.artifactIdentity?.version
+  ) {
+    blockers.push("artifact-version-marker-mismatch");
   }
   if (report.started !== true) blockers.push("gateway-not-started");
   if (report.gateway.status === "SKIP") blockers.push("gateway-status-skipped");

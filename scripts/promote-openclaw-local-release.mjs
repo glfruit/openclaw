@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function usage() {
-  return `Usage: node scripts/promote-openclaw-local-release.mjs [--out-dir <dir>] [--live --confirm-live --canary-report <pass-report.json>] [--dry-run]`;
+  return `Usage: node scripts/promote-openclaw-local-release.mjs [--out-dir <dir>] [--live --confirm-live --canary-report <pass-report.json>] [--dry-run] [--allow-dirty-for-local-canary]`;
 }
 function fail(message) {
   console.error(message);
@@ -20,6 +20,7 @@ function parseArgs(argv) {
     confirmLive: false,
     canaryReport: "",
     dryRun: false,
+    allowDirtyForLocalCanary: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -47,6 +48,10 @@ function parseArgs(argv) {
       args.dryRun = true;
       continue;
     }
+    if (arg === "--allow-dirty-for-local-canary") {
+      args.allowDirtyForLocalCanary = true;
+      continue;
+    }
     fail(`Unknown argument: ${arg}\n${usage()}`);
   }
   return args;
@@ -61,6 +66,19 @@ function run(args) {
 }
 function normalizeArtifactPath(file) {
   return file ? path.resolve(file) : "";
+}
+function isGlfruitVersion(version) {
+  return /^\d+(?:\.\d+){1,2}-glfruit\.[1-9]\d*$/u.test(String(version || ""));
+}
+function assertGlfruitArtifactIdentity(identity, label) {
+  if (identity?.packageName && identity.packageName !== "@glfruit/openclaw")
+    throw new Error(
+      `${label} packageName mismatch: expected @glfruit/openclaw, got ${identity.packageName}`,
+    );
+  if (!isGlfruitVersion(identity?.version))
+    throw new Error(
+      `${label} version must match <base>-glfruit.N, got ${identity?.version || "<missing>"}`,
+    );
 }
 export function readCanaryReport(reportPath) {
   if (!reportPath) return null;
@@ -119,6 +137,7 @@ export function assertCanaryReportReleaseReady(report) {
     );
   if (report.artifactIdentity?.dirtySource?.dirty === true)
     throw new Error("refusing live promote with dirty artifact identity");
+  assertGlfruitArtifactIdentity(report.artifactIdentity || report.package, "canary artifact");
 }
 export function assertCanaryMatchesPack(report, packOutput) {
   if (!report) return;
@@ -139,9 +158,19 @@ export function assertCanaryMatchesPack(report, packOutput) {
       `refusing stale canary report sha256 mismatch: report=${report.sha256} selected=${packOutput.sha256}`,
     );
   }
+  assertGlfruitArtifactIdentity(packOutput, "selected pack artifact");
+  assertGlfruitArtifactIdentity(report.artifactIdentity || report.package, "canary artifact");
+  const reportVersion = report.artifactIdentity?.version || report.package?.version;
+  if (reportVersion !== packOutput.version) {
+    throw new Error(
+      `refusing stale canary report version mismatch: report=${reportVersion || "<missing>"} selected=${packOutput.version || "<missing>"}`,
+    );
+  }
 }
 function assertLiveAllowed(args, report) {
   if (!args.live) return;
+  if (args.allowDirtyForLocalCanary)
+    throw new Error("refusing live promote with --allow-dirty-for-local-canary");
   if (!args.confirmLive) throw new Error("refusing live promote without --confirm-live");
   assertCanaryReportReleaseReady(report);
 }
@@ -155,8 +184,10 @@ async function main(argv = process.argv.slice(2)) {
       "--out-dir",
       args.outDir,
       ...(args.dryRun ? ["--dry-run"] : []),
+      ...(args.allowDirtyForLocalCanary ? ["--allow-dirty-for-local-canary"] : []),
     ]),
   );
+  assertGlfruitArtifactIdentity(packOutput, "selected pack artifact");
   const steps = {
     pack: packOutput,
     ...(externalCanaryReport
@@ -168,6 +199,8 @@ async function main(argv = process.argv.slice(2)) {
             tarball: externalCanaryReport.tarball,
             sha256: externalCanaryReport.sha256,
             packageRoot: externalCanaryReport.packageRoot,
+            package: externalCanaryReport.package,
+            artifactIdentity: externalCanaryReport.artifactIdentity,
             port: externalCanaryReport.isolated?.port,
           },
         }
