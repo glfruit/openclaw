@@ -40,11 +40,19 @@ function makeFakeTarball(
     brokenPlugin?: string;
     statusRpcOk?: boolean;
     healthHealthy?: boolean;
+    healthzStatus?: number;
+    healthzBody?: unknown;
+    readyzStatus?: number;
+    readyzBody?: unknown;
   } = {},
 ) {
   const releaseReady = options.releaseReady ?? true;
   const statusRpcOk = options.statusRpcOk ?? true;
   const healthHealthy = options.healthHealthy ?? true;
+  const healthzStatus = options.healthzStatus ?? 200;
+  const healthzBody = options.healthzBody ?? { ok: true, status: "live" };
+  const readyzStatus = options.readyzStatus ?? 200;
+  const readyzBody = options.readyzBody ?? { ready: true };
   const root = makeTempDir("openclaw-canary-fake-package-");
   const pkg = path.join(root, "package");
   fs.mkdirSync(path.join(pkg, "dist", "plugin-sdk"), { recursive: true });
@@ -94,7 +102,21 @@ export function detectRawJsonExecWrite(command) {
   }
   writeFile(
     path.join(pkg, "openclaw.mjs"),
-    `#!/usr/bin/env node\nimport fs from "node:fs";\nimport net from "node:net";\nconst args = process.argv.slice(2);\nif (process.env.OPENCLAW_CANARY_ENV_DUMP_FILE) fs.writeFileSync(process.env.OPENCLAW_CANARY_ENV_DUMP_FILE, JSON.stringify(process.env, null, 2));\nif (args.includes("status")) { const url = args[args.indexOf("--url") + 1] || ""; const port = Number(new URL(url).port); console.log(JSON.stringify({ok:true,gateway:{port},rpc:{ok:${JSON.stringify(statusRpcOk)},error:${statusRpcOk ? "undefined" : JSON.stringify("device identity required")}},health:{healthy:${JSON.stringify(healthHealthy)},error:${healthHealthy ? "undefined" : JSON.stringify("device identity required")}}})); process.exit(0); }\nconst port = Number(args[args.indexOf("--port") + 1]);\nconst server = net.createServer((socket) => socket.end());\nserver.listen(port, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => process.exit(0)));\n`,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import http from "node:http";
+const args = process.argv.slice(2);
+if (process.env.OPENCLAW_CANARY_ENV_DUMP_FILE) fs.writeFileSync(process.env.OPENCLAW_CANARY_ENV_DUMP_FILE, JSON.stringify(process.env, null, 2));
+if (args.includes("status")) { const url = args[args.indexOf("--url") + 1] || ""; const port = Number(new URL(url).port); console.log(JSON.stringify({ok:true,gateway:{port},rpc:{ok:${JSON.stringify(statusRpcOk)},error:${statusRpcOk ? "undefined" : JSON.stringify("device identity required")}},health:{healthy:${JSON.stringify(healthHealthy)},error:${healthHealthy ? "undefined" : JSON.stringify("device identity required")}}})); process.exit(0); }
+const port = Number(args[args.indexOf("--port") + 1]);
+const server = http.createServer((req, res) => {
+  if (req.url === "/healthz") { res.writeHead(${JSON.stringify(healthzStatus)}, { "content-type": "application/json" }); res.end(${JSON.stringify(JSON.stringify(healthzBody))}); return; }
+  if (req.url === "/readyz") { res.writeHead(${JSON.stringify(readyzStatus)}, { "content-type": "application/json" }); res.end(${JSON.stringify(JSON.stringify(readyzBody))}); return; }
+  res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "not found" }));
+});
+server.listen(port, "127.0.0.1");
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+`,
     0o755,
   );
   const tarball = path.join(root, "glfruit-openclaw-fake.tgz");
@@ -255,7 +277,7 @@ describe("glfruit local canary script", () => {
     expect(report.readinessBlockers).toContain("plugin-load-pkm-vault-skip");
   });
 
-  it("starts the isolated gateway command, labels TCP/RPC semantics, and cleans it up", () => {
+  it("starts the isolated gateway command, labels TCP/healthz+readyz semantics, and cleans it up", () => {
     const { tarball, sha } = makeFakeTarball();
     const reportPath = path.join(makeTempDir(), "report.json");
     const envDump = path.join(makeTempDir(), "gateway-env.json");
@@ -272,11 +294,21 @@ describe("glfruit local canary script", () => {
     expect(report.verdict).toBe("PASS");
     expect(report.started).toBe(true);
     expect(report.gateway.startCommand.join(" ")).toContain("gateway --port");
-    expect(report.gateway.status).toBe("TCP_RPC_READY");
+    expect(report.gateway.status).toBe("TCP_READYZ_READY");
     expect(report.gatewayProcessVerdict).toBe("PASS");
     expect(report.gateway.tcpReady).toBe(true);
-    expect(report.gateway.statusProbe.probeKind).toBe("gateway-status-rpc");
-    expect(report.gateway.rpcReady).toBe(true);
+    expect(report.gateway.statusProbe.probeKind).toBe("gateway-healthz-readyz-local");
+    expect(report.gateway.readinessReady).toBe(true);
+    expect(report.gateway.statusProbe.healthz).toMatchObject({
+      ok: true,
+      statusCode: 200,
+      body: { ok: true, status: "live" },
+    });
+    expect(report.gateway.statusProbe.readyz).toMatchObject({
+      ready: true,
+      statusCode: 200,
+      body: { ready: true },
+    });
     expect(["terminated", "not_running"]).toContain(report.cleanup.status);
     expect(report.isolated.home).not.toBe(os.homedir());
     const childEnv = JSON.parse(fs.readFileSync(envDump, "utf8"));
@@ -286,8 +318,11 @@ describe("glfruit local canary script", () => {
     expect(childEnv.OPENCLAW_LOG_DIR).toBe(report.isolated.logs);
     expect(childEnv.OPENCLAW_CACHE_DIR).toBe(report.isolated.openclawCache);
   });
-  it("blocks release readiness and labels TCP-only when gateway status exits 0 but RPC/health fail", () => {
-    const { tarball, sha } = makeFakeTarball({ statusRpcOk: false, healthHealthy: false });
+  it("blocks release readiness and labels TCP-only when local healthz contract fails", () => {
+    const { tarball, sha } = makeFakeTarball({
+      healthzStatus: 404,
+      healthzBody: { ok: true, status: "live" },
+    });
     const reportPath = path.join(makeTempDir(), "report.json");
     const result = runCanary([
       "--tarball",
@@ -304,16 +339,41 @@ describe("glfruit local canary script", () => {
     expect(report.gateway.status).toBe("TCP_ONLY");
     expect(report.gateway.statusProbe).toMatchObject({
       status: "FAIL",
-      exitCode: 0,
-      rpc: { ok: false, error: "device identity required" },
-      health: { healthy: false, error: "device identity required" },
+      probeKind: "gateway-healthz-readyz-local",
+      healthz: { ok: false, statusCode: 404 },
     });
     expect(report.canaryGatewayVerdict).toBe("FAIL");
     expect(report.releaseReadinessVerdict).toBe("BLOCKED");
     expect(report.verdict).toBe("BLOCKED");
     expect(report.readinessBlockers).toContain("gateway-status-tcp_only");
-    expect(report.readinessBlockers).toContain("gateway-rpc-failed");
-    expect(report.readinessBlockers).toContain("gateway-health-failed");
+    expect(report.readinessBlockers).toContain("gateway-healthz-failed");
+    expect(report.readinessBlockers).toContain("gateway-status-probe-failed");
+  });
+
+  it("blocks release readiness and labels TCP-only when local readyz contract fails", () => {
+    const { tarball, sha } = makeFakeTarball({ readyzStatus: 503, readyzBody: { ready: false } });
+    const reportPath = path.join(makeTempDir(), "report.json");
+    const result = runCanary([
+      "--tarball",
+      tarball,
+      "--sha256",
+      sha,
+      "--timeout-ms",
+      "3000",
+      "--report",
+      reportPath,
+    ]);
+    expect(result.status).not.toBe(0);
+    const report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+    expect(report.gateway.status).toBe("TCP_ONLY");
+    expect(report.gateway.statusProbe).toMatchObject({
+      status: "FAIL",
+      probeKind: "gateway-healthz-readyz-local",
+      healthz: { ok: true, statusCode: 200 },
+      readyz: { ready: false, statusCode: 503 },
+    });
+    expect(report.readinessBlockers).toContain("gateway-status-tcp_only");
+    expect(report.readinessBlockers).toContain("gateway-readyz-failed");
     expect(report.readinessBlockers).toContain("gateway-status-probe-failed");
   });
 

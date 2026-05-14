@@ -85,20 +85,34 @@ export function assertCanaryReportReleaseReady(report) {
     );
   if (report.started !== true)
     throw new Error("refusing live promote without a started canary gateway");
-  if (report.gateway?.status !== "TCP_RPC_READY")
+  if (report.gateway?.status !== "TCP_READYZ_READY")
     throw new Error(
-      `refusing live promote without TCP_RPC_READY canary gateway; got ${report.gateway?.status || "<missing>"}`,
+      `refusing live promote without TCP_READYZ_READY canary gateway; got ${report.gateway?.status || "<missing>"}`,
     );
   if (!report.gateway?.statusProbe)
     throw new Error("refusing live promote without canary gateway status probe");
+  if (report.gateway.statusProbe.probeKind !== "gateway-healthz-readyz-local")
+    throw new Error(
+      `refusing live promote without gateway-healthz-readyz-local canary probe; got ${report.gateway.statusProbe.probeKind || "<missing>"}`,
+    );
   if (report.gateway.statusProbe.status !== "PASS")
     throw new Error(
       `refusing live promote without PASS canary gateway status probe; got ${report.gateway.statusProbe.status || "<missing>"}`,
     );
   if (report.gateway.statusProbe.rpc?.ok === false)
     throw new Error("refusing live promote with failed canary gateway RPC probe");
-  if (report.gateway.statusProbe.health?.healthy === false)
-    throw new Error("refusing live promote with failed canary gateway health probe");
+  const healthz = report.gateway.statusProbe.healthz;
+  const readyz = report.gateway.statusProbe.readyz;
+  if (
+    report.gateway.statusProbe.health?.healthy === false ||
+    healthz?.ok !== true ||
+    healthz?.statusCode !== 200 ||
+    healthz?.body?.ok !== true ||
+    healthz?.body?.status !== "live"
+  )
+    throw new Error("refusing live promote without exact canary /healthz contract");
+  if (readyz?.ready !== true || readyz?.statusCode !== 200 || readyz?.body?.ready !== true)
+    throw new Error("refusing live promote without exact canary /readyz contract");
   if (Array.isArray(report.readinessBlockers) && report.readinessBlockers.length > 0)
     throw new Error(
       `refusing live promote with canary readiness blockers: ${report.readinessBlockers.join(", ")}`,

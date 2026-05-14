@@ -2,9 +2,11 @@
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const SCOPED_NAME = "@glfruit/openclaw";
 const PLUGIN_RUNTIME_EXPORTS = [
@@ -475,7 +477,7 @@ function readinessBlockers(report) {
   if (report.started !== true) blockers.push("gateway-not-started");
   if (report.gateway.status === "SKIP") blockers.push("gateway-status-skipped");
   if (report.gateway.status === "FAIL") blockers.push("gateway-process-failed");
-  if (report.gateway.status !== "TCP_RPC_READY" && report.gateway.status !== "SKIP") {
+  if (report.gateway.status !== "TCP_READYZ_READY" && report.gateway.status !== "SKIP") {
     blockers.push(`gateway-status-${String(report.gateway.status || "missing").toLowerCase()}`);
   }
   const statusProbe = report.gateway?.statusProbe;
@@ -483,7 +485,9 @@ function readinessBlockers(report) {
     blockers.push("gateway-status-probe-missing");
   } else {
     if (statusProbe.rpc?.ok === false) blockers.push("gateway-rpc-failed");
-    if (statusProbe.health?.healthy === false) blockers.push("gateway-health-failed");
+    if (statusProbe.health?.healthy === false || statusProbe.healthz?.ok === false)
+      blockers.push("gateway-healthz-failed");
+    if (statusProbe.readyz?.ready === false) blockers.push("gateway-readyz-failed");
     if (statusProbe.status !== "PASS") blockers.push("gateway-status-probe-failed");
   }
   return [...new Set(blockers)];
@@ -493,54 +497,115 @@ function applyVerdicts(report) {
   const gatewayReady =
     report.started === true &&
     report.gatewayProcessVerdict === "PASS" &&
-    report.gateway.status === "TCP_RPC_READY" &&
+    report.gateway.status === "TCP_READYZ_READY" &&
     report.gateway?.statusProbe?.status === "PASS" &&
-    report.gateway.statusProbe.rpc?.ok !== false &&
-    report.gateway.statusProbe.health?.healthy !== false;
+    report.gateway.statusProbe.probeKind === "gateway-healthz-readyz-local" &&
+    report.gateway.statusProbe.healthz?.ok === true &&
+    report.gateway.statusProbe.readyz?.ready === true;
   report.canaryGatewayVerdict = runtimeOk && gatewayReady ? "PASS" : "FAIL";
   report.readinessBlockers = readinessBlockers(report);
   report.releaseReadinessVerdict = report.readinessBlockers.length === 0 ? "PASS" : "BLOCKED";
   report.verdict = report.releaseReadinessVerdict;
 }
-function gatewayStatusProbe(packageRoot, port, env, timeoutMs) {
-  const bin = path.join(packageRoot, "openclaw.mjs");
-  const result = spawnSync(
-    process.execPath,
-    [
-      bin,
-      "gateway",
-      "status",
-      "--json",
-      "--timeout",
-      String(Math.min(timeoutMs, 10_000)),
-      "--url",
-      `ws://127.0.0.1:${port}`,
-    ],
-    { cwd: packageRoot, env, encoding: "utf8", timeout: Math.min(timeoutMs + 1_000, 12_000) },
-  );
-  const stdout = result.stdout.trim();
-  let parsed = null;
+function parseJsonBody(body) {
   try {
-    parsed = stdout ? JSON.parse(stdout) : null;
-  } catch {
-    parsed = null;
+    return JSON.parse(body);
+  } catch (error) {
+    return { parseError: error instanceof Error ? error.message : String(error) };
   }
-  const portMatches = parsed?.gateway?.port === port;
-  const rpcOk = parsed?.rpc?.ok !== false;
-  const healthOk = parsed?.health?.healthy !== false;
+}
+
+async function requestLocalJson(port, pathname) {
+  return new Promise((resolve) => {
+    const request = http.request(
+      { host: "127.0.0.1", port, path: pathname, method: "GET", timeout: 1_000 },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body = `${body}${chunk}`.slice(0, 8_000);
+        });
+        response.once("end", () => {
+          const statusCode = response.statusCode || 0;
+          const json = parseJsonBody(body);
+          resolve({ statusCode, body: json, rawBody: body });
+        });
+      },
+    );
+    request.once("timeout", () => {
+      request.destroy();
+      resolve({ error: "timeout" });
+    });
+    request.once("error", (error) => {
+      resolve({ error: error.message });
+    });
+    request.end();
+  });
+}
+
+function summarizeHealthz(attempt) {
+  const ok =
+    attempt.statusCode === 200 && attempt.body?.ok === true && attempt.body?.status === "live";
   return {
-    status: result.status === 0 && portMatches && rpcOk && healthOk ? "PASS" : "FAIL",
-    exitCode: result.status,
-    portMatches,
-    rpc: parsed?.rpc ? { ok: parsed.rpc.ok, error: parsed.rpc.error } : undefined,
-    health: parsed?.health
-      ? { healthy: parsed.health.healthy, error: parsed.health.error }
-      : undefined,
-    probeKind: "gateway-status-rpc",
-    stdout: stdout.slice(0, 8_000),
-    stderr: result.stderr.trim().slice(0, 8_000),
+    ok,
+    statusCode: attempt.statusCode,
+    body: attempt.body,
+    error: attempt.error,
   };
 }
+
+function summarizeReadyz(attempt) {
+  const ready = attempt.statusCode === 200 && attempt.body?.ready === true;
+  return {
+    ready,
+    statusCode: attempt.statusCode,
+    body: attempt.body,
+    error: attempt.error,
+  };
+}
+
+async function gatewayLocalHealthzReadyzProbe(port, timeoutMs) {
+  const startedAt = Date.now();
+  let lastHealthz = null;
+  let lastReadyz = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    lastHealthz = summarizeHealthz(await requestLocalJson(port, "/healthz"));
+    lastReadyz = summarizeReadyz(await requestLocalJson(port, "/readyz"));
+    if (lastHealthz.ok && lastReadyz.ready) {
+      return {
+        status: "PASS",
+        probeKind: "gateway-healthz-readyz-local",
+        healthz: lastHealthz,
+        readyz: lastReadyz,
+        health: { healthy: true, statusCode: lastHealthz.statusCode, body: lastHealthz.body },
+        urls: {
+          healthz: `http://127.0.0.1:${port}/healthz`,
+          readyz: `http://127.0.0.1:${port}/readyz`,
+        },
+        waitedMs: Date.now() - startedAt,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return {
+    status: "FAIL",
+    probeKind: "gateway-healthz-readyz-local",
+    healthz: lastHealthz || { ok: false, error: "timeout" },
+    readyz: lastReadyz || { ready: false, error: "timeout" },
+    health: {
+      healthy: false,
+      statusCode: lastHealthz?.statusCode,
+      body: lastHealthz?.body,
+      error: lastHealthz?.error,
+    },
+    urls: {
+      healthz: `http://127.0.0.1:${port}/healthz`,
+      readyz: `http://127.0.0.1:${port}/readyz`,
+    },
+    waitedMs: Date.now() - startedAt,
+  };
+}
+
 async function stopChild(child, timeoutMs = 5_000) {
   if (!child || child.exitCode !== null)
     return { status: "not_running", exitCode: child?.exitCode ?? null };
@@ -672,16 +737,11 @@ async function runCanary(args) {
     report.started = true;
     report.gateway.tcp = await waitForTcp(port, args.timeoutMs, child);
     report.gateway.tcpReady = report.gateway.tcp.status === "PASS";
-    report.gateway.statusProbe = gatewayStatusProbe(
-      installed.packageRoot,
-      port,
-      env,
-      args.timeoutMs,
-    );
-    report.gateway.rpcReady = report.gateway.statusProbe.status === "PASS";
+    report.gateway.statusProbe = await gatewayLocalHealthzReadyzProbe(port, args.timeoutMs);
+    report.gateway.readinessReady = report.gateway.statusProbe.status === "PASS";
     report.gateway.status = report.gateway.tcpReady
-      ? report.gateway.rpcReady
-        ? "TCP_RPC_READY"
+      ? report.gateway.readinessReady
+        ? "TCP_READYZ_READY"
         : "TCP_ONLY"
       : "FAIL";
     report.gatewayProcessVerdict = report.gateway.tcpReady ? "PASS" : "FAIL";
@@ -696,13 +756,17 @@ async function runCanary(args) {
   }
 }
 
-try {
-  const args = parseArgs(process.argv.slice(2));
-  const report = await runCanary(args);
-  const reportPath = args.report || path.join(report.isolated.root, "canary-report.json");
-  fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
-  console.log(JSON.stringify({ ...report, reportPath }, null, 2));
-  if (report.verdict !== "PASS") process.exit(1);
-} catch (error) {
-  fail(error instanceof Error ? error.message : String(error));
+export { gatewayLocalHealthzReadyzProbe, runCanary };
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    const args = parseArgs(process.argv.slice(2));
+    const report = await runCanary(args);
+    const reportPath = args.report || path.join(report.isolated.root, "canary-report.json");
+    fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    console.log(JSON.stringify({ ...report, reportPath }, null, 2));
+    if (report.verdict !== "PASS") process.exit(1);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
 }

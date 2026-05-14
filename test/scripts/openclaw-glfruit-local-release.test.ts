@@ -7,9 +7,11 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { gatewayLocalHealthzReadyzProbe } from "../../scripts/canary-openclaw-local-release.mjs";
 import {
   assertCanaryMatchesPack,
   assertCanaryReportReleaseReady,
@@ -35,6 +37,34 @@ function withTemp(body: (dir: string) => void) {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function withHttpServer(
+  routes: Record<string, { statusCode: number; body: unknown }>,
+  body: (port: number) => Promise<void>,
+): Promise<void> {
+  const server = createServer((request, response) => {
+    const route = routes[request.url || ""];
+    if (route) {
+      response.writeHead(route.statusCode, { "content-type": "application/json" });
+      response.end(JSON.stringify(route.body));
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  return new Promise((resolve, reject) => {
+    server.listen(0, "127.0.0.1", async () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      try {
+        await body(port);
+        server.close((error) => (error ? reject(error) : resolve()));
+      } catch (error) {
+        server.close(() => reject(error));
+      }
+    });
+  });
 }
 
 function withDirtyTrackedPackageFile(body: () => void) {
@@ -335,6 +365,74 @@ describe("glfruit local release scripts", () => {
     expect(execute.stderr).toContain("stop-gated");
   });
 
+  it("canary local healthz+readyz probe passes only exact gateway contracts", async () => {
+    await withHttpServer(
+      {
+        "/healthz": { statusCode: 200, body: { ok: true, status: "live" } },
+        "/readyz": { statusCode: 200, body: { ready: true } },
+      },
+      async (port) => {
+        const probe = await gatewayLocalHealthzReadyzProbe(port, 1_000);
+        expect(probe.status).toBe("PASS");
+        expect(probe.probeKind).toBe("gateway-healthz-readyz-local");
+        expect(probe.healthz).toMatchObject({ ok: true, statusCode: 200 });
+        expect(probe.readyz).toMatchObject({ ready: true, statusCode: 200 });
+      },
+    );
+  });
+
+  it("canary local healthz+readyz probe rejects 4xx and non-gateway healthz bodies", async () => {
+    await withHttpServer(
+      {
+        "/healthz": { statusCode: 404, body: { ok: true, status: "live" } },
+        "/readyz": { statusCode: 200, body: { ready: true } },
+      },
+      async (port) => {
+        const probe = await gatewayLocalHealthzReadyzProbe(port, 300);
+        expect(probe.status).toBe("FAIL");
+        expect(probe.healthz).toMatchObject({ ok: false, statusCode: 404 });
+      },
+    );
+
+    await withHttpServer(
+      {
+        "/healthz": { statusCode: 200, body: { ok: true, status: "wrong" } },
+        "/readyz": { statusCode: 200, body: { ready: true } },
+      },
+      async (port) => {
+        const probe = await gatewayLocalHealthzReadyzProbe(port, 300);
+        expect(probe.status).toBe("FAIL");
+        expect(probe.healthz).toMatchObject({ ok: false, statusCode: 200 });
+      },
+    );
+  });
+
+  it("canary local healthz+readyz probe rejects readyz 503 or ready false", async () => {
+    await withHttpServer(
+      {
+        "/healthz": { statusCode: 200, body: { ok: true, status: "live" } },
+        "/readyz": { statusCode: 503, body: { ready: false } },
+      },
+      async (port) => {
+        const probe = await gatewayLocalHealthzReadyzProbe(port, 300);
+        expect(probe.status).toBe("FAIL");
+        expect(probe.readyz).toMatchObject({ ready: false, statusCode: 503 });
+      },
+    );
+
+    await withHttpServer(
+      {
+        "/healthz": { statusCode: 200, body: { ok: true, status: "live" } },
+        "/readyz": { statusCode: 200, body: { ready: false } },
+      },
+      async (port) => {
+        const probe = await gatewayLocalHealthzReadyzProbe(port, 300);
+        expect(probe.status).toBe("FAIL");
+        expect(probe.readyz).toMatchObject({ ready: false, statusCode: 200 });
+      },
+    );
+  });
+
   it("canary records isolated dirs and refuses live credentials by default", () => {
     withTemp((dir) => {
       const tarball = writePackageTarball(dir, validPackageJson, validFiles);
@@ -438,6 +536,7 @@ describe("promote live gate report binding", () => {
         gateway: {
           status: "TCP_ONLY",
           statusProbe: {
+            probeKind: "gateway-healthz-readyz-local",
             status: "FAIL",
             exitCode: 0,
             rpc: { ok: false, error: "device identity required" },
@@ -446,7 +545,7 @@ describe("promote live gate report binding", () => {
         },
         started: true,
       }),
-    ).toThrow("TCP_RPC_READY canary gateway");
+    ).toThrow("TCP_READYZ_READY canary gateway");
 
     expect(() =>
       assertCanaryReportReleaseReady({
@@ -455,7 +554,26 @@ describe("promote live gate report binding", () => {
         releaseReadinessVerdict: "PASS",
         tarball: "/tmp/selected.tgz",
         sha256: "b",
-        gateway: { status: "TCP_RPC_READY" },
+        gateway: {
+          status: "TCP_HEALTHZ_READY",
+          statusProbe: {
+            probeKind: "gateway-healthz-local",
+            status: "PASS",
+            health: { healthy: true },
+          },
+        },
+        started: true,
+      }),
+    ).toThrow("TCP_READYZ_READY canary gateway");
+
+    expect(() =>
+      assertCanaryReportReleaseReady({
+        verdict: "PASS",
+        canaryGatewayVerdict: "PASS",
+        releaseReadinessVerdict: "PASS",
+        tarball: "/tmp/selected.tgz",
+        sha256: "b",
+        gateway: { status: "TCP_READYZ_READY" },
         started: true,
       }),
     ).toThrow("gateway status probe");
@@ -468,8 +586,9 @@ describe("promote live gate report binding", () => {
         tarball: "/tmp/selected.tgz",
         sha256: "b",
         gateway: {
-          status: "TCP_RPC_READY",
+          status: "TCP_READYZ_READY",
           statusProbe: {
+            probeKind: "gateway-healthz-readyz-local",
             status: "FAIL",
             exitCode: 0,
             rpc: { ok: false, error: "device identity required" },
@@ -488,8 +607,9 @@ describe("promote live gate report binding", () => {
         tarball: "/tmp/selected.tgz",
         sha256: "b",
         gateway: {
-          status: "TCP_RPC_READY",
+          status: "TCP_READYZ_READY",
           statusProbe: {
+            probeKind: "gateway-healthz-readyz-local",
             status: "PASS",
             exitCode: 0,
             rpc: { ok: false, error: "device identity required" },
@@ -508,8 +628,9 @@ describe("promote live gate report binding", () => {
         tarball: "/tmp/selected.tgz",
         sha256: "b",
         gateway: {
-          status: "TCP_RPC_READY",
+          status: "TCP_READYZ_READY",
           statusProbe: {
+            probeKind: "gateway-healthz-readyz-local",
             status: "PASS",
             exitCode: 0,
             rpc: { ok: true },
@@ -518,7 +639,7 @@ describe("promote live gate report binding", () => {
         },
         started: true,
       }),
-    ).toThrow("failed canary gateway health probe");
+    ).toThrow("exact canary /healthz contract");
 
     expect(() =>
       assertCanaryReportReleaseReady({
@@ -528,8 +649,75 @@ describe("promote live gate report binding", () => {
         tarball: "/tmp/selected.tgz",
         sha256: "b",
         gateway: {
-          status: "TCP_RPC_READY",
-          statusProbe: { status: "PASS", rpc: { ok: true }, health: { healthy: true } },
+          status: "TCP_READYZ_READY",
+          statusProbe: {
+            probeKind: "gateway-healthz-readyz-local",
+            status: "PASS",
+            healthz: { ok: true, statusCode: 404, body: { ok: true, status: "live" } },
+            readyz: { ready: true, statusCode: 200, body: { ready: true } },
+          },
+        },
+        started: true,
+      }),
+    ).toThrow("exact canary /healthz contract");
+
+    expect(() =>
+      assertCanaryReportReleaseReady({
+        verdict: "PASS",
+        canaryGatewayVerdict: "PASS",
+        releaseReadinessVerdict: "PASS",
+        tarball: "/tmp/selected.tgz",
+        sha256: "b",
+        gateway: {
+          status: "TCP_READYZ_READY",
+          statusProbe: {
+            probeKind: "gateway-healthz-readyz-local",
+            status: "PASS",
+            healthz: { ok: true, statusCode: 200, body: { ok: true, status: "wrong" } },
+            readyz: { ready: true, statusCode: 200, body: { ready: true } },
+          },
+        },
+        started: true,
+      }),
+    ).toThrow("exact canary /healthz contract");
+
+    expect(() =>
+      assertCanaryReportReleaseReady({
+        verdict: "PASS",
+        canaryGatewayVerdict: "PASS",
+        releaseReadinessVerdict: "PASS",
+        tarball: "/tmp/selected.tgz",
+        sha256: "b",
+        gateway: {
+          status: "TCP_READYZ_READY",
+          statusProbe: {
+            probeKind: "gateway-healthz-readyz-local",
+            status: "PASS",
+            healthz: { ok: true, statusCode: 200, body: { ok: true, status: "live" } },
+            readyz: { ready: false, statusCode: 200, body: { ready: false } },
+          },
+        },
+        started: true,
+      }),
+    ).toThrow("exact canary /readyz contract");
+
+    expect(() =>
+      assertCanaryReportReleaseReady({
+        verdict: "PASS",
+        canaryGatewayVerdict: "PASS",
+        releaseReadinessVerdict: "PASS",
+        tarball: "/tmp/selected.tgz",
+        sha256: "b",
+        gateway: {
+          status: "TCP_READYZ_READY",
+          statusProbe: {
+            status: "PASS",
+            probeKind: "gateway-healthz-readyz-local",
+            rpc: { ok: true },
+            health: { healthy: true },
+            healthz: { ok: true, statusCode: 200, body: { ok: true, status: "live" } },
+            readyz: { ready: true, statusCode: 200, body: { ready: true } },
+          },
         },
         started: true,
         readinessBlockers: ["gateway-status-skipped"],
@@ -544,8 +732,15 @@ describe("promote live gate report binding", () => {
         tarball: "/tmp/selected.tgz",
         sha256: "b",
         gateway: {
-          status: "TCP_RPC_READY",
-          statusProbe: { status: "PASS", rpc: { ok: true }, health: { healthy: true } },
+          status: "TCP_READYZ_READY",
+          statusProbe: {
+            status: "PASS",
+            probeKind: "gateway-healthz-readyz-local",
+            rpc: { ok: true },
+            health: { healthy: true },
+            healthz: { ok: true, statusCode: 200, body: { ok: true, status: "live" } },
+            readyz: { ready: true, statusCode: 200, body: { ready: true } },
+          },
         },
         started: true,
         artifactIdentity: { dirtySource: { dirty: true } },
