@@ -38,6 +38,7 @@ const MIN_POLL_STALL_THRESHOLD_MS = 30_000;
 const MAX_POLL_STALL_THRESHOLD_MS = 600_000;
 const POLL_WATCHDOG_INTERVAL_MS = 30_000;
 const POLL_STOP_GRACE_MS = 15_000;
+const WEBHOOK_CLEANUP_MAX_RECOVERABLE_RETRIES = 3;
 const TELEGRAM_POLLING_CLIENT_TIMEOUT_FLOOR_SECONDS = Math.ceil(
   TELEGRAM_GET_UPDATES_REQUEST_TIMEOUT_MS / 1000,
 );
@@ -111,6 +112,7 @@ export class TelegramPollingSession {
   #transportState: TelegramPollingTransportState;
   #status: ReturnType<typeof createTelegramPollingStatusPublisher>;
   #stallThresholdMs: number;
+  #webhookCleanupRecoverableFailures = 0;
 
   constructor(private readonly opts: TelegramPollingSessionOpts) {
     this.#transportState = new TelegramPollingTransportState({
@@ -242,6 +244,7 @@ export class TelegramPollingSession {
         fn: () => bot.api.deleteWebhook({ drop_pending_updates: false }),
       });
       this.#webhookCleared = true;
+      this.#webhookCleanupRecoverableFailures = 0;
       return "ready";
     } catch (err) {
       if (isRecoverableTelegramNetworkError(err, { context: "unknown" })) {
@@ -250,9 +253,20 @@ export class TelegramPollingSession {
         );
         return "ready";
       }
-      const shouldRetry = await this.#waitBeforeRetryOnRecoverableSetupError(
-        err,
-        "Telegram webhook cleanup failed",
+      if (!isRecoverableTelegramNetworkError(err, { context: "unknown" })) {
+        throw err;
+      }
+      this.#webhookCleanupRecoverableFailures += 1;
+      if (this.#webhookCleanupRecoverableFailures >= WEBHOOK_CLEANUP_MAX_RECOVERABLE_RETRIES) {
+        this.#webhookCleared = true;
+        this.opts.log(
+          `Telegram webhook cleanup failed after ${this.#webhookCleanupRecoverableFailures} recoverable attempt(s): ${formatErrorMessage(err)}; continuing with polling.`,
+        );
+        return "ready";
+      }
+      const shouldRetry = await this.#waitBeforeRestart(
+        (delay) =>
+          `Telegram webhook cleanup failed: ${formatErrorMessage(err)}; retrying in ${delay}.`,
       );
       return shouldRetry ? "retry" : "exit";
     }
