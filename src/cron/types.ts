@@ -171,7 +171,7 @@ export type CronFailureAlert = {
 
 export type CronCommandPayload = {
   kind: "command";
-  /** Absolute path to the executable. */
+  /** Absolute executable path, PATH-resolved executable name, or legacy command line. */
   command: string;
   /** Arguments passed to the command. */
   args?: string[];
@@ -188,7 +188,7 @@ export type CronCommandPayload = {
   /** If set, extract the first matching group/line from stdout as the summary. */
   summaryRegex?: string;
   /** How to produce the summary from stdout. Default: "lastLine". */
-  outputMode?: "lastLine" | "stdout" | "json";
+  outputMode?: "lastLine" | "stdout" | "json" | "summary";
 };
 
 export type CronPayload =
@@ -206,7 +206,7 @@ export type CronCommandPayloadPatch = {
   successRegex?: string;
   failureRegex?: string;
   summaryRegex?: string;
-  outputMode?: "lastLine" | "stdout" | "json";
+  outputMode?: "lastLine" | "stdout" | "json" | "summary";
 };
 
 export type CronPayloadPatch =
