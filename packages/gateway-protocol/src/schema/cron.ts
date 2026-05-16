@@ -208,7 +208,12 @@ export const CronPayloadSchema = Type.Union([
       failureRegex: Type.Optional(Type.String()),
       summaryRegex: Type.Optional(Type.String()),
       outputMode: Type.Optional(
-        Type.Union([Type.Literal("lastLine"), Type.Literal("stdout"), Type.Literal("json")]),
+        Type.Union([
+          Type.Literal("lastLine"),
+          Type.Literal("stdout"),
+          Type.Literal("json"),
+          Type.Literal("summary"),
+        ]),
       ),
     },
     { additionalProperties: false },
@@ -239,7 +244,12 @@ export const CronPayloadPatchSchema = Type.Union([
       failureRegex: Type.Optional(Type.String()),
       summaryRegex: Type.Optional(Type.String()),
       outputMode: Type.Optional(
-        Type.Union([Type.Literal("lastLine"), Type.Literal("stdout"), Type.Literal("json")]),
+        Type.Union([
+          Type.Literal("lastLine"),
+          Type.Literal("stdout"),
+          Type.Literal("json"),
+          Type.Literal("summary"),
+        ]),
       ),
     },
     { additionalProperties: false },

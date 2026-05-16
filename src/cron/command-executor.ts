@@ -5,24 +5,19 @@ import type { CronCommandPayload, CronRunOutcome } from "./types.js";
 /** Maximum stdout+stderr bytes captured (128 KiB). */
 const MAX_OUTPUT_BYTES = 128 * 1024;
 
+type CommandInvocation = {
+  command: string;
+  args: string[];
+};
+
 /**
  * Validate a command payload before execution.
  * Returns an error string if invalid, or undefined if valid.
  */
 export function validateCommandPayload(payload: CronCommandPayload): string | undefined {
-  if (!payload.command) {
-    return "command payload requires a non-empty command";
-  }
-
-  // Reject non-absolute paths
-  if (!path.isAbsolute(payload.command)) {
-    return `command must be an absolute path, got: ${payload.command}`;
-  }
-
-  if (payload.args !== undefined) {
-    if (!Array.isArray(payload.args) || !payload.args.every((a) => typeof a === "string")) {
-      return "args must be a string array";
-    }
+  const resolved = resolveCommandInvocation(payload);
+  if (typeof resolved === "string") {
+    return resolved;
   }
 
   // Validate regex fields compile
@@ -52,6 +47,7 @@ export async function executeCommandPayload(
   if (validationError) {
     return { status: "error", error: validationError };
   }
+  const invocation = resolveCommandInvocation(payload) as CommandInvocation;
 
   const timeoutMs = payload.timeoutSeconds != null ? payload.timeoutSeconds * 1000 : undefined;
 
@@ -67,7 +63,7 @@ export async function executeCommandPayload(
     let stdoutBytes = 0;
     let stderrBytes = 0;
 
-    const proc = spawn(payload.command, payload.args ?? [], {
+    const proc = spawn(invocation.command, invocation.args, {
       cwd: payload.cwd,
       env,
       shell: false,
@@ -228,6 +224,7 @@ function buildSummary(stdout: string, payload: CronCommandPayload): string {
       // Fallback to lastLine
       break;
     }
+    case "summary":
     case "lastLine":
     default:
       break;
@@ -242,4 +239,112 @@ function buildSummary(stdout: string, payload: CronCommandPayload): string {
     }
   }
   return "";
+}
+
+function resolveCommandInvocation(payload: CronCommandPayload): CommandInvocation | string {
+  if (!payload.command || !payload.command.trim()) {
+    return "command payload requires a non-empty command";
+  }
+
+  if (payload.args !== undefined) {
+    if (!Array.isArray(payload.args) || !payload.args.every((a) => typeof a === "string")) {
+      return "args must be a string array";
+    }
+    const command = payload.command.trim();
+    if (/\s/.test(command)) {
+      return "command executable must not contain whitespace when args are provided";
+    }
+    const executableError = validateCommandExecutable(command);
+    if (executableError) {
+      return executableError;
+    }
+    return { command, args: payload.args };
+  }
+
+  const split = splitCommandLine(payload.command);
+  if (typeof split === "string") {
+    return split;
+  }
+  if (split.length === 0) {
+    return "command payload requires a non-empty command";
+  }
+
+  const [command, ...args] = split;
+  const executableError = validateCommandExecutable(command);
+  if (executableError) {
+    return executableError;
+  }
+  return { command, args };
+}
+
+function validateCommandExecutable(command: string): string | undefined {
+  if (path.isAbsolute(command)) {
+    return undefined;
+  }
+  if (command.includes("/")) {
+    return `command executable must be an absolute path or PATH-resolved name, got: ${command}`;
+  }
+  return undefined;
+}
+
+function splitCommandLine(input: string): string[] | string {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let tokenStarted = false;
+
+  for (const ch of input.trim()) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (ch === "\\" && quote !== "'") {
+      escaped = true;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (quote) {
+      if (ch === quote) {
+        quote = undefined;
+      } else {
+        current += ch;
+      }
+      tokenStarted = true;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      tokenStarted = true;
+      continue;
+    }
+
+    if (/\s/.test(ch)) {
+      if (tokenStarted) {
+        tokens.push(current);
+        current = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+
+    current += ch;
+    tokenStarted = true;
+  }
+
+  if (escaped) {
+    return "command contains a trailing escape";
+  }
+  if (quote) {
+    return `command contains an unterminated ${quote === "'" ? "single" : "double"} quote`;
+  }
+  if (tokenStarted) {
+    tokens.push(current);
+  }
+  return tokens;
 }
