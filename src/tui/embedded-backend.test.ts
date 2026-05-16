@@ -3,6 +3,7 @@ import { isEmbeddedMode, setEmbeddedMode } from "../infra/embedded-mode.js";
 import { defaultRuntime } from "../runtime.js";
 
 const agentCommandFromIngressMock = vi.fn();
+const appendAssistantMessageToSessionTranscriptMock = vi.fn();
 let registeredListener: ((evt: unknown) => void) | undefined;
 const embeddedEventTimestamp = Date.parse("2026-05-09T07:26:00.000Z");
 
@@ -29,6 +30,11 @@ vi.mock("../config/sessions.js", () => ({
   resolveAgentMainSessionKey: () => "agent:main:main",
   resolveStorePath: () => "/tmp/openclaw-sessions.json",
   updateSessionStore: vi.fn(),
+}));
+
+vi.mock("../config/sessions/transcript.js", () => ({
+  appendAssistantMessageToSessionTranscript: (...args: unknown[]) =>
+    appendAssistantMessageToSessionTranscriptMock(...args),
 }));
 
 vi.mock("../agents/agent-scope.js", () => ({
@@ -139,6 +145,12 @@ describe("EmbeddedTuiBackend", () => {
     vi.useFakeTimers();
     vi.setSystemTime(embeddedEventTimestamp);
     agentCommandFromIngressMock.mockReset();
+    appendAssistantMessageToSessionTranscriptMock.mockReset();
+    appendAssistantMessageToSessionTranscriptMock.mockResolvedValue({
+      ok: true,
+      sessionFile: "/tmp/session.jsonl",
+      messageId: "marker",
+    });
     registeredListener = undefined;
     setEmbeddedMode(false);
     defaultRuntime.log = originalRuntimeLog;
@@ -634,6 +646,56 @@ describe("EmbeddedTuiBackend", () => {
     } finally {
       backend.stop();
     }
+  });
+
+  it("aborts stalled embedded runs and emits a visible timeout marker", async () => {
+    const { EmbeddedTuiBackend } = await import("./embedded-backend.js");
+    let capturedSignal: AbortSignal | undefined;
+    agentCommandFromIngressMock.mockImplementationOnce((opts: { abortSignal?: AbortSignal }) => {
+      capturedSignal = opts.abortSignal;
+      return new Promise((_, reject) => {
+        opts.abortSignal?.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
+      });
+    });
+
+    const backend = new EmbeddedTuiBackend();
+    const events: Array<{ event: string; payload: unknown }> = [];
+    backend.onEvent = (evt) => {
+      events.push({ event: evt.event, payload: evt.payload });
+    };
+
+    backend.start();
+    await backend.sendChat({
+      sessionKey: "agent:main:main",
+      message: "stall forever",
+      runId: "run-idle-timeout",
+      timeoutMs: 40,
+    });
+
+    await vi.advanceTimersByTimeAsync(40);
+    await flushMicrotasks();
+
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(events).toContainEqual({
+      event: "chat",
+      payload: {
+        runId: "run-idle-timeout",
+        sessionKey: "agent:main:main",
+        state: "error",
+        errorMessage:
+          "OpenClaw aborted this embedded run after 1s without progress. Please retry the request.",
+      },
+    });
+    expect(appendAssistantMessageToSessionTranscriptMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        idempotencyKey: "embedded-run-idle-timeout:run-idle-timeout",
+        text: "OpenClaw aborted this embedded run after 1s without progress. Please retry the request.",
+      }),
+    );
   });
 
   it("restores embedded mode and runtime loggers on stop", async () => {

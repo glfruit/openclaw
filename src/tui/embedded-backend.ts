@@ -6,6 +6,7 @@ import { buildAllowedModelSet, resolveThinkingDefault } from "../agents/model-se
 import { createDefaultDeps } from "../cli/deps.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { updateSessionStore } from "../config/sessions.js";
+import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import {
   projectRecentChatDisplayMessages,
   resolveEffectiveChatHistoryMaxChars,
@@ -61,6 +62,9 @@ type LocalRunState = {
   controller: AbortController;
   buffer: string;
   lastBroadcastText?: string;
+  lastProgressAt: number;
+  idleTimeoutMs?: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
   isBtw: boolean;
   question?: string;
   finalSent: boolean;
@@ -68,6 +72,7 @@ type LocalRunState = {
 };
 
 const LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000;
+const DEFAULT_EMBEDDED_RUN_IDLE_TIMEOUT_MS = 10 * 60_000;
 
 const silentRuntime = {
   log: (..._args: unknown[]) => undefined,
@@ -105,6 +110,20 @@ function timeoutSecondsFromMs(timeoutMs?: number): string | undefined {
     return undefined;
   }
   return String(Math.max(0, Math.ceil(timeoutMs / 1000)));
+}
+
+function embeddedRunIdleTimeoutMs(timeoutMs?: number): number | undefined {
+  if (timeoutMs === 0) {
+    return undefined;
+  }
+  if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    return Math.max(1, Math.min(Math.floor(timeoutMs), DEFAULT_EMBEDDED_RUN_IDLE_TIMEOUT_MS));
+  }
+  return DEFAULT_EMBEDDED_RUN_IDLE_TIMEOUT_MS;
+}
+
+function formatDurationSeconds(ms: number): string {
+  return `${String(Math.max(1, Math.round(ms / 1000)))}s`;
 }
 
 function resolveDeltaPayload(text: string, previousText: string | undefined) {
@@ -178,11 +197,14 @@ export class EmbeddedTuiBackend implements TuiBackend {
       sessionKey: opts.sessionKey,
       controller,
       buffer: "",
+      lastProgressAt: Date.now(),
+      idleTimeoutMs: embeddedRunIdleTimeoutMs(opts.timeoutMs),
       isBtw: Boolean(question),
       question,
       finalSent: false,
       registered: false,
     });
+    this.refreshRunIdleWatchdog(runId);
 
     void this.runTurn({
       runId,
@@ -389,6 +411,61 @@ export class EmbeddedTuiBackend implements TuiBackend {
     this.pendingLifecycleErrors.clear();
   }
 
+  private clearRunIdleWatchdog(run: LocalRunState) {
+    if (!run.idleTimer) {
+      return;
+    }
+    clearTimeout(run.idleTimer);
+    run.idleTimer = undefined;
+  }
+
+  private refreshRunIdleWatchdog(runId: string) {
+    const run = this.runs.get(runId);
+    if (!run?.idleTimeoutMs || run.finalSent) {
+      return;
+    }
+    this.clearRunIdleWatchdog(run);
+    run.idleTimer = setTimeout(() => {
+      void this.handleRunIdleTimeout(runId);
+    }, run.idleTimeoutMs);
+    run.idleTimer.unref?.();
+  }
+
+  private async handleRunIdleTimeout(runId: string) {
+    const run = this.runs.get(runId);
+    if (!run?.idleTimeoutMs || run.finalSent) {
+      return;
+    }
+    const idleMs = Date.now() - run.lastProgressAt;
+    if (idleMs < run.idleTimeoutMs) {
+      this.refreshRunIdleWatchdog(runId);
+      return;
+    }
+    const message = `OpenClaw aborted this embedded run after ${formatDurationSeconds(
+      idleMs,
+    )} without progress. Please retry the request.`;
+    run.controller.abort();
+    this.emitChatError(runId, run, message);
+    await this.persistRunAbortMarker(runId, run, message);
+  }
+
+  private async persistRunAbortMarker(runId: string, run: LocalRunState, message: string) {
+    try {
+      const cfg = getRuntimeConfig();
+      const agentId = resolveSessionAgentId({ sessionKey: run.sessionKey, config: cfg });
+      await appendAssistantMessageToSessionTranscript({
+        agentId,
+        sessionKey: run.sessionKey,
+        text: message,
+        idempotencyKey: `embedded-run-idle-timeout:${runId}`,
+        updateMode: "inline",
+        config: cfg,
+      });
+    } catch {
+      // Best-effort marker only; the live error event is still emitted above.
+    }
+  }
+
   private scheduleChatError(runId: string, run: LocalRunState, errorMessage?: string) {
     this.clearPendingLifecycleError(runId);
     const timer = setTimeout(() => {
@@ -428,6 +505,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   private emitChatFinal(runId: string, run: LocalRunState, stopReason?: string) {
     this.clearPendingLifecycleError(runId);
+    this.clearRunIdleWatchdog(run);
     if (run.finalSent) {
       return;
     }
@@ -458,6 +536,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   private emitChatAborted(runId: string, run: LocalRunState) {
     this.clearPendingLifecycleError(runId);
+    this.clearRunIdleWatchdog(run);
     if (run.finalSent) {
       return;
     }
@@ -473,6 +552,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
   private emitChatError(runId: string, run: LocalRunState, errorMessage?: string) {
     this.clearPendingLifecycleError(runId);
+    this.clearRunIdleWatchdog(run);
     if (run.finalSent) {
       return;
     }
@@ -511,6 +591,8 @@ export class EmbeddedTuiBackend implements TuiBackend {
     if (!run) {
       return;
     }
+    run.lastProgressAt = Date.now();
+    this.refreshRunIdleWatchdog(evt.runId);
 
     const lifecyclePhase =
       evt.stream === "lifecycle" && typeof evt.data?.phase === "string" ? evt.data.phase : "";
@@ -647,6 +729,10 @@ export class EmbeddedTuiBackend implements TuiBackend {
       const errorMessage = error instanceof Error ? error.message : String(error);
       this.emitChatError(params.runId, run, errorMessage);
     } finally {
+      const run = this.runs.get(params.runId);
+      if (run) {
+        this.clearRunIdleWatchdog(run);
+      }
       this.runs.delete(params.runId);
     }
   }
