@@ -9,11 +9,19 @@ describe("validateCommandPayload", () => {
   });
 
   it("rejects relative command path", () => {
-    expect(validateCommandPayload({ kind: "command", command: "echo" })).toMatch(/absolute path/i);
+    expect(validateCommandPayload({ kind: "command", command: "./echo" })).toMatch(
+      /absolute path|PATH-resolved name/i,
+    );
   });
 
   it("accepts valid absolute path", () => {
     expect(validateCommandPayload({ kind: "command", command: "/usr/bin/echo" })).toBeUndefined();
+  });
+
+  it("accepts PATH-resolved command names", () => {
+    expect(
+      validateCommandPayload({ kind: "command", command: "uv run python script.py" }),
+    ).toBeUndefined();
   });
 
   it("accepts valid payload with all optional fields", () => {
@@ -28,7 +36,7 @@ describe("validateCommandPayload", () => {
         successRegex: "^OK",
         failureRegex: "^ERR",
         summaryRegex: "^SUMMARY:(.+)",
-        outputMode: "lastLine",
+        outputMode: "summary",
       }),
     ).toBeUndefined();
   });
@@ -159,13 +167,31 @@ describe("executeCommandPayload", () => {
     expect(result.summary).toContain("b");
   });
 
-  it("returns validation error for non-absolute command", async () => {
+  it("executes legacy command strings without shell expansion", async () => {
     const result = await executeCommandPayload({
       kind: "command",
-      command: "echo",
+      command: `${NODE} -e "console.log('LEGACY_OK')"`,
+    });
+    expect(result.status).toBe("ok");
+    expect(result.summary).toBe("LEGACY_OK");
+  });
+
+  it("parses quoted legacy command arguments", async () => {
+    const result = await executeCommandPayload({
+      kind: "command",
+      command: `${NODE} -e "console.log(process.argv[1])" "quoted value"`,
+    });
+    expect(result.status).toBe("ok");
+    expect(result.summary).toBe("quoted value");
+  });
+
+  it("returns validation error for relative command paths", async () => {
+    const result = await executeCommandPayload({
+      kind: "command",
+      command: "./echo",
     });
     expect(result.status).toBe("error");
-    expect(result.error).toMatch(/absolute path/);
+    expect(result.error).toMatch(/absolute path|PATH-resolved name/);
   });
 
   it("returns spawn error for non-existent command", async () => {
