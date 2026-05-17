@@ -1,9 +1,13 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type {
   TelegramAccountConfig,
   TelegramDirectConfig,
   TelegramGroupConfig,
   TelegramTopicConfig,
 } from "openclaw/plugin-sdk/config-contracts";
+import { resolveStateDir } from "openclaw/plugin-sdk/state-paths";
 
 type TelegramErrorPolicy = "always" | "once" | "silent";
 
@@ -15,12 +19,82 @@ type TelegramErrorConfig =
 
 const errorCooldownStore = new Map<string, Map<string, number>>();
 const DEFAULT_ERROR_COOLDOWN_MS = 14400000;
+const STORE_VERSION = 1;
+let errorCooldownStoreLoaded = false;
+
+type TelegramErrorCooldownState = {
+  version: number;
+  scopes: Record<string, Record<string, number>>;
+};
 
 function pruneExpiredCooldowns(messageStore: Map<string, number>, now: number) {
   for (const [message, expiresAt] of messageStore) {
     if (expiresAt <= now) {
       messageStore.delete(message);
     }
+  }
+}
+
+function resolveTelegramErrorCooldownPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveStateDir(env, os.homedir), "telegram", "error-cooldowns.json");
+}
+
+function readPersistentCooldowns(now: number): void {
+  if (errorCooldownStoreLoaded) {
+    return;
+  }
+  errorCooldownStoreLoaded = true;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(resolveTelegramErrorCooldownPath(), "utf8"));
+  } catch {
+    return;
+  }
+  const state = parsed as Partial<TelegramErrorCooldownState>;
+  if (state.version !== STORE_VERSION || !state.scopes || typeof state.scopes !== "object") {
+    return;
+  }
+  for (const [scopeKey, messages] of Object.entries(state.scopes)) {
+    if (!messages || typeof messages !== "object" || Array.isArray(messages)) {
+      continue;
+    }
+    const scopeStore = new Map<string, number>();
+    for (const [message, expiresAt] of Object.entries(messages)) {
+      if (typeof expiresAt === "number" && Number.isFinite(expiresAt) && expiresAt > now) {
+        scopeStore.set(message, expiresAt);
+      }
+    }
+    if (scopeStore.size > 0) {
+      errorCooldownStore.set(scopeKey, scopeStore);
+    }
+  }
+}
+
+function writePersistentCooldowns(now: number): void {
+  const scopes: Record<string, Record<string, number>> = {};
+  for (const [scopeKey, messageStore] of errorCooldownStore) {
+    pruneExpiredCooldowns(messageStore, now);
+    if (messageStore.size === 0) {
+      continue;
+    }
+    scopes[scopeKey] = Object.fromEntries(messageStore);
+  }
+  const filePath = resolveTelegramErrorCooldownPath();
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    if (Object.keys(scopes).length === 0) {
+      fs.rmSync(filePath, { force: true });
+      return;
+    }
+    const tempPath = `${filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(
+      tempPath,
+      `${JSON.stringify({ version: STORE_VERSION, scopes } satisfies TelegramErrorCooldownState, null, 2)}\n`,
+      "utf8",
+    );
+    fs.renameSync(tempPath, filePath);
+  } catch {
+    // Error reply cooldown is best-effort; delivery must not depend on state I/O.
   }
 }
 
@@ -68,6 +142,7 @@ export function shouldSuppressTelegramError(params: {
 }): boolean {
   const { scopeKey, cooldownMs, errorMessage } = params;
   const now = Date.now();
+  readPersistentCooldowns(now);
   const messageKey = errorMessage ?? "";
   const scopeStore = errorCooldownStore.get(scopeKey);
 
@@ -95,6 +170,7 @@ export function shouldSuppressTelegramError(params: {
   const nextScopeStore = scopeStore ?? new Map<string, number>();
   nextScopeStore.set(messageKey, now + cooldownMs);
   errorCooldownStore.set(scopeKey, nextScopeStore);
+  writePersistentCooldowns(now);
   return false;
 }
 
@@ -104,4 +180,5 @@ export function isSilentErrorPolicy(policy: TelegramErrorPolicy): boolean {
 
 export function resetTelegramErrorPolicyStoreForTest() {
   errorCooldownStore.clear();
+  errorCooldownStoreLoaded = false;
 }

@@ -6,6 +6,7 @@ import {
   releaseFeishuMessageProcessing,
   tryBeginFeishuMessageProcessing,
 } from "./processing-claims.js";
+import { resolveFeishuQueueTaskTimeoutMs } from "./queue-timeout.js";
 import { createSequentialQueue } from "./sequential-queue.js";
 import type { FeishuChatType } from "./types.js";
 
@@ -183,7 +184,7 @@ export function createFeishuMessageReceiveHandler({
   });
   const log = runtime?.log ?? console.log;
   const error = runtime?.error ?? console.error;
-  const queueTaskTimeoutMs = 5 * 60 * 1000;
+  const queueTaskTimeoutMs = resolveFeishuQueueTaskTimeoutMs({ cfg, accountId });
   const enqueue = createSequentialQueue({
     taskTimeoutMs: queueTaskTimeoutMs,
     onTaskTimeout: (key, timeoutMs) => {
@@ -243,6 +244,7 @@ export function createFeishuMessageReceiveHandler({
     for (const messageId of suppressedIds) {
       try {
         await recordProcessedMessage(messageId, accountId, log);
+        releaseFeishuMessageProcessing(messageId, accountId);
       } catch (err) {
         error(
           `feishu[${accountId}]: failed to record merged dedupe id ${messageId}: ${String(err)}`,

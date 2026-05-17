@@ -982,7 +982,7 @@ describe("handleFeishuMessage command authorization", () => {
     expect(call.Timestamp).toBeLessThanOrEqual(after);
   });
 
-  it("marks long Feishu turns as timed out and clears the marker when the turn completes", async () => {
+  it("lets long Feishu turns continue in background after the foreground queue timeout", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-feishu-timeout-"));
     const storePath = path.join(tempRoot, "sessions.json");
@@ -1042,9 +1042,15 @@ describe("handleFeishuMessage command authorization", () => {
       });
 
       await vi.waitFor(() => expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1));
+      const dispatchCall = mockCallArg<{ replyOptions?: { abortSignal?: AbortSignal } }>(
+        mockDispatchReplyFromConfig,
+        0,
+        0,
+      );
       controller.abort(new Error("queue timeout"));
 
       await vi.waitFor(() => expect(mockSendMessageFeishu).toHaveBeenCalledTimes(1));
+      expect(dispatchCall.replyOptions?.abortSignal?.aborted).toBe(false);
       const timedOutStore = JSON.parse(fs.readFileSync(storePath, "utf8")) as Record<
         string,
         { abortedLastRun?: boolean; endedAt?: number; runtimeMs?: number; status?: string }
@@ -1062,6 +1068,7 @@ describe("handleFeishuMessage command authorization", () => {
       expect(timeoutNotice.to).toBe("oc-dm");
       expect(timeoutNotice.replyToMessageId).toBe("msg-feishu-queue-timeout");
       expect(timeoutNotice.text).toContain("5 分钟");
+      expect(timeoutNotice.text).toContain("后台继续处理");
 
       resolveDispatch({ queuedFinal: false, counts: { final: 0 } });
       await task;
@@ -1073,6 +1080,170 @@ describe("handleFeishuMessage command authorization", () => {
       expect(completedStore[sessionKey]?.status).toBeUndefined();
       expect(completedStore[sessionKey]?.abortedLastRun).toBe(false);
     } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("supersedes a timed-out Feishu background turn when a newer same-session turn starts", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-feishu-timeout-supersede-"));
+    const storePath = path.join(tempRoot, "sessions.json");
+    const sessionKey = "agent:main:feishu:dm:ou-attacker";
+    fs.writeFileSync(
+      storePath,
+      `${JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "feishu-timeout-supersede-session",
+            updatedAt: 1_700_000_000_000,
+            sessionStartedAt: 1_700_000_000_000,
+            status: "running",
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    mockResolveStorePath.mockReturnValue(storePath);
+
+    let resolveFirstDispatch!: (value: { queuedFinal: false; counts: { final: 0 } }) => void;
+    const firstDispatchPromise = new Promise<{ queuedFinal: false; counts: { final: 0 } }>(
+      (resolve) => {
+        resolveFirstDispatch = resolve;
+      },
+    );
+    mockDispatchReplyFromConfig
+      .mockReturnValueOnce(firstDispatchPromise)
+      .mockResolvedValueOnce({ queuedFinal: false, counts: { final: 1 } });
+
+    const baseEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-attacker",
+        },
+      },
+      message: {
+        chat_id: "oc-dm",
+        chat_type: "p2p" as const,
+        message_type: "text" as const,
+      },
+    };
+
+    try {
+      const controller = new AbortController();
+      const firstTask = handleFeishuMessage({
+        cfg: {
+          channels: {
+            feishu: {
+              dmPolicy: "open",
+              allowFrom: ["*"],
+            },
+          },
+        } as ClawdbotConfig,
+        event: {
+          ...baseEvent,
+          message: {
+            ...baseEvent.message,
+            message_id: "msg-feishu-timeout-superseded",
+            content: JSON.stringify({ text: "long task" }),
+          },
+        },
+        runtime: createRuntimeEnv(),
+        queueAbortSignal: controller.signal,
+        queueTimeoutMs: 5 * 60 * 1000,
+      });
+
+      await vi.waitFor(() => expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1));
+      const firstDispatchCall = mockCallArg<{ replyOptions?: { abortSignal?: AbortSignal } }>(
+        mockDispatchReplyFromConfig,
+        0,
+        0,
+      );
+      controller.abort(new Error("queue timeout"));
+      await vi.waitFor(() => expect(mockSendMessageFeishu).toHaveBeenCalledTimes(1));
+      expect(firstDispatchCall.replyOptions?.abortSignal?.aborted).toBe(false);
+
+      await handleFeishuMessage({
+        cfg: {
+          channels: {
+            feishu: {
+              dmPolicy: "open",
+              allowFrom: ["*"],
+            },
+          },
+        } as ClawdbotConfig,
+        event: {
+          ...baseEvent,
+          message: {
+            ...baseEvent.message,
+            message_id: "msg-feishu-newer-turn",
+            content: JSON.stringify({ text: "new task" }),
+          },
+        },
+        runtime: createRuntimeEnv(),
+      });
+
+      expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(2);
+      expect(firstDispatchCall.replyOptions?.abortSignal?.aborted).toBe(true);
+
+      resolveFirstDispatch({ queuedFinal: false, counts: { final: 0 } });
+      await firstTask;
+
+      const completedStore = JSON.parse(fs.readFileSync(storePath, "utf8")) as Record<
+        string,
+        { abortedLastRun?: boolean; status?: string }
+      >;
+      expect(completedStore[sessionKey]?.status).toBeUndefined();
+      expect(completedStore[sessionKey]?.abortedLastRun).toBe(false);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not persist Feishu message dedupe when dispatch fails before replying", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-feishu-dedup-retry-"));
+    process.env.OPENCLAW_STATE_DIR = tempRoot;
+    mockDispatchReplyFromConfig
+      .mockRejectedValueOnce(new Error("temporary dispatch failure"))
+      .mockResolvedValueOnce({ queuedFinal: false, counts: { final: 1 } });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
+      },
+    } as ClawdbotConfig;
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-dedup-retry",
+        },
+      },
+      message: {
+        message_id: "msg-dedup-retry",
+        chat_id: "oc-dedup-retry",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "retry me" }),
+      },
+    };
+
+    try {
+      await dispatchMessage({ cfg, event });
+      await dispatchMessage({ cfg, event });
+
+      expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(2);
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
@@ -3452,7 +3623,7 @@ describe("createFeishuMessageReceiveHandler media dedupe", () => {
               : "aborted",
           );
         });
-        expect(params.queueTimeoutMs).toBe(300_000);
+        expect(params.queueTimeoutMs).toBe(25);
         await gate;
       },
     );
@@ -3488,7 +3659,9 @@ describe("createFeishuMessageReceiveHandler media dedupe", () => {
       },
     };
     const handler = createFeishuMessageReceiveHandler({
-      cfg: { channels: { feishu: { groupPolicy: "open" } } } as ClawdbotConfig,
+      cfg: {
+        channels: { feishu: { groupPolicy: "open", queueTaskTimeoutMs: 25 } },
+      } as ClawdbotConfig,
       core,
       accountId: "queue-timeout",
       chatHistories: new Map(),
@@ -3499,10 +3672,10 @@ describe("createFeishuMessageReceiveHandler media dedupe", () => {
     });
 
     const handled = handler(event);
-    await vi.advanceTimersByTimeAsync(300_000);
+    await vi.advanceTimersByTimeAsync(25);
     await handled;
 
-    expect(aborts).toEqual(["Sequential queue task exceeded 300000ms cap"]);
+    expect(aborts).toEqual(["Sequential queue task exceeded 25ms cap"]);
 
     resolveGate?.();
     await vi.runAllTimersAsync();

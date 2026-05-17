@@ -128,6 +128,8 @@ type CreateFeishuReplyDispatcherParams = {
   /** Epoch ms when the inbound message was created. Used to suppress typing
    *  indicators on old/replayed messages after context compaction (#30418). */
   messageCreateTimeMs?: number;
+  abortSignal?: AbortSignal;
+  shouldDeliver?: () => boolean;
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
@@ -155,6 +157,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     sendReplyToMessageId !== rootId;
   const account = resolveFeishuRuntimeAccount({ cfg, accountId });
   const prefixContext = createReplyPrefixContext({ cfg, agentId });
+  const isDispatchCancelled = () =>
+    params.abortSignal?.aborted === true || params.shouldDeliver?.() === false;
 
   let typingState: TypingIndicatorState | null = null;
   const { typingCallbacks } = createChannelMessageReplyPipeline({
@@ -522,6 +526,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         await typingCallbacks?.onReplyStart?.();
       },
       deliver: async (payload: ReplyPayload, info) => {
+        if (isDispatchCancelled()) {
+          return;
+        }
         const payloadText =
           payload.isReasoning && payload.text ? formatReasoningMessage(payload.text) : payload.text;
         const reply = resolveSendableOutboundReplyParts({ ...payload, text: payloadText });
@@ -674,6 +681,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         typeof account.config?.blockStreaming === "boolean" ? !account.config.blockStreaming : true,
       onPartialReply: streamingEnabled
         ? (payload: ReplyPayload) => {
+            if (isDispatchCancelled()) {
+              return;
+            }
             if (!payload.text) {
               return;
             }
@@ -692,6 +702,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         : undefined,
       onReasoningStream: reasoningPreviewEnabled
         ? (payload: ReplyPayload) => {
+            if (isDispatchCancelled()) {
+              return;
+            }
             if (!payload.text) {
               return;
             }
@@ -707,6 +720,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             args?: Record<string, unknown>;
             detailMode?: "explain" | "raw";
           }) => {
+            if (isDispatchCancelled()) {
+              return;
+            }
             if (!isChannelProgressDraftWorkToolName(payload.name)) {
               return;
             }
@@ -729,6 +745,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         : undefined,
       onAssistantMessageStart: streamingEnabled
         ? () => {
+            if (isDispatchCancelled()) {
+              return;
+            }
             updateStreamingStatusLine("");
           }
         : undefined,

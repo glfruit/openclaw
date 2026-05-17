@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildTelegramErrorScopeKey,
@@ -7,7 +10,12 @@ import {
 } from "./error-policy.js";
 
 describe("telegram error policy", () => {
+  const originalStateDir = process.env.OPENCLAW_STATE_DIR;
+  let stateDir: string;
+
   beforeEach(() => {
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-telegram-error-policy-"));
+    process.env.OPENCLAW_STATE_DIR = stateDir;
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     resetTelegramErrorPolicyStoreForTest();
@@ -16,6 +24,12 @@ describe("telegram error policy", () => {
   afterEach(() => {
     resetTelegramErrorPolicyStoreForTest();
     vi.useRealTimers();
+    if (originalStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = originalStateDir;
+    }
+    fs.rmSync(stateDir, { recursive: true, force: true });
   });
 
   it("resolves policy and cooldown from the most specific config", () => {
@@ -156,5 +170,30 @@ describe("telegram error policy", () => {
         errorMessage: "429",
       }),
     ).toBe(false);
+  });
+
+  it("persists cooldowns across in-memory store resets", () => {
+    const scopeKey = buildTelegramErrorScopeKey({
+      accountId: "work",
+      chatId: 42,
+    });
+
+    expect(
+      shouldSuppressTelegramError({
+        scopeKey,
+        cooldownMs: 1000,
+        errorMessage: "429",
+      }),
+    ).toBe(false);
+
+    resetTelegramErrorPolicyStoreForTest();
+
+    expect(
+      shouldSuppressTelegramError({
+        scopeKey,
+        cooldownMs: 1000,
+        errorMessage: "429",
+      }),
+    ).toBe(true);
   });
 });
