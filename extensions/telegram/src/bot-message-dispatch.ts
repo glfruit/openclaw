@@ -516,7 +516,7 @@ export const dispatchTelegramMessage = async ({
     threadSpec,
   });
   let replyFenceGeneration: number | undefined;
-  const roomEventAbortController = isRoomEvent ? new AbortController() : undefined;
+  const turnAbortController = new AbortController();
   let roomEventAbortControllerQueued = false;
   let dispatchWasSuperseded = false;
   const isDispatchSuperseded = () =>
@@ -531,7 +531,7 @@ export const dispatchTelegramMessage = async ({
     }
     endTelegramReplyFence(
       replyFenceKey.activeKey,
-      roomEventAbortControllerQueued ? undefined : roomEventAbortController,
+      roomEventAbortControllerQueued ? undefined : turnAbortController,
     );
     replyFenceGeneration = undefined;
   };
@@ -924,7 +924,7 @@ export const dispatchTelegramMessage = async ({
   replyFenceGeneration = beginTelegramReplyFence({
     key: replyFenceKey.activeKey,
     supersede: supersedeReplyFence,
-    abortController: roomEventAbortController,
+    abortController: turnAbortController,
   });
 
   const implicitQuoteReplyTargetId =
@@ -1553,26 +1553,25 @@ export const dispatchTelegramMessage = async ({
                 replyOptions: {
                   skillFilter,
                   disableBlockStreaming,
-                  abortSignal: roomEventAbortController?.signal,
+                  abortSignal: turnAbortController.signal,
                   sourceReplyDeliveryMode: isRoomEvent ? "message_tool_only" : undefined,
                   queuedDeliveryCorrelations: isRoomEvent
                     ? [{ begin: beginDeliveryCorrelation }]
                     : undefined,
-                  queuedFollowupLifecycle:
-                    isRoomEvent && roomEventAbortController
-                      ? {
-                          onEnqueued: () => {
-                            roomEventAbortControllerQueued = true;
-                          },
-                          onComplete: () => {
-                            roomEventAbortControllerQueued = false;
-                            releaseTelegramReplyFenceAbortController(
-                              replyFenceKey.activeKey,
-                              roomEventAbortController,
-                            );
-                          },
-                        }
-                      : undefined,
+                  queuedFollowupLifecycle: isRoomEvent
+                    ? {
+                        onEnqueued: () => {
+                          roomEventAbortControllerQueued = true;
+                        },
+                        onComplete: () => {
+                          roomEventAbortControllerQueued = false;
+                          releaseTelegramReplyFenceAbortController(
+                            replyFenceKey.activeKey,
+                            turnAbortController,
+                          );
+                        },
+                      }
+                    : undefined,
                   suppressTyping: isRoomEvent,
                   onPartialReply:
                     answerLane.stream || reasoningLane.stream
