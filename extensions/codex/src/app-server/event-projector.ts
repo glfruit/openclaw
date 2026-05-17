@@ -141,6 +141,7 @@ export class CodexAppServerEventProjector {
   private guardianReviewCount = 0;
   private completedCompactionCount = 0;
   private latestRateLimits: JsonValue | undefined;
+  private lastNativeToolError: EmbeddedRunAttemptResult["lastToolError"];
   private readonly nativeSubagentTaskMirror: CodexNativeSubagentTaskMirror;
 
   constructor(
@@ -312,6 +313,7 @@ export class CodexAppServerEventProjector {
       messagesSnapshot,
       assistantTexts,
       toolMetas: [...this.toolMetas.values()],
+      ...(this.lastNativeToolError ? { lastToolError: this.lastNativeToolError } : {}),
       lastAssistant,
       didSendViaMessagingTool: toolTelemetry.didSendViaMessagingTool,
       messagingToolSentTexts: toolTelemetry.messagingToolSentTexts,
@@ -534,6 +536,7 @@ export class CodexAppServerEventProjector {
       });
     }
     this.recordToolMeta(item);
+    this.recordNativeToolError(item);
     this.emitStandardItemEvent({ phase: "end", item });
     this.emitNormalizedToolItemEvent({ phase: "result", item });
     this.recordNativeToolTranscriptCall(item);
@@ -642,6 +645,7 @@ export class CodexAppServerEventProjector {
         this.emitPlanUpdate({ explanation: undefined, steps: splitPlanText(item.text) });
       }
       this.recordToolMeta(item);
+      this.recordNativeToolError(item);
       this.recordNativeToolTranscriptCall(item);
       this.recordNativeToolTranscriptResult(item);
       this.emitAfterToolCallObservation(item);
@@ -861,6 +865,28 @@ export class CodexAppServerEventProjector {
     if (params.phase === "result") {
       this.emitAfterToolCallObservation(item);
     }
+  }
+
+  private recordNativeToolError(item: CodexThreadItem | undefined): void {
+    if (!item || !shouldSynthesizeToolProgressForItem(item)) {
+      return;
+    }
+    const status = itemStatus(item);
+    if (!isNonSuccessItemStatus(status)) {
+      return;
+    }
+    const toolName = itemName(item);
+    if (!toolName) {
+      return;
+    }
+    const meta = itemMeta(item, this.toolProgressDetailMode());
+    const error = itemToolError(item, status);
+    this.lastNativeToolError = {
+      toolName,
+      ...(meta ? { meta } : {}),
+      ...(error ? { error } : {}),
+      ...(toolName === "bash" || toolName === "apply_patch" ? { mutatingAction: true } : {}),
+    };
   }
 
   private emitDiagnosticToolExecutionEvent(params: {
