@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type * as ConversationRuntime from "openclaw/plugin-sdk/conversation-runtime";
 import { createRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
@@ -977,6 +980,101 @@ describe("handleFeishuMessage command authorization", () => {
     const call = mockFinalizeInboundContext.mock.calls.at(0)?.[0] as { Timestamp: number };
     expect(call.Timestamp).toBeGreaterThanOrEqual(before);
     expect(call.Timestamp).toBeLessThanOrEqual(after);
+  });
+
+  it("marks long Feishu turns as timed out and clears the marker when the turn completes", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-feishu-timeout-"));
+    const storePath = path.join(tempRoot, "sessions.json");
+    const sessionKey = "agent:main:feishu:dm:ou-attacker";
+    fs.writeFileSync(
+      storePath,
+      `${JSON.stringify(
+        {
+          [sessionKey]: {
+            sessionId: "feishu-timeout-session",
+            updatedAt: 1_700_000_000_000,
+            sessionStartedAt: 1_700_000_000_000,
+            status: "running",
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    mockResolveStorePath.mockReturnValue(storePath);
+
+    let resolveDispatch!: (value: { queuedFinal: false; counts: { final: 0 } }) => void;
+    const dispatchPromise = new Promise<{ queuedFinal: false; counts: { final: 0 } }>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    mockDispatchReplyFromConfig.mockReturnValueOnce(dispatchPromise);
+
+    try {
+      const controller = new AbortController();
+      const task = handleFeishuMessage({
+        cfg: {
+          channels: {
+            feishu: {
+              dmPolicy: "open",
+              allowFrom: ["*"],
+            },
+          },
+        } as ClawdbotConfig,
+        event: {
+          sender: {
+            sender_id: {
+              open_id: "ou-attacker",
+            },
+          },
+          message: {
+            message_id: "msg-feishu-queue-timeout",
+            chat_id: "oc-dm",
+            chat_type: "p2p",
+            message_type: "text",
+            content: JSON.stringify({ text: "long task" }),
+          },
+        },
+        runtime: createRuntimeEnv(),
+        queueAbortSignal: controller.signal,
+        queueTimeoutMs: 5 * 60 * 1000,
+      });
+
+      await vi.waitFor(() => expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1));
+      controller.abort(new Error("queue timeout"));
+
+      await vi.waitFor(() => expect(mockSendMessageFeishu).toHaveBeenCalledTimes(1));
+      const timedOutStore = JSON.parse(fs.readFileSync(storePath, "utf8")) as Record<
+        string,
+        { abortedLastRun?: boolean; endedAt?: number; runtimeMs?: number; status?: string }
+      >;
+      expect(timedOutStore[sessionKey]?.status).toBe("timeout");
+      expect(timedOutStore[sessionKey]?.abortedLastRun).toBe(true);
+      expect(timedOutStore[sessionKey]?.endedAt).toBeGreaterThanOrEqual(1_700_000_000_000);
+      expect(timedOutStore[sessionKey]?.runtimeMs).toBeGreaterThan(0);
+
+      const timeoutNotice = mockCallArg<{ replyToMessageId?: string; text?: string; to?: string }>(
+        mockSendMessageFeishu,
+        0,
+        0,
+      );
+      expect(timeoutNotice.to).toBe("oc-dm");
+      expect(timeoutNotice.replyToMessageId).toBe("msg-feishu-queue-timeout");
+      expect(timeoutNotice.text).toContain("5 分钟");
+
+      resolveDispatch({ queuedFinal: false, counts: { final: 0 } });
+      await task;
+
+      const completedStore = JSON.parse(fs.readFileSync(storePath, "utf8")) as Record<
+        string,
+        { abortedLastRun?: boolean; status?: string }
+      >;
+      expect(completedStore[sessionKey]?.status).toBeUndefined();
+      expect(completedStore[sessionKey]?.abortedLastRun).toBe(false);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("replies pairing challenge to DM chat_id instead of user:sender id", async () => {
