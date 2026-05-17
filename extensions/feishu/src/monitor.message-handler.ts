@@ -33,6 +33,8 @@ type FeishuMessageReceiveHandlerContext = {
     chatHistories?: Map<string, HistoryEntry[]>;
     accountId?: string;
     processingClaimHeld?: boolean;
+    queueAbortSignal?: AbortSignal;
+    queueTimeoutMs?: number;
   }) => Promise<void>;
   resolveDebounceText: (params: {
     event: FeishuMessageEvent;
@@ -181,7 +183,9 @@ export function createFeishuMessageReceiveHandler({
   });
   const log = runtime?.log ?? console.log;
   const error = runtime?.error ?? console.error;
+  const queueTaskTimeoutMs = 5 * 60 * 1000;
   const enqueue = createSequentialQueue({
+    taskTimeoutMs: queueTaskTimeoutMs,
     onTaskTimeout: (key, timeoutMs) => {
       log(
         `feishu[${accountId}]: per-chat task exceeded ${timeoutMs}ms cap (key=${key}); evicting from queue so later same-key messages can proceed (#70133)`,
@@ -196,7 +200,7 @@ export function createFeishuMessageReceiveHandler({
       botOpenId: getBotOpenId(accountId),
       botName: getBotName(accountId),
     });
-    const task = () =>
+    const task = (queueAbortSignal: AbortSignal) =>
       handleMessage({
         cfg,
         event,
@@ -206,6 +210,8 @@ export function createFeishuMessageReceiveHandler({
         chatHistories,
         accountId,
         processingClaimHeld: true,
+        queueAbortSignal,
+        queueTimeoutMs: queueTaskTimeoutMs,
       });
     await enqueue(sequentialKey, task);
   };

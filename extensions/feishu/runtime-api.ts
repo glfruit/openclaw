@@ -42,6 +42,7 @@ export {
 export {
   loadSessionStore,
   resolveSessionStoreEntry,
+  updateSessionStoreEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
 export { readJsonFileWithFallback } from "openclaw/plugin-sdk/json-store";
 export { createPersistentDedupe } from "openclaw/plugin-sdk/persistent-dedupe";

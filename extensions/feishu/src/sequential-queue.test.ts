@@ -132,6 +132,26 @@ describe("createSequentialQueue", () => {
     await stuck;
   });
 
+  it("aborts the stuck task signal when taskTimeoutMs fires", async () => {
+    vi.useFakeTimers();
+    const enqueue = createSequentialQueue({ taskTimeoutMs: 25 });
+    const aborts: string[] = [];
+    const stuckGate = createDeferred();
+
+    const stuck = enqueue("feishu:default:chat-stuck", async (signal) => {
+      signal.addEventListener("abort", () => {
+        aborts.push(signal.reason instanceof Error ? signal.reason.message : "aborted");
+      });
+      await stuckGate.promise;
+    });
+
+    await vi.advanceTimersByTimeAsync(25);
+    expect(aborts).toEqual(["Sequential queue task exceeded 25ms cap"]);
+
+    stuckGate.resolve();
+    await stuck;
+  });
+
   it("disables the timeout cap when taskTimeoutMs is 0 (legacy behavior)", async () => {
     vi.useFakeTimers();
     const timeouts: Array<{ key: string; timeoutMs: number }> = [];

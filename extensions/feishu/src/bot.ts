@@ -32,6 +32,7 @@ import {
   evaluateSupplementalContextVisibility,
   normalizeAgentId,
   resolveChannelContextVisibilityMode,
+  updateSessionStoreEntry,
 } from "./bot-runtime-api.js";
 import type { ClawdbotConfig, RuntimeEnv } from "./bot-runtime-api.js";
 import { type FeishuPermissionError, resolveFeishuSenderName } from "./bot-sender-name.js";
@@ -74,6 +75,7 @@ const PERMISSION_ERROR_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 const groupNameCache = new Map<string, { name: string; expiresAt: number }>();
 const GROUP_NAME_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const GROUP_NAME_CACHE_MAX_SIZE = 500; // hard cap
+const DEFAULT_FEISHU_QUEUE_TIMEOUT_MS = 5 * 60 * 1000;
 
 type FeishuGroupSessionScope = "group" | "group_sender" | "group_topic" | "group_topic_sender";
 
@@ -128,6 +130,66 @@ function setCacheEntry(key: string, value: { name: string; expiresAt: number }):
 
 export function clearGroupNameCache(): void {
   groupNameCache.clear();
+}
+
+function formatQueueTimeoutNotice(timeoutMs: number): string {
+  const minutes = Math.max(1, Math.round(timeoutMs / 60_000));
+  return (
+    `这次任务已经超过飞书前台等待上限（约 ${minutes} 分钟）。` +
+    "我已把当前会话标记为 timeout，避免后续消息被卡住；原任务如果后续完成，仍会继续发送最终回复。"
+  );
+}
+
+async function markFeishuQueueTimeout(params: {
+  storePath: string;
+  sessionKey: string;
+  timeoutMs: number;
+  log: (message: string) => void;
+}): Promise<void> {
+  const now = Date.now();
+  try {
+    await updateSessionStoreEntry({
+      storePath: params.storePath,
+      sessionKey: params.sessionKey,
+      update: async (entry) => ({
+        status: "timeout",
+        abortedLastRun: true,
+        endedAt: now,
+        runtimeMs:
+          typeof entry.sessionStartedAt === "number" && Number.isFinite(entry.sessionStartedAt)
+            ? Math.max(0, now - entry.sessionStartedAt)
+            : entry.runtimeMs,
+      }),
+    });
+  } catch (err) {
+    params.log(`feishu: failed to mark timed-out session ${params.sessionKey}: ${String(err)}`);
+  }
+}
+
+async function clearFeishuQueueTimeout(params: {
+  storePath: string;
+  sessionKey: string;
+  log: (message: string) => void;
+}): Promise<void> {
+  try {
+    await updateSessionStoreEntry({
+      storePath: params.storePath,
+      sessionKey: params.sessionKey,
+      update: async (entry) => {
+        if (entry.status !== "timeout") {
+          return null;
+        }
+        return {
+          status: undefined,
+          abortedLastRun: false,
+        };
+      },
+    });
+  } catch (err) {
+    params.log(
+      `feishu: failed to clear queue-timeout marker for session ${params.sessionKey}: ${String(err)}`,
+    );
+  }
 }
 
 export async function resolveGroupName(params: {
@@ -427,6 +489,8 @@ export async function handleFeishuMessage(params: {
   chatHistories?: Map<string, HistoryEntry[]>;
   accountId?: string;
   processingClaimHeld?: boolean;
+  queueAbortSignal?: AbortSignal;
+  queueTimeoutMs?: number;
 }): Promise<void> {
   const {
     cfg,
@@ -437,6 +501,8 @@ export async function handleFeishuMessage(params: {
     chatHistories,
     accountId,
     processingClaimHeld = false,
+    queueAbortSignal,
+    queueTimeoutMs = DEFAULT_FEISHU_QUEUE_TIMEOUT_MS,
   } = params;
 
   // Resolve account with merged config
@@ -1573,62 +1639,119 @@ export async function handleFeishuMessage(params: {
         messageCreateTimeMs,
       });
 
-      log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);
-      const turnResult = await core.channel.turn.run({
-        channel: "feishu",
-        accountId: route.accountId,
-        raw: ctx,
-        adapter: {
-          ingest: () => ({
-            id: ctx.messageId,
-            timestamp: messageCreateTimeMs,
-            rawText: ctx.content,
-            textForAgent: ctxPayload.BodyForAgent,
-            textForCommands: ctxPayload.CommandBody,
-            raw: ctx,
-          }),
-          resolveTurn: () => ({
-            channel: "feishu",
-            accountId: route.accountId,
-            routeSessionKey: route.sessionKey,
+      let queueTimeoutStarted = false;
+      let queueTimeoutTask: Promise<void> | undefined;
+      const beginQueueTimeoutHandling = () => {
+        if (queueTimeoutTask) {
+          return;
+        }
+        queueTimeoutStarted = true;
+        queueTimeoutTask = (async () => {
+          await markFeishuQueueTimeout({
             storePath,
-            ctxPayload,
-            recordInboundSession: core.channel.session.recordInboundSession,
-            record: {
-              onRecordError: (err) => {
-                log(
-                  `feishu[${account.accountId}]: failed to record inbound session ${route.sessionKey}: ${String(err)}`,
-                );
-              },
-            },
-            history: {
-              isGroup,
-              historyKey,
-              historyMap: chatHistories,
-              limit: historyLimit,
-            },
-            onPreDispatchFailure: () =>
-              core.channel.reply.settleReplyDispatcher({
-                dispatcher,
-                onSettled: () => markDispatchIdle(),
-              }),
-            runDispatch: () =>
-              core.channel.reply.withReplyDispatcher({
-                dispatcher,
-                onSettled: () => {
-                  markDispatchIdle();
+            sessionKey: route.sessionKey,
+            timeoutMs: queueTimeoutMs,
+            log,
+          });
+          try {
+            await sendMessageFeishu({
+              cfg,
+              accountId: account.accountId,
+              to: ctx.chatId,
+              text: formatQueueTimeoutNotice(queueTimeoutMs),
+              replyToMessageId: replyTargetMessageId,
+              replyInThread,
+              allowTopLevelReplyFallback: true,
+            });
+          } catch (err) {
+            log(
+              `feishu[${account.accountId}]: failed to send queue-timeout notice for ${route.sessionKey}: ${String(err)}`,
+            );
+          }
+        })();
+      };
+      const runTurn = () =>
+        core.channel.turn.run({
+          channel: "feishu",
+          accountId: route.accountId,
+          raw: ctx,
+          adapter: {
+            ingest: () => ({
+              id: ctx.messageId,
+              timestamp: messageCreateTimeMs,
+              rawText: ctx.content,
+              textForAgent: ctxPayload.BodyForAgent,
+              textForCommands: ctxPayload.CommandBody,
+              raw: ctx,
+            }),
+            resolveTurn: () => ({
+              channel: "feishu",
+              accountId: route.accountId,
+              routeSessionKey: route.sessionKey,
+              storePath,
+              ctxPayload,
+              recordInboundSession: core.channel.session.recordInboundSession,
+              record: {
+                onRecordError: (err) => {
+                  log(
+                    `feishu[${account.accountId}]: failed to record inbound session ${route.sessionKey}: ${String(err)}`,
+                  );
                 },
-                run: () =>
-                  core.channel.reply.dispatchReplyFromConfig({
-                    ctx: ctxPayload,
-                    cfg,
-                    dispatcher,
-                    replyOptions,
-                  }),
-              }),
-          }),
-        },
-      });
+              },
+              history: {
+                isGroup,
+                historyKey,
+                historyMap: chatHistories,
+                limit: historyLimit,
+              },
+              onPreDispatchFailure: () =>
+                core.channel.reply.settleReplyDispatcher({
+                  dispatcher,
+                  onSettled: () => markDispatchIdle(),
+                }),
+              runDispatch: () =>
+                core.channel.reply.withReplyDispatcher({
+                  dispatcher,
+                  onSettled: () => {
+                    markDispatchIdle();
+                  },
+                  run: () =>
+                    core.channel.reply.dispatchReplyFromConfig({
+                      ctx: ctxPayload,
+                      cfg,
+                      dispatcher,
+                      replyOptions,
+                    }),
+                }),
+            }),
+          },
+        });
+
+      log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);
+      const onQueueAbort = () => beginQueueTimeoutHandling();
+      queueAbortSignal?.addEventListener("abort", onQueueAbort, { once: true });
+      if (queueAbortSignal?.aborted) {
+        beginQueueTimeoutHandling();
+      }
+      let turnCompleted = false;
+      let turnResult: Awaited<ReturnType<typeof runTurn>> | undefined;
+      try {
+        turnResult = await runTurn();
+        turnCompleted = true;
+      } finally {
+        queueAbortSignal?.removeEventListener("abort", onQueueAbort);
+        await queueTimeoutTask;
+        if (queueTimeoutStarted && turnCompleted) {
+          await clearFeishuQueueTimeout({
+            storePath,
+            sessionKey: route.sessionKey,
+            log,
+          });
+        }
+      }
+      if (!turnResult) {
+        return;
+      }
       if (!turnResult.dispatched) {
         return;
       }

@@ -2,7 +2,7 @@ import type * as ConversationRuntime from "openclaw/plugin-sdk/conversation-runt
 import { createRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import { resolveGroupSessionKey } from "openclaw/plugin-sdk/session-store-runtime";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig, PluginRuntime } from "../runtime-api.js";
 import type { FeishuMessageEvent } from "./bot.js";
 import { handleFeishuMessage } from "./bot.js";
@@ -3266,6 +3266,10 @@ describe("handleFeishuMessage command authorization", () => {
 });
 
 describe("createFeishuMessageReceiveHandler media dedupe", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("keeps same-id media variants distinct at receive time", async () => {
     const handleMessage = vi.fn(async () => undefined);
     const core = {
@@ -3332,5 +3336,77 @@ describe("createFeishuMessageReceiveHandler media dedupe", () => {
     }>(handleMessage, 1, 0);
     expect(secondCall.event).toEqual(secondEvent);
     expect(secondCall.processingClaimHeld).toBe(true);
+  });
+
+  it("passes an aborted queue signal when same-chat handling exceeds the cap", async () => {
+    vi.useFakeTimers();
+    let resolveGate: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve;
+    });
+    const aborts: string[] = [];
+    const handleMessage = vi.fn(
+      async (params: { queueAbortSignal?: AbortSignal; queueTimeoutMs?: number }) => {
+        params.queueAbortSignal?.addEventListener("abort", () => {
+          aborts.push(
+            params.queueAbortSignal?.reason instanceof Error
+              ? params.queueAbortSignal.reason.message
+              : "aborted",
+          );
+        });
+        expect(params.queueTimeoutMs).toBe(300_000);
+        await gate;
+      },
+    );
+    const core = {
+      channel: {
+        debounce: {
+          resolveInboundDebounceMs: vi.fn(() => 0),
+          createInboundDebouncer: vi.fn(
+            (options: { onFlush: (entries: FeishuMessageEvent[]) => Promise<void> | void }) => ({
+              enqueue: async (event: FeishuMessageEvent) => {
+                await options.onFlush([event]);
+              },
+            }),
+          ),
+        },
+        text: {
+          hasControlCommand: vi.fn(() => false),
+        },
+      },
+    } as unknown as PluginRuntime;
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-queue-timeout",
+        },
+      },
+      message: {
+        message_id: "msg-queue-timeout",
+        chat_id: "oc-queue-timeout",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "@bot slow task" }),
+      },
+    };
+    const handler = createFeishuMessageReceiveHandler({
+      cfg: { channels: { feishu: { groupPolicy: "open" } } } as ClawdbotConfig,
+      core,
+      accountId: "queue-timeout",
+      chatHistories: new Map(),
+      handleMessage,
+      resolveDebounceText: () => "slow task",
+      hasProcessedMessage: vi.fn(async () => false),
+      recordProcessedMessage: vi.fn(async () => true),
+    });
+
+    const handled = handler(event);
+    await vi.advanceTimersByTimeAsync(300_000);
+    await handled;
+
+    expect(aborts).toEqual(["Sequential queue task exceeded 300000ms cap"]);
+
+    resolveGate?.();
+    await vi.runAllTimersAsync();
   });
 });

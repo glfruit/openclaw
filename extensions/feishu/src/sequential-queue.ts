@@ -8,8 +8,8 @@
  * `taskTimeoutMs` bounds how long the queue will block subsequent same-key
  * tasks behind a single in-flight task. After the cap, the in-flight task
  * is evicted from the blocking chain so newer messages for the same key
- * can proceed. The original task is NOT aborted — it continues running in
- * the background; it just stops starving the queue.
+ * can proceed. The task receives an AbortSignal when the cap fires so
+ * callers that own downstream lifecycle state can mark or cancel it.
  *
  * Without this cap, a single hung dispatch (e.g. an agent call that never
  * resolves) keeps later same-chat messages in `queued` state until the
@@ -41,7 +41,7 @@ export function createSequentialQueue(options: SequentialQueueOptions = {}) {
   const taskTimeoutMs = options.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
   const onTaskTimeout = options.onTaskTimeout;
 
-  return (key: string, task: () => Promise<void>): Promise<void> => {
+  return (key: string, task: (signal: AbortSignal) => Promise<void>): Promise<void> => {
     const previous = queues.get(key) ?? Promise.resolve();
     const wrapped = () => boundedRun(key, task, taskTimeoutMs, onTaskTimeout);
     const next = previous.then(wrapped, wrapped);
@@ -58,16 +58,18 @@ export function createSequentialQueue(options: SequentialQueueOptions = {}) {
 
 async function boundedRun(
   key: string,
-  task: () => Promise<void>,
+  task: (signal: AbortSignal) => Promise<void>,
   timeoutMs: number,
   onTaskTimeout: ((key: string, timeoutMs: number) => void) | undefined,
 ): Promise<void> {
+  const controller = new AbortController();
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return task();
+    return task(controller.signal);
   }
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<void>((resolve) => {
     timeoutHandle = setTimeout(() => {
+      controller.abort(new Error(`Sequential queue task exceeded ${timeoutMs}ms cap`));
       try {
         onTaskTimeout?.(key, timeoutMs);
       } catch {
@@ -77,7 +79,7 @@ async function boundedRun(
     }, timeoutMs);
   });
   try {
-    await Promise.race([task(), timeoutPromise]);
+    await Promise.race([task(controller.signal), timeoutPromise]);
   } finally {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
