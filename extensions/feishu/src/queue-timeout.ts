@@ -2,6 +2,7 @@ import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import type { ClawdbotConfig } from "./bot-runtime-api.js";
 
 export const DEFAULT_FEISHU_QUEUE_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_FEISHU_LONG_TASK_ACK_MS = 12_000;
 
 export function resolveFeishuQueueTaskTimeoutMs(params: {
   cfg: ClawdbotConfig;
@@ -14,6 +15,21 @@ export function resolveFeishuQueueTaskTimeoutMs(params: {
   const configured = account.config.queueTaskTimeoutMs;
   if (typeof configured !== "number" || !Number.isFinite(configured) || configured < 0) {
     return DEFAULT_FEISHU_QUEUE_TIMEOUT_MS;
+  }
+  return configured;
+}
+
+export function resolveFeishuLongTaskAckMs(params: {
+  cfg: ClawdbotConfig;
+  accountId?: string;
+}): number {
+  const account = resolveFeishuRuntimeAccount({
+    cfg: params.cfg,
+    accountId: params.accountId,
+  });
+  const configured = account.config.longTaskAckMs;
+  if (typeof configured !== "number" || !Number.isFinite(configured) || configured < 0) {
+    return DEFAULT_FEISHU_LONG_TASK_ACK_MS;
   }
   return configured;
 }

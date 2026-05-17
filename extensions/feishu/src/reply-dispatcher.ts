@@ -130,6 +130,7 @@ type CreateFeishuReplyDispatcherParams = {
   messageCreateTimeMs?: number;
   abortSignal?: AbortSignal;
   shouldDeliver?: () => boolean;
+  onVisibleActivity?: () => void;
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
@@ -159,6 +160,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   const prefixContext = createReplyPrefixContext({ cfg, agentId });
   const isDispatchCancelled = () =>
     params.abortSignal?.aborted === true || params.shouldDeliver?.() === false;
+  const noteVisibleActivity = () => params.onVisibleActivity?.();
 
   let typingState: TypingIndicatorState | null = null;
   const { typingCallbacks } = createChannelMessageReplyPipeline({
@@ -365,6 +367,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           header: cardHeader,
           note: cardNote,
         });
+        noteVisibleActivity();
         streamingStartBackoffUntilByAccount.delete(account.accountId);
       } catch (error) {
         rememberStreamingStartFailure(account.accountId);
@@ -462,6 +465,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           accountId,
           ...(payload.audioAsVoice === true ? { audioAsVoice: true } : {}),
         });
+        noteVisibleActivity();
         if (result?.voiceIntentDegradedToFile && options?.fallbackText && !sentFallbackText) {
           sentFallbackText = true;
           await sendChunkedTextReply({
@@ -478,6 +482,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
                 allowTopLevelReplyFallback,
                 accountId,
               });
+              noteVisibleActivity();
             },
           });
         }
@@ -505,6 +510,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
                     allowTopLevelReplyFallback,
                     accountId,
                   });
+                  noteVisibleActivity();
                 },
               });
             },
@@ -625,6 +631,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
                   header: cardHeader,
                   note: cardNote,
                 });
+                noteVisibleActivity();
               },
             });
           } else {
@@ -642,6 +649,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
                   allowTopLevelReplyFallback,
                   accountId,
                 });
+                noteVisibleActivity();
               },
             });
           }

@@ -192,6 +192,7 @@ const FeishuSharedConfigShape = {
   blockStreaming: BlockStreamingSchema,
   blockStreamingCoalesce: BlockStreamingCoalesceSchema,
   mediaMaxMb: z.number().positive().optional(),
+  longTaskAckMs: z.number().int().min(0).max(300_000).optional(),
   httpTimeoutMs: z.number().int().positive().max(300_000).optional(),
   queueTaskTimeoutMs: z.number().int().min(0).max(3_600_000).optional(),
   heartbeat: ChannelHeartbeatVisibilitySchema,

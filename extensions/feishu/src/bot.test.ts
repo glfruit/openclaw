@@ -1084,6 +1084,130 @@ describe("handleFeishuMessage command authorization", () => {
     }
   });
 
+  it("sends a delayed long-task acknowledgement when a Feishu turn stays silent", async () => {
+    vi.useFakeTimers();
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    let resolveDispatch!: (value: { queuedFinal: false; counts: { final: 0 } }) => void;
+    const dispatchPromise = new Promise<{ queuedFinal: false; counts: { final: 0 } }>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    mockDispatchReplyFromConfig.mockReturnValueOnce(dispatchPromise);
+
+    try {
+      const task = handleFeishuMessage({
+        cfg: {
+          channels: {
+            feishu: {
+              dmPolicy: "open",
+              allowFrom: ["*"],
+              longTaskAckMs: 25,
+            },
+          },
+        } as ClawdbotConfig,
+        event: {
+          sender: {
+            sender_id: {
+              open_id: "ou-attacker",
+            },
+          },
+          message: {
+            message_id: "msg-feishu-long-task-ack",
+            chat_id: "oc-dm",
+            chat_type: "p2p",
+            message_type: "text",
+            content: JSON.stringify({ text: "long task" }),
+          },
+        },
+        runtime: createRuntimeEnv(),
+      });
+
+      await vi.waitFor(() => expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(25);
+      await vi.waitFor(() => expect(mockSendMessageFeishu).toHaveBeenCalledTimes(1));
+
+      const ack = mockCallArg<{ replyToMessageId?: string; text?: string; to?: string }>(
+        mockSendMessageFeishu,
+        0,
+        0,
+      );
+      expect(ack.to).toBe("oc-dm");
+      expect(ack.replyToMessageId).toBe("msg-feishu-long-task-ack");
+      expect(ack.text).toContain("已开始处理");
+      expect(ack.text).toContain("后台继续");
+
+      resolveDispatch({ queuedFinal: false, counts: { final: 0 } });
+      await task;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("suppresses the delayed Feishu long-task acknowledgement after visible activity", async () => {
+    vi.useFakeTimers();
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    let resolveDispatch!: (value: { queuedFinal: false; counts: { final: 1 } }) => void;
+    const dispatchPromise = new Promise<{ queuedFinal: false; counts: { final: 1 } }>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    let markDispatchStarted!: () => void;
+    const dispatchStarted = new Promise<void>((resolve) => {
+      markDispatchStarted = resolve;
+    });
+    let noteVisibleActivity: (() => void) | undefined;
+    mockDispatchReplyFromConfig.mockImplementationOnce(() => {
+      markDispatchStarted();
+      return dispatchPromise;
+    });
+    mockCreateFeishuReplyDispatcher.mockImplementationOnce((...args: unknown[]) => {
+      const params = args[0] as { onVisibleActivity?: () => void };
+      noteVisibleActivity = params.onVisibleActivity;
+      return {
+        dispatcher: createReplyDispatcher(),
+        replyOptions: {},
+        markDispatchIdle: vi.fn(),
+      };
+    });
+
+    try {
+      const task = handleFeishuMessage({
+        cfg: {
+          channels: {
+            feishu: {
+              dmPolicy: "open",
+              allowFrom: ["*"],
+              longTaskAckMs: 25,
+            },
+          },
+        } as ClawdbotConfig,
+        event: {
+          sender: {
+            sender_id: {
+              open_id: "ou-attacker",
+            },
+          },
+          message: {
+            message_id: "msg-feishu-long-task-visible",
+            chat_id: "oc-dm",
+            chat_type: "p2p",
+            message_type: "text",
+            content: JSON.stringify({ text: "long task" }),
+          },
+        },
+        runtime: createRuntimeEnv(),
+      });
+
+      await dispatchStarted;
+      noteVisibleActivity?.();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(mockSendMessageFeishu).not.toHaveBeenCalled();
+
+      resolveDispatch({ queuedFinal: false, counts: { final: 1 } });
+      await task;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("supersedes a timed-out Feishu background turn when a newer same-session turn starts", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-feishu-timeout-supersede-"));

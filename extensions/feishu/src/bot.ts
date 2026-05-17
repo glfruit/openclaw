@@ -56,7 +56,7 @@ import {
   resolveFeishuGroupSenderActivationIngressAccess,
   resolveFeishuReplyPolicy,
 } from "./policy.js";
-import { DEFAULT_FEISHU_QUEUE_TIMEOUT_MS } from "./queue-timeout.js";
+import { DEFAULT_FEISHU_QUEUE_TIMEOUT_MS, resolveFeishuLongTaskAckMs } from "./queue-timeout.js";
 import { resolveFeishuReasoningPreviewEnabled } from "./reasoning-preview.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
@@ -148,6 +148,55 @@ function formatQueueTimeoutNotice(timeoutMs: number): string {
     `这次任务已经超过飞书前台等待上限（约 ${minutes} 分钟）。` +
     "我已把当前会话标记为后台继续处理，避免后续消息被卡住；如果没有新的同会话消息打断，完成后会继续发送结果。"
   );
+}
+
+function formatLongTaskAckNotice(): string {
+  return "收到，任务可能需要一些时间。我已开始处理；如果超过飞书前台等待上限，会自动转后台继续，并在完成后回复结果。";
+}
+
+function createFeishuLongTaskAckNotifier(params: {
+  ackMs: number;
+  send: () => Promise<void>;
+  log: (message: string) => void;
+}) {
+  let visibleActivity = false;
+  let completed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let task: Promise<void> | undefined;
+
+  const clearTimer = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+
+  return {
+    markVisibleActivity: () => {
+      visibleActivity = true;
+      clearTimer();
+    },
+    start: () => {
+      if (params.ackMs <= 0 || timer || completed || visibleActivity) {
+        return;
+      }
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (completed || visibleActivity) {
+          return;
+        }
+        task = params.send().catch((err) => {
+          params.log(`feishu: failed to send long-task acknowledgement: ${String(err)}`);
+        });
+      }, params.ackMs);
+      timer.unref?.();
+    },
+    cancel: async () => {
+      completed = true;
+      clearTimer();
+      await task;
+    },
+  };
 }
 
 function resolveFeishuSessionTurnFenceKey(params: {
@@ -1725,6 +1774,24 @@ export async function handleFeishuMessage(params: {
             key: turnFenceKey,
             generation: turnFenceGeneration,
           });
+        const longTaskAck = createFeishuLongTaskAckNotifier({
+          ackMs: resolveFeishuLongTaskAckMs({ cfg, accountId: account.accountId }),
+          log,
+          send: async () => {
+            if (!isCurrentTurn()) {
+              return;
+            }
+            await sendMessageFeishu({
+              cfg,
+              accountId: account.accountId,
+              to: ctx.chatId,
+              text: formatLongTaskAckNotice(),
+              replyToMessageId: replyTargetMessageId,
+              replyInThread,
+              allowTopLevelReplyFallback: true,
+            });
+          },
+        });
         const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
           cfg,
           agentId: route.agentId,
@@ -1741,6 +1808,7 @@ export async function handleFeishuMessage(params: {
           messageCreateTimeMs,
           abortSignal: turnAbortController.signal,
           shouldDeliver: isCurrentTurn,
+          onVisibleActivity: () => longTaskAck.markVisibleActivity(),
         });
         turnFenceGeneration = beginFeishuSessionTurnFence({
           key: turnFenceKey,
@@ -1844,6 +1912,7 @@ export async function handleFeishuMessage(params: {
         if (queueAbortSignal?.aborted) {
           beginQueueTimeoutHandling();
         }
+        longTaskAck.start();
         let turnCompleted = false;
         let turnResult: Awaited<ReturnType<typeof runTurn>> | undefined;
         try {
@@ -1851,6 +1920,7 @@ export async function handleFeishuMessage(params: {
           turnCompleted = true;
         } finally {
           queueAbortSignal?.removeEventListener("abort", onQueueAbort);
+          await longTaskAck.cancel();
           await queueTimeoutTask;
           if (turnCompleted && isCurrentTurn()) {
             await clearFeishuQueueTimeout({
