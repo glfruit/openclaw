@@ -197,6 +197,17 @@ describe("resolveOpenClawPackageRoot", () => {
       },
     },
     {
+      name: "resolves owned scoped package roots",
+      setup: () => {
+        const pkgRoot = fx("owned-scoped");
+        setPackageRoot(pkgRoot, "@glfruit/openclaw");
+        return {
+          opts: { cwd: path.join(pkgRoot, "dist", "extensions", "feishu") },
+          expected: pkgRoot,
+        };
+      },
+    },
+    {
       name: "returns null for non-openclaw package roots",
       setup: () => {
         const pkgRoot = fx("not-openclaw");
