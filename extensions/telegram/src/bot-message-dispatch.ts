@@ -212,6 +212,7 @@ function abortTelegramReplyFenceControllers(state: TelegramReplyFenceState): voi
 function beginTelegramReplyFence(params: {
   key: string;
   supersede: boolean;
+  abortExisting?: boolean;
   abortController?: AbortController;
 }): number {
   const existing = telegramReplyFenceByKey.get(params.key);
@@ -221,7 +222,9 @@ function beginTelegramReplyFence(params: {
   };
   if (params.supersede) {
     state.generation += 1;
-    abortTelegramReplyFenceControllers(state);
+    if (params.abortExisting) {
+      abortTelegramReplyFenceControllers(state);
+    }
   }
   if (params.abortController) {
     (state.abortControllers ??= new Set()).add(params.abortController);
@@ -288,6 +291,16 @@ function shouldSupersedeTelegramReplyFence(ctxPayload: {
 }): boolean {
   const dispatchText = ctxPayload.CommandBody ?? ctxPayload.RawBody ?? ctxPayload.Body ?? "";
   return !isAbortRequestText(dispatchText) || ctxPayload.CommandAuthorized;
+}
+
+function shouldAbortExistingTelegramReplyFence(ctxPayload: {
+  Body?: string;
+  RawBody?: string;
+  CommandBody?: string;
+  CommandAuthorized: boolean;
+}): boolean {
+  const dispatchText = ctxPayload.CommandBody ?? ctxPayload.RawBody ?? ctxPayload.Body ?? "";
+  return isAbortRequestText(dispatchText) && ctxPayload.CommandAuthorized;
 }
 
 export function getTelegramReplyFenceSizeForTests(): number {
@@ -924,6 +937,7 @@ export const dispatchTelegramMessage = async ({
   replyFenceGeneration = beginTelegramReplyFence({
     key: replyFenceKey.activeKey,
     supersede: supersedeReplyFence,
+    abortExisting: shouldAbortExistingTelegramReplyFence(ctxPayload),
     abortController: turnAbortController,
   });
 

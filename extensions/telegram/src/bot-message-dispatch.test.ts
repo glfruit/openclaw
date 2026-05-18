@@ -1933,7 +1933,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(deliveredTexts).toContain("visible request answer");
   });
 
-  it("aborts and suppresses an older same-session user request when a newer one starts", async () => {
+  it("suppresses an older same-session user request without aborting it when a newer one starts", async () => {
     let firstStarted: (() => void) | undefined;
     const firstStartGate = new Promise<void>((resolve) => {
       firstStarted = resolve;
@@ -1999,7 +1999,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
       streamMode: "off",
     });
     await secondStartGate;
-    expect(firstAbortSignal?.aborted).toBe(true);
+    expect(firstAbortSignal?.aborted).toBe(false);
     releaseFirst?.();
     await Promise.all([firstPromise, secondPromise]);
 
