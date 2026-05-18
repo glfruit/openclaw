@@ -1,5 +1,6 @@
 import { resolveChannelConfigWrites } from "openclaw/plugin-sdk/channel-config-writes";
 import { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
+import { isAbortRequestText } from "openclaw/plugin-sdk/command-primitives-runtime";
 import {
   ensureConfiguredBindingRouteReady,
   resolveConfiguredBindingRoute,
@@ -209,21 +210,37 @@ function resolveFeishuSessionTurnFenceKey(params: {
 function beginFeishuSessionTurnFence(params: {
   key: string;
   abortController: AbortController;
+  supersedeExisting: boolean;
 }): number {
   const current = feishuSessionTurnFenceByKey.get(params.key);
-  if (current) {
+  if (current && params.supersedeExisting) {
     for (const controller of current.abortControllers) {
       if (!controller.signal.aborted) {
         controller.abort(new Error("Superseded by a newer Feishu turn for the same session"));
       }
     }
   }
-  const generation = (current?.generation ?? 0) + 1;
+  const generation =
+    current && !params.supersedeExisting ? current.generation : (current?.generation ?? 0) + 1;
+  const abortControllers =
+    current && !params.supersedeExisting
+      ? new Set([...current.abortControllers, params.abortController])
+      : new Set([params.abortController]);
   feishuSessionTurnFenceByKey.set(params.key, {
     generation,
-    abortControllers: new Set([params.abortController]),
+    abortControllers,
   });
   return generation;
+}
+
+function shouldSupersedeFeishuSessionTurnFence(ctxPayload: {
+  Body?: string;
+  RawBody?: string;
+  CommandBody?: string;
+  CommandAuthorized?: boolean;
+}): boolean {
+  const dispatchText = ctxPayload.CommandBody ?? ctxPayload.RawBody ?? ctxPayload.Body ?? "";
+  return isAbortRequestText(dispatchText) && ctxPayload.CommandAuthorized === true;
 }
 
 function isFeishuSessionTurnFenceCurrent(params: { key: string; generation: number }): boolean {
@@ -1813,6 +1830,7 @@ export async function handleFeishuMessage(params: {
         turnFenceGeneration = beginFeishuSessionTurnFence({
           key: turnFenceKey,
           abortController: turnAbortController,
+          supersedeExisting: shouldSupersedeFeishuSessionTurnFence(ctxPayload),
         });
 
         let queueTimeoutStarted = false;

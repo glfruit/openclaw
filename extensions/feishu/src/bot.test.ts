@@ -1208,7 +1208,7 @@ describe("handleFeishuMessage command authorization", () => {
     }
   });
 
-  it("supersedes a timed-out Feishu background turn when a newer same-session turn starts", async () => {
+  it("preserves a timed-out Feishu background turn when a newer same-session turn starts", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-feishu-timeout-supersede-"));
     const storePath = path.join(tempRoot, "sessions.json");
@@ -1284,9 +1284,15 @@ describe("handleFeishuMessage command authorization", () => {
         0,
         0,
       );
+      const firstDispatcherCall = mockCallArg<{ shouldDeliver?: () => boolean }>(
+        mockCreateFeishuReplyDispatcher,
+        0,
+        0,
+      );
       controller.abort(new Error("queue timeout"));
       await vi.waitFor(() => expect(mockSendMessageFeishu).toHaveBeenCalledTimes(1));
       expect(firstDispatchCall.replyOptions?.abortSignal?.aborted).toBe(false);
+      expect(firstDispatcherCall.shouldDeliver?.()).toBe(true);
 
       await handleFeishuMessage({
         cfg: {
@@ -1309,7 +1315,8 @@ describe("handleFeishuMessage command authorization", () => {
       });
 
       expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(2);
-      expect(firstDispatchCall.replyOptions?.abortSignal?.aborted).toBe(true);
+      expect(firstDispatchCall.replyOptions?.abortSignal?.aborted).toBe(false);
+      expect(firstDispatcherCall.shouldDeliver?.()).toBe(true);
 
       resolveFirstDispatch({ queuedFinal: false, counts: { final: 0 } });
       await firstTask;
