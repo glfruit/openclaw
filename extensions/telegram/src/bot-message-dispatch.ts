@@ -283,13 +283,32 @@ function releaseTelegramReplyFenceAbortController(
   }
 }
 
+function resolveTelegramDispatchText(ctxPayload: {
+  Body?: string;
+  RawBody?: string;
+  CommandBody?: string;
+}): string {
+  return ctxPayload.CommandBody ?? ctxPayload.RawBody ?? ctxPayload.Body ?? "";
+}
+
 function shouldSupersedeTelegramReplyFence(ctxPayload: {
   Body?: string;
   RawBody?: string;
   CommandBody?: string;
   CommandAuthorized: boolean;
 }): boolean {
-  const dispatchText = ctxPayload.CommandBody ?? ctxPayload.RawBody ?? ctxPayload.Body ?? "";
+  return (
+    isAbortRequestText(resolveTelegramDispatchText(ctxPayload)) && ctxPayload.CommandAuthorized
+  );
+}
+
+function shouldSupersedeTelegramRoomEventReplyFence(ctxPayload: {
+  Body?: string;
+  RawBody?: string;
+  CommandBody?: string;
+  CommandAuthorized: boolean;
+}): boolean {
+  const dispatchText = resolveTelegramDispatchText(ctxPayload);
   return !isAbortRequestText(dispatchText) || ctxPayload.CommandAuthorized;
 }
 
@@ -299,8 +318,9 @@ function shouldAbortExistingTelegramReplyFence(ctxPayload: {
   CommandBody?: string;
   CommandAuthorized: boolean;
 }): boolean {
-  const dispatchText = ctxPayload.CommandBody ?? ctxPayload.RawBody ?? ctxPayload.Body ?? "";
-  return isAbortRequestText(dispatchText) && ctxPayload.CommandAuthorized;
+  return (
+    isAbortRequestText(resolveTelegramDispatchText(ctxPayload)) && ctxPayload.CommandAuthorized
+  );
 }
 
 export function getTelegramReplyFenceSizeForTests(): number {
@@ -931,7 +951,7 @@ export const dispatchTelegramMessage = async ({
   const chunkMode = resolveChunkMode(cfg, "telegram", route.accountId);
 
   const supersedeReplyFence = shouldSupersedeTelegramReplyFence(ctxPayload);
-  if (!isRoomEvent && supersedeReplyFence) {
+  if (!isRoomEvent && shouldSupersedeTelegramRoomEventReplyFence(ctxPayload)) {
     supersedeTelegramReplyFence(replyFenceKey.roomEventKey);
   }
   replyFenceGeneration = beginTelegramReplyFence({

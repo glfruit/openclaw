@@ -1933,7 +1933,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(deliveredTexts).toContain("visible request answer");
   });
 
-  it("suppresses an older same-session user request without aborting it when a newer one starts", async () => {
+  it("keeps an older same-session user request deliverable when a newer one starts", async () => {
     let firstStarted: (() => void) | undefined;
     const firstStartGate = new Promise<void>((resolve) => {
       firstStarted = resolve;
@@ -2009,7 +2009,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
       ),
     );
     expect(deliveredTexts).toContain("fresh user answer");
-    expect(deliveredTexts).not.toContain("stale user answer");
+    expect(deliveredTexts).toContain("stale user answer");
   });
 
   it("lets user requests supersede active room-event dispatch", async () => {
