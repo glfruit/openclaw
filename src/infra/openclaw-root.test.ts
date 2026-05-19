@@ -148,6 +148,17 @@ describe("resolveOpenClawPackageRoot", () => {
       },
     },
     {
+      name: "resolves owned scoped package root",
+      setup: () => {
+        const pkgRoot = fx("owned-scoped");
+        setPackageRoot(pkgRoot, "@glfruit/openclaw");
+        return {
+          opts: { cwd: path.join(pkgRoot, "dist", "extensions", "telegram") },
+          expected: pkgRoot,
+        };
+      },
+    },
+    {
       name: "falls back when argv1 realpath throws",
       setup: () => {
         const project = fx("realpath-throw-scenario");
