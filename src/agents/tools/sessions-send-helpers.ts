@@ -67,10 +67,19 @@ export function buildAgentToAgentMessageContext(params: {
   requesterSessionKey?: string;
   requesterChannel?: string;
   targetSessionKey: string;
+  handoffId?: string;
+  targetReceiptPath?: string;
+  requesterReceiptPath?: string;
 }) {
-  const lines = ["Agent-to-agent message context:", ...buildAgentSessionLines(params)].filter(
-    Boolean,
-  );
+  const lines = [
+    "Agent-to-agent message context:",
+    ...buildAgentSessionLines(params),
+    params.handoffId ? `Handoff id: ${params.handoffId}.` : undefined,
+    params.targetReceiptPath ? `Target handoff inbox: ${params.targetReceiptPath}.` : undefined,
+    params.requesterReceiptPath
+      ? `Requester handoff outbox: ${params.requesterReceiptPath}.`
+      : undefined,
+  ].filter(Boolean);
   return lines.join("\n");
 }
 

@@ -884,6 +884,18 @@ describe("sessions_send gating", () => {
       inbox: { path: "handoffs/inbox/main.jsonl" },
       outbox: { path: "handoffs/outbox/main.jsonl" },
     });
+    const agentCall = callGatewayMock.mock.calls.find((call) => call[0]?.method === "agent");
+    const agentParams = requireRecord(
+      requireRecord(agentCall?.[0], "agent call").params,
+      "agent params",
+    );
+    const extraSystemPrompt =
+      typeof agentParams.extraSystemPrompt === "string" ? agentParams.extraSystemPrompt : "";
+    const handoffId = typeof handoff.id === "string" ? handoff.id : "";
+    expect(handoffId).not.toBe("");
+    expect(extraSystemPrompt).toContain(`Handoff id: ${handoffId}.`);
+    expect(extraSystemPrompt).toContain("Target handoff inbox: handoffs/inbox/main.jsonl.");
+    expect(extraSystemPrompt).toContain("Requester handoff outbox: handoffs/outbox/main.jsonl.");
 
     const rawLedger = await fs.readFile(resolveSessionsSendHandoffLedgerPath(), "utf-8");
     const entries = rawLedger

@@ -473,27 +473,6 @@ export function createSessionsSendTool(opts?: {
               callGateway: gatewayCall,
             });
 
-      const agentMessageContext = buildAgentToAgentMessageContext({
-        requesterSessionKey: opts?.agentSessionKey,
-        requesterChannel: opts?.agentChannel,
-        targetSessionKey: displayKey,
-      });
-      const inputProvenance = {
-        kind: "inter_session" as const,
-        sourceSessionKey: opts?.agentSessionKey,
-        sourceChannel: opts?.agentChannel,
-        sourceTool: "sessions_send",
-      };
-      const sendParams = {
-        message: annotateInterSessionPromptText(message, inputProvenance),
-        sessionKey: resolvedKey,
-        idempotencyKey,
-        deliver: false,
-        channel: INTERNAL_MESSAGE_CHANNEL,
-        lane: resolveNestedAgentLaneForSession(resolvedKey),
-        extraSystemPrompt: agentMessageContext,
-        inputProvenance,
-      };
       const requesterSessionKey = opts?.agentSessionKey;
       const requesterChannel = opts?.agentChannel;
       const maxPingPongTurns = resolvePingPongTurns(cfg);
@@ -592,6 +571,30 @@ export function createSessionsSendTool(opts?: {
         targetSessionKey: resolvedKey,
         targetDisplayKey: displayKey,
       });
+      const agentMessageContext = buildAgentToAgentMessageContext({
+        requesterSessionKey: opts?.agentSessionKey,
+        requesterChannel: opts?.agentChannel,
+        targetSessionKey: displayKey,
+        handoffId,
+        targetReceiptPath: receipt.inbox.path,
+        requesterReceiptPath: receipt.outbox.path,
+      });
+      const inputProvenance = {
+        kind: "inter_session" as const,
+        sourceSessionKey: opts?.agentSessionKey,
+        sourceChannel: opts?.agentChannel,
+        sourceTool: "sessions_send",
+      };
+      const sendParams = {
+        message: annotateInterSessionPromptText(message, inputProvenance),
+        sessionKey: resolvedKey,
+        idempotencyKey,
+        deliver: false,
+        channel: INTERNAL_MESSAGE_CHANNEL,
+        lane: resolveNestedAgentLaneForSession(resolvedKey),
+        extraSystemPrompt: agentMessageContext,
+        inputProvenance,
+      };
 
       const startA2AFlow = (roundOneReply?: string, waitRunId?: string) => {
         if (skipA2AFlow) {

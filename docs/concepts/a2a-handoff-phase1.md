@@ -107,6 +107,11 @@ the receiving agent can distinguish "not received" from "received but not yet
 processed." If OpenClaw cannot write the receipt, `sessions_send` returns an
 error and does not start the target run.
 
+OpenClaw also injects the `handoff.id`, target inbox path, and requester outbox
+path into the target run's agent-to-agent message context. That makes the
+durable receipt visible in the target transcript instead of relying only on the
+requester's tool result.
+
 Phase 1 events include:
 
 | Event                      | When it is written                                                  |
