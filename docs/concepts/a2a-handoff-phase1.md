@@ -40,6 +40,15 @@ a `handoff.id`. The existing `status`, `runId`, `reply`, `sessionKey`, and
     },
     "ledger": {
       "path": "handoffs/sessions-send.jsonl"
+    },
+    "receipt": {
+      "status": "recorded",
+      "inbox": {
+        "path": "handoffs/inbox/worker.jsonl"
+      },
+      "outbox": {
+        "path": "handoffs/outbox/requester.jsonl"
+      }
     }
   }
 }
@@ -80,6 +89,24 @@ available routing metadata such as requester session, requester channel, target
 session, and target channel. The ledger intentionally avoids storing original
 prompt or reply text.
 
+Every accepted handoff must also write a durable receipt before the target run
+starts. The target-facing receipt is stored in:
+
+```text
+handoffs/inbox/<target>.jsonl
+```
+
+The requester-facing mirror is stored in:
+
+```text
+handoffs/outbox/<requester>.jsonl
+```
+
+These receipt files contain the original handoff message and routing metadata so
+the receiving agent can distinguish "not received" from "received but not yet
+processed." If OpenClaw cannot write the receipt, `sessions_send` returns an
+error and does not start the target run.
+
 Phase 1 events include:
 
 | Event                      | When it is written                                                  |
@@ -90,6 +117,8 @@ Phase 1 events include:
 | `target_reply_observed`    | The target produced a non-control reply.                            |
 | `target_reply_missing`     | A delayed flow could not observe a new target reply.                |
 | `control_outcome_observed` | A control-only target, reply-back, or announce result was observed. |
+| `receipt_recorded`         | The target inbox and requester outbox receipt was written.          |
+| `receipt_failed`           | The durable receipt write failed before the target run started.     |
 | `announce_delivered`       | The final announce message was sent to a channel target.            |
 | `announce_delivery_failed` | Channel delivery for the announce failed.                           |
 | `failed`                   | The target wait or A2A follow-up failed after acceptance.           |

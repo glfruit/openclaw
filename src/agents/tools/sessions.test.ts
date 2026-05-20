@@ -5,7 +5,11 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelMessagingAdapter } from "../../channels/plugins/types.js";
 import { createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { extractAssistantText, sanitizeTextContent } from "./sessions-helpers.js";
-import { resolveSessionsSendHandoffLedgerPath } from "./sessions-send-handoff.js";
+import {
+  resolveSessionsSendHandoffInboxPath,
+  resolveSessionsSendHandoffLedgerPath,
+  resolveSessionsSendHandoffOutboxPath,
+} from "./sessions-send-handoff.js";
 
 const callGatewayMock = vi.fn();
 vi.mock("../../gateway/call.js", () => ({
@@ -875,6 +879,11 @@ describe("sessions_send gating", () => {
     expect(handoff.status).toBe("accepted");
     expect(handoff.delivery).toEqual({ status: "pending", mode: "announce" });
     expect(handoff.ledger).toEqual({ path: "handoffs/sessions-send.jsonl" });
+    expect(handoff.receipt).toEqual({
+      status: "recorded",
+      inbox: { path: "handoffs/inbox/main.jsonl" },
+      outbox: { path: "handoffs/outbox/main.jsonl" },
+    });
 
     const rawLedger = await fs.readFile(resolveSessionsSendHandoffLedgerPath(), "utf-8");
     const entries = rawLedger
@@ -882,7 +891,63 @@ describe("sessions_send gating", () => {
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
     expect(entries.map((entry) => entry.type)).toContain("created");
+    expect(entries.map((entry) => entry.type)).toContain("receipt_recorded");
     expect(entries.map((entry) => entry.type)).toContain("accepted");
     expect(entries.every((entry) => entry.handoffId === handoff.id)).toBe(true);
+
+    const inboxRaw = await fs.readFile(
+      resolveSessionsSendHandoffInboxPath(MAIN_AGENT_SESSION_KEY),
+      "utf-8",
+    );
+    const outboxRaw = await fs.readFile(
+      resolveSessionsSendHandoffOutboxPath(MAIN_AGENT_SESSION_KEY),
+      "utf-8",
+    );
+    for (const raw of [inboxRaw, outboxRaw]) {
+      const receipt = JSON.parse(raw.trim()) as Record<string, unknown>;
+      expect(receipt.handoffId).toBe(handoff.id);
+      expect(receipt.status).toBe("queued");
+      expect(receipt.targetSessionKey).toBe(MAIN_AGENT_SESSION_KEY);
+      expect(receipt.requesterSessionKey).toBe(MAIN_AGENT_SESSION_KEY);
+      expect(receipt.message).toBe("ping");
+    }
+  });
+
+  it("does not start target runs when the durable handoff receipt cannot be written", async () => {
+    const stateDirFile = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-handoff-file-state-")),
+      "state-file",
+    );
+    await fs.writeFile(stateDirFile, "not a directory");
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDirFile);
+    const tool = createMainSessionsSendTool();
+
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "sessions.list") {
+        return {
+          path: "/tmp/sessions.json",
+          sessions: [{ key: MAIN_AGENT_SESSION_KEY, kind: "direct" }],
+        };
+      }
+      if (request.method === "agent") {
+        throw new Error("agent should not start before receipt is recorded");
+      }
+      return {};
+    });
+
+    const result = await tool.execute("call-handoff-receipt-failed", {
+      sessionKey: MAIN_AGENT_SESSION_KEY,
+      message: "ping",
+      timeoutSeconds: 1,
+    });
+
+    const details = requireDetails(result);
+    expect(details.status).toBe("error");
+    expect(details.error).toMatch(/Failed to record target handoff receipt/);
+    expect(callGatewayMock.mock.calls.some((call) => call[0]?.method === "agent")).toBe(false);
+    const handoff = requireRecord(details.handoff, "handoff");
+    expect(handoff.status).toBe("rejected");
+    expect(handoff.receipt).toMatchObject({ status: "failed" });
   });
 });

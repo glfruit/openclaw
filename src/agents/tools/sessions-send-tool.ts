@@ -43,6 +43,7 @@ import {
 } from "./sessions-helpers.js";
 import {
   buildSessionsSendHandoffAck,
+  recordSessionsSendHandoffReceipt,
   recordSessionsSendHandoffEvent,
   type SessionsSendHandoffAck,
   type SessionsSendHandoffDelivery,
@@ -533,15 +534,58 @@ export function createSessionsSendTool(opts?: {
       const delivery = skipA2AFlow
         ? ({ status: "skipped", mode: "announce" } as const)
         : ({ status: "pending", mode: "announce" } as const);
+      const receipt = await recordSessionsSendHandoffReceipt({
+        handoffId,
+        message,
+        requesterSessionKey: effectiveRequesterKey,
+        requesterChannel,
+        targetSessionKey: resolvedKey,
+        targetDisplayKey: displayKey,
+      });
+      if (receipt.status !== "recorded") {
+        const failedReceiptHandoff = buildSessionsSendHandoffAck({
+          id: handoffId,
+          status: "rejected",
+          delivery: skippedHandoffDelivery,
+          receipt,
+        });
+        await recordSessionsSendHandoffEvent({
+          handoffId,
+          type: "receipt_failed",
+          status: "rejected",
+          requesterSessionKey: effectiveRequesterKey,
+          requesterChannel,
+          targetSessionKey: resolvedKey,
+          targetDisplayKey: displayKey,
+          error: receipt.error,
+        });
+        return jsonResult({
+          runId: crypto.randomUUID(),
+          status: "error",
+          error: `Failed to record target handoff receipt: ${receipt.error}`,
+          sessionKey: displayKey,
+          handoff: failedReceiptHandoff,
+        });
+      }
       const handoff = buildSessionsSendHandoffAck({
         id: handoffId,
         status: "accepted",
         delivery,
+        receipt,
       });
 
       await recordSessionsSendHandoffEvent({
         handoffId,
         type: "created",
+        status: "queued",
+        requesterSessionKey: effectiveRequesterKey,
+        requesterChannel,
+        targetSessionKey: resolvedKey,
+        targetDisplayKey: displayKey,
+      });
+      await recordSessionsSendHandoffEvent({
+        handoffId,
+        type: "receipt_recorded",
         status: "queued",
         requesterSessionKey: effectiveRequesterKey,
         requesterChannel,
