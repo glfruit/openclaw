@@ -422,5 +422,9 @@ function isEmptyDiscordProgressLine(line: string | ChannelProgressDraftLine | un
 function shouldStartDiscordProgressDraftNow(
   line: string | ChannelProgressDraftLine | undefined,
 ): boolean {
-  return typeof line === "object" && line?.kind === "patch" && Boolean(line.detail);
+  return (
+    typeof line === "object" &&
+    ((line.kind === "patch" && Boolean(line.detail)) ||
+      (line.kind === "item" && line.text.startsWith("Still working...")))
+  );
 }

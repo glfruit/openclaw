@@ -54,7 +54,7 @@ import {
 } from "../reply-payload.js";
 import type { OriginatingChannelType, TemplateContext } from "../templating.js";
 import { resolveResponseUsageMode, type VerboseLevel } from "../thinking.js";
-import { SILENT_REPLY_TOKEN } from "../tokens.js";
+import { isSilentReplyPayloadText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import {
   buildKnownAgentRunFailureReplyPayload,
@@ -106,6 +106,8 @@ import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
+const COMPLETED_WITHOUT_FINAL_MESSAGE_TEXT =
+  "The run finished after tool activity, but the agent did not generate a final chat message.";
 
 function markBeforeAgentRunBlockedPayloads(payloads: ReplyPayload[]): ReplyPayload[] {
   return payloads.map((payload) =>
@@ -162,6 +164,18 @@ function hasCommittedMessagingTargetDeliveryEvidence(value: unknown): boolean {
   });
 }
 
+function hasMessagingToolDeliveryEvidence(params: {
+  messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
+  messagingToolSentTargets?: unknown[];
+}): boolean {
+  return (
+    hasNonEmptyStringArray(params.messagingToolSentTexts) ||
+    hasNonEmptyStringArray(params.messagingToolSentMediaUrls) ||
+    hasCommittedMessagingTargetDeliveryEvidence(params.messagingToolSentTargets)
+  );
+}
+
 function hasSuccessfulSideEffectDelivery(params: {
   blockReplyPipeline: { didStream: () => boolean; isAborted: () => boolean } | null;
   directlySentBlockKeys?: Set<string>;
@@ -174,12 +188,86 @@ function hasSuccessfulSideEffectDelivery(params: {
   return (
     (params.blockReplyPipeline?.didStream() && !params.blockReplyPipeline.isAborted()) ||
     (params.directlySentBlockKeys?.size ?? 0) > 0 ||
-    hasNonEmptyStringArray(params.messagingToolSentTexts) ||
-    hasNonEmptyStringArray(params.messagingToolSentMediaUrls) ||
-    hasCommittedMessagingTargetDeliveryEvidence(params.messagingToolSentTargets) ||
+    hasMessagingToolDeliveryEvidence(params) ||
     (params.successfulCronAdds ?? 0) > 0 ||
     params.didSendDeterministicApprovalPrompt === true
   );
+}
+
+function hasSuccessfulNonBlockSideEffect(params: {
+  messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
+  messagingToolSentTargets?: unknown[];
+  successfulCronAdds?: number;
+}): boolean {
+  return (
+    hasNonEmptyStringArray(params.messagingToolSentTexts) ||
+    hasNonEmptyStringArray(params.messagingToolSentMediaUrls) ||
+    hasCommittedMessagingTargetDeliveryEvidence(params.messagingToolSentTargets) ||
+    (params.successfulCronAdds ?? 0) > 0
+  );
+}
+
+function hasPositiveToolActivity(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const calls = (value as { calls?: unknown }).calls;
+  return typeof calls === "number" && Number.isFinite(calls) && calls > 0;
+}
+
+function hasCompletionEvidenceWithoutFinalReply(params: {
+  successfulNonBlockSideEffect: boolean;
+  hasMessagingToolDelivery: boolean;
+  toolSummary?: unknown;
+}): boolean {
+  if (params.hasMessagingToolDelivery) {
+    return false;
+  }
+  return params.successfulNonBlockSideEffect || hasPositiveToolActivity(params.toolSummary);
+}
+
+function canEmitCompletedWithoutFinalMessage(params: {
+  isHeartbeat: boolean;
+  silentExpected?: boolean;
+  allowEmptyAssistantReplyAsSilent?: boolean;
+  hasCompletionEvidence: boolean;
+}): boolean {
+  return (
+    !params.isHeartbeat &&
+    params.silentExpected !== true &&
+    params.allowEmptyAssistantReplyAsSilent !== true &&
+    params.hasCompletionEvidence
+  );
+}
+
+function isSilentOnlyReplyPayload(payload: ReplyPayload): boolean {
+  return (
+    payload.isReasoning !== true &&
+    payload.isError !== true &&
+    payload.isFallbackNotice !== true &&
+    isSilentReplyPayloadText(payload.text) &&
+    !payload.mediaUrl &&
+    !payload.mediaUrls?.length &&
+    !payload.audioAsVoice &&
+    !payload.presentation &&
+    !payload.interactive &&
+    !payload.channelData
+  );
+}
+
+function buildCompletedWithoutFinalMessagePayload(params: {
+  isHeartbeat: boolean;
+  silentExpected?: boolean;
+  allowEmptyAssistantReplyAsSilent?: boolean;
+  hasCompletionEvidence: boolean;
+}): ReplyPayload | undefined {
+  if (!canEmitCompletedWithoutFinalMessage(params)) {
+    return undefined;
+  }
+  return markReplyPayloadForSourceSuppressionDelivery({
+    text: COMPLETED_WITHOUT_FINAL_MESSAGE_TEXT,
+  });
 }
 
 function resolveConfiguredFallbackModel(params: {
@@ -1635,6 +1723,26 @@ export async function runReplyAgent(params: {
       successfulCronAdds: runResult.successfulCronAdds,
       didSendDeterministicApprovalPrompt: runResult.didSendDeterministicApprovalPrompt,
     });
+    const hasMessagingToolDelivery = hasMessagingToolDeliveryEvidence({
+      messagingToolSentTexts: runResult.messagingToolSentTexts,
+      messagingToolSentMediaUrls: runResult.messagingToolSentMediaUrls,
+      messagingToolSentTargets: runResult.messagingToolSentTargets,
+    });
+    const completedWithoutFinalMessagePayload = buildCompletedWithoutFinalMessagePayload({
+      isHeartbeat,
+      silentExpected: followupRun.run.silentExpected,
+      allowEmptyAssistantReplyAsSilent: followupRun.run.allowEmptyAssistantReplyAsSilent,
+      hasCompletionEvidence: hasCompletionEvidenceWithoutFinalReply({
+        hasMessagingToolDelivery,
+        successfulNonBlockSideEffect: hasSuccessfulNonBlockSideEffect({
+          messagingToolSentTexts: runResult.messagingToolSentTexts,
+          messagingToolSentMediaUrls: runResult.messagingToolSentMediaUrls,
+          messagingToolSentTargets: runResult.messagingToolSentTargets,
+          successfulCronAdds: runResult.successfulCronAdds,
+        }),
+        toolSummary: runResult.meta?.toolSummary,
+      }),
+    });
     const returnSilentFallbackFailureIfNeeded = async (): Promise<ReplyPayload | undefined> => {
       const silentFallbackFailurePayload = buildSilentFallbackFailurePayload({
         fallbackTransition,
@@ -1721,6 +1829,10 @@ export async function runReplyAgent(params: {
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
     if (payloadArray.length === 0 && fallbackNoticePayloads.length === 0) {
+      if (completedWithoutFinalMessagePayload) {
+        await signalTypingIfNeeded([completedWithoutFinalMessagePayload], typingSignals);
+        return returnWithQueuedFollowupDrain(completedWithoutFinalMessagePayload);
+      }
       const silentFallbackFailurePayload = await returnSilentFallbackFailureIfNeeded();
       if (silentFallbackFailurePayload) {
         return silentFallbackFailurePayload;
@@ -1756,8 +1868,16 @@ export async function runReplyAgent(params: {
       accountId: sessionCtx.AccountId,
       normalizeMediaPaths: replyMediaContext.normalizePayload,
     });
-    const { replyPayloads } = payloadResult;
+    let { replyPayloads } = payloadResult;
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
+
+    if (
+      completedWithoutFinalMessagePayload &&
+      replyPayloads.length > 0 &&
+      replyPayloads.every(isSilentOnlyReplyPayload)
+    ) {
+      replyPayloads = [completedWithoutFinalMessagePayload];
+    }
 
     const hasReplyPayloadBeyondFallbackNotice = replyPayloads.some(
       (payload) => !payload.isFallbackNotice,
@@ -1771,6 +1891,10 @@ export async function runReplyAgent(params: {
       replyPayloads.length === 0 ||
       (!hasReplyPayloadBeyondFallbackNotice && !canDeliverStandaloneFallbackNotice)
     ) {
+      if (replyPayloads.length === 0 && completedWithoutFinalMessagePayload) {
+        await signalTypingIfNeeded([completedWithoutFinalMessagePayload], typingSignals);
+        return returnWithQueuedFollowupDrain(completedWithoutFinalMessagePayload);
+      }
       const silentFallbackFailurePayload = await returnSilentFallbackFailureIfNeeded();
       if (silentFallbackFailurePayload) {
         return silentFallbackFailurePayload;

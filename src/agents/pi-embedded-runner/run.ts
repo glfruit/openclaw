@@ -8,7 +8,7 @@ import {
   resolveContextEngine,
   resolveContextEngineOwnerPluginId,
 } from "../../context-engine/registry.js";
-import { emitAgentPlanEvent } from "../../infra/agent-events.js";
+import { emitAgentEvent, emitAgentPlanEvent } from "../../infra/agent-events.js";
 import { sleepWithAbort } from "../../infra/backoff.js";
 import { freezeDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -483,6 +483,24 @@ export async function runEmbeddedPiAgent(
         noteLaneTaskProgress();
         params.onRunProgress?.(info);
       };
+      const emitLifecycleProgress = (message: string, extra?: Record<string, unknown>): void => {
+        const data = {
+          phase: "progress",
+          message,
+          ...extra,
+        };
+        emitAgentEvent({
+          runId: params.runId,
+          ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+          stream: "lifecycle",
+          data,
+        });
+        void params.onAgentEvent?.({
+          stream: "lifecycle",
+          data,
+          ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+        });
+      };
       const emitStartupStageSummary = (phase: string) => {
         const summary = startupStages.snapshot();
         const shouldWarn = shouldWarnEmbeddedRunStageSummary(summary);
@@ -501,6 +519,7 @@ export async function runEmbeddedPiAgent(
       };
       params.onExecutionStarted?.();
       notifyExecutionPhase("runner_entered");
+      emitLifecycleProgress("Preparing run", { status: "preparing" });
       const workspaceResolution = resolveRunWorkspaceDir({
         workspaceDir: params.workspaceDir,
         sessionKey: params.sessionKey,
@@ -1373,6 +1392,12 @@ export async function runEmbeddedPiAgent(
             emitStartupStageSummary(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.dispatch);
             startupStagesEmitted = true;
           }
+          emitLifecycleProgress("Waiting for model response", {
+            status: "model",
+            provider,
+            model: modelId,
+            attempt: runLoopIterations,
+          });
 
           const attemptAbortController = new AbortController();
           postCompactionAbortController = attemptAbortController;
@@ -2804,6 +2829,12 @@ export async function runEmbeddedPiAgent(
             }
             planningOnlyRetryAttempts += 1;
             planningOnlyRetryInstruction = nextPlanningOnlyRetryInstruction;
+            emitLifecycleProgress("Retrying after a plan-only response", {
+              status: "retrying",
+              reason: "planning_only",
+              attempt: planningOnlyRetryAttempts,
+              maxAttempts: maxPlanningOnlyRetryAttempts,
+            });
             log.warn(
               `planning-only turn detected: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${provider}/${modelId} contract=${executionContract} configured=${configuredExecutionContractForLog} — retrying ` +
@@ -2818,6 +2849,12 @@ export async function runEmbeddedPiAgent(
           ) {
             reasoningOnlyRetryAttempts += 1;
             reasoningOnlyRetryInstruction = nextReasoningOnlyRetryInstruction;
+            emitLifecycleProgress("Retrying after a reasoning-only response", {
+              status: "retrying",
+              reason: "reasoning_only",
+              attempt: reasoningOnlyRetryAttempts,
+              maxAttempts: maxReasoningOnlyRetryAttempts,
+            });
             log.warn(
               `reasoning-only assistant turn detected: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${reasoningOnlyRetryAttempts}/${maxReasoningOnlyRetryAttempts} ` +
@@ -2837,6 +2874,12 @@ export async function runEmbeddedPiAgent(
           ) {
             emptyResponseRetryAttempts += 1;
             emptyResponseRetryInstruction = nextEmptyResponseRetryInstruction;
+            emitLifecycleProgress("Retrying after an empty response", {
+              status: "retrying",
+              reason: "empty_response",
+              attempt: emptyResponseRetryAttempts,
+              maxAttempts: maxEmptyResponseRetryAttempts,
+            });
             log.warn(
               `empty response detected: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `provider=${activeErrorContext.provider}/${activeErrorContext.model} — retrying ${emptyResponseRetryAttempts}/${maxEmptyResponseRetryAttempts} ` +
@@ -2868,6 +2911,12 @@ export async function runEmbeddedPiAgent(
           ) {
             compactionContinuationRetryAttempts += 1;
             compactionContinuationRetryInstruction = COMPACTION_CONTINUATION_RETRY_INSTRUCTION;
+            emitLifecycleProgress("Retrying after context compaction interrupted the answer", {
+              status: "retrying",
+              reason: "compaction_continuation",
+              attempt: compactionContinuationRetryAttempts,
+              maxAttempts: 1,
+            });
             log.warn(
               `compaction interrupted visible final answer: runId=${params.runId} sessionId=${params.sessionId} ` +
                 `compactions=${attemptCompactionCount} — retrying ${compactionContinuationRetryAttempts}/1 with compacted-transcript continuation`,

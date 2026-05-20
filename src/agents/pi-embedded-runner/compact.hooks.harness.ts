@@ -321,6 +321,11 @@ export async function loadCompactHooksHarness(): Promise<{
 
   vi.doMock("../../plugins/hook-runner-global.js", () => ({
     getGlobalHookRunner: () => hookRunner,
+    getGlobalPluginRegistry: vi.fn(() => null),
+    hasGlobalHooks: vi.fn((hookName?: string) => hookRunner.hasHooks(hookName)),
+    initializeGlobalHookRunner: vi.fn(),
+    resetGlobalHookRunner: vi.fn(),
+    runGlobalGatewayStopSafely: vi.fn(async () => undefined),
   }));
 
   vi.doMock("../runtime-plugins.js", () => ({
@@ -328,7 +333,11 @@ export async function loadCompactHooksHarness(): Promise<{
   }));
 
   vi.doMock("../../plugins/current-plugin-metadata-snapshot.js", () => ({
+    captureCurrentPluginMetadataSnapshotState: vi.fn(() => ({})),
+    clearCurrentPluginMetadataSnapshot: vi.fn(),
     getCurrentPluginMetadataSnapshot: () => emptyPluginMetadataSnapshot,
+    restoreCurrentPluginMetadataSnapshotState: vi.fn(),
+    setCurrentPluginMetadataSnapshot: vi.fn(),
   }));
 
   vi.doMock("../harness/selection.js", () => ({

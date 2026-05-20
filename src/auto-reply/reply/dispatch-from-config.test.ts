@@ -3423,6 +3423,92 @@ describe("dispatchReplyFromConfig", () => {
     });
   });
 
+  it("delivers hard lifecycle progress through the generic channel path", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "discord",
+      Surface: "discord",
+      ChatType: "direct",
+      SessionKey: "agent:main:discord:dm:D1",
+    });
+    const replyResolver = async (
+      _ctx: MsgContext,
+      opts?: GetReplyOptions,
+    ): Promise<ReplyPayload> => {
+      await opts?.onItemEvent?.({
+        kind: "lifecycle",
+        title: "Waiting for model response",
+        phase: "progress",
+        status: "model",
+      });
+      await opts?.onItemEvent?.({
+        kind: "lifecycle",
+        title: "Still working... (2 min elapsed - running: execute_code)",
+        phase: "progress",
+        status: "running",
+      });
+      await opts?.onItemEvent?.({
+        kind: "lifecycle",
+        title: "Still working... (2 min elapsed - running: execute_code)",
+        phase: "progress",
+        status: "running",
+      });
+      return { text: "done" };
+    };
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver,
+    });
+
+    expect(dispatcher.sendToolResult).toHaveBeenCalledTimes(1);
+    expect(dispatcher.sendToolResult).toHaveBeenCalledWith({
+      text: "Still working... (2 min elapsed - running: execute_code)",
+    });
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "done" });
+  });
+
+  it("does not deliver generic hard lifecycle progress when send policy denies delivery", async () => {
+    setNoAbort();
+    sessionStoreMocks.currentEntry = {
+      sessionId: "s1",
+      updatedAt: 0,
+      sendPolicy: "deny",
+    };
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "discord",
+      Surface: "discord",
+      ChatType: "direct",
+      SessionKey: "agent:main:discord:dm:D1",
+    });
+    const replyResolver = async (
+      _ctx: MsgContext,
+      opts?: GetReplyOptions,
+    ): Promise<ReplyPayload> => {
+      await opts?.onItemEvent?.({
+        kind: "lifecycle",
+        title: "Still working... (2 min elapsed - running: execute_code)",
+        phase: "progress",
+        status: "running",
+      });
+      return { text: "done" };
+    };
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver,
+    });
+
+    expect(dispatcher.sendToolResult).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  });
+
   it("routes plugin-owned bindings to the owning plugin before generic inbound claim broadcast", async () => {
     setNoAbort();
     hookMocks.runner.hasHooks.mockImplementation(

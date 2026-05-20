@@ -809,7 +809,7 @@ describe("runCliAgent reliability", () => {
     }
   });
 
-  it("does not emit llm_output when the CLI run returns no assistant text", async () => {
+  it("does not emit llm_output when the CLI run fails with empty assistant text", async () => {
     const hookRunner = {
       hasHooks: vi.fn((hookName: string) => hookName === "llm_output"),
       runLlmInput: vi.fn(async () => undefined),
@@ -831,9 +831,10 @@ describe("runCliAgent reliability", () => {
       }),
     );
 
-    const result = await runPreparedCliAgent(buildPreparedContext());
-
-    expect(result.payloads).toBeUndefined();
+    await expect(runPreparedCliAgent(buildPreparedContext())).rejects.toMatchObject({
+      name: "FailoverError",
+      reason: "empty_response",
+    });
     expect(hookRunner.runLlmOutput).not.toHaveBeenCalled();
   });
 

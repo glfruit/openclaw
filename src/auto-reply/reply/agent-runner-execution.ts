@@ -55,6 +55,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { emitAgentEvent, registerAgentRunContext } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { formatDurationCompact } from "../../infra/format-time/format-duration.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -901,6 +902,66 @@ function isReplyOperationRestartAbort(replyOperation?: ReplyOperation): boolean 
     replyOperation?.result?.kind === "aborted" &&
     replyOperation.result.code === "aborted_for_restart"
   );
+}
+
+const RUN_PROGRESS_HEARTBEAT_INTERVAL_MS = 120_000;
+
+function createRunProgressHeartbeat(params: {
+  onProgress?: GetReplyOptions["onItemEvent"];
+  intervalMs?: number;
+}) {
+  const onProgress = params.onProgress;
+  if (!onProgress) {
+    return {
+      noteProgress: () => {},
+      setActiveOperation: (_operation?: string) => {},
+      stop: () => {},
+    };
+  }
+  const intervalMs = params.intervalMs ?? RUN_PROGRESS_HEARTBEAT_INTERVAL_MS;
+  const startedAt = Date.now();
+  let lastProgressAt = startedAt;
+  let activeOperation: string | undefined;
+  let heartbeatCount = 0;
+  let stopped = false;
+  let inFlight: Promise<void> | null = null;
+  const timer = globalThis.setInterval(() => {
+    if (stopped || Date.now() - lastProgressAt < intervalMs || inFlight) {
+      return;
+    }
+    heartbeatCount += 1;
+    lastProgressAt = Date.now();
+    const elapsed = formatDurationCompact(Date.now() - startedAt, { spaced: true }) ?? "0s";
+    const operation = activeOperation ? ` - running: ${activeOperation}` : "";
+    inFlight = Promise.resolve(
+      onProgress({
+        kind: "lifecycle",
+        title: `Still working... (${elapsed} elapsed${operation})`,
+        phase: "progress",
+        status: "running",
+        itemId: `run-progress-heartbeat:${heartbeatCount}`,
+      }),
+    )
+      .catch((error) => {
+        logVerbose(`run progress heartbeat failed: ${formatErrorMessage(error)}`);
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+  }, intervalMs);
+
+  return {
+    noteProgress: () => {
+      lastProgressAt = Date.now();
+    },
+    setActiveOperation: (operation?: string) => {
+      activeOperation = normalizeOptionalString(operation);
+    },
+    stop: () => {
+      stopped = true;
+      globalThis.clearInterval(timer);
+    },
+  };
 }
 
 function createEmbeddedLifecycleTerminalBackstop(params: { runId: string; sessionKey?: string }) {
@@ -1768,6 +1829,9 @@ export async function runAgentTurnWithFallback(params: {
               runId,
               sessionKey: params.sessionKey,
             });
+            const progressHeartbeat = createRunProgressHeartbeat({
+              onProgress: params.opts?.onItemEvent,
+            });
             try {
               const result = await runEmbeddedPiAgent({
                 ...embeddedContext,
@@ -1821,6 +1885,7 @@ export async function runAgentTurnWithFallback(params: {
                 blockReplyBreak: params.resolvedBlockStreamingBreak,
                 blockReplyChunking: params.blockReplyChunking,
                 onPartialReply: async (payload) => {
+                  progressHeartbeat.noteProgress();
                   const textForTyping = await handlePartialForTyping(payload);
                   if (!params.opts?.onPartialReply || textForTyping === undefined) {
                     return;
@@ -1831,12 +1896,14 @@ export async function runAgentTurnWithFallback(params: {
                   });
                 },
                 onAssistantMessageStart: async () => {
+                  progressHeartbeat.noteProgress();
                   await params.typingSignals.signalMessageStart();
                   await params.opts?.onAssistantMessageStart?.();
                 },
                 onReasoningStream:
                   params.typingSignals.shouldStartOnReasoning || params.opts?.onReasoningStream
                     ? async (payload) => {
+                        progressHeartbeat.noteProgress();
                         if (params.followupRun.run.silentExpected) {
                           return;
                         }
@@ -1856,12 +1923,28 @@ export async function runAgentTurnWithFallback(params: {
                   if (evt.stream !== "lifecycle" || hasLifecyclePhase) {
                     notifyAgentRunStart();
                   }
+                  if (evt.stream === "lifecycle") {
+                    const phase = readStringValue(evt.data.phase);
+                    if (phase === "progress" || phase === "start") {
+                      progressHeartbeat.noteProgress();
+                      await params.opts?.onItemEvent?.({
+                        kind: "lifecycle",
+                        title:
+                          readStringValue(evt.data.message) ??
+                          (phase === "start" ? "Starting run" : "Working"),
+                        phase,
+                        status: readStringValue(evt.data.status),
+                      });
+                    }
+                  }
                   // Trigger typing when tools start executing.
                   // Must await to ensure typing indicator starts before tool summaries are emitted.
                   if (evt.stream === "tool") {
                     const phase = readStringValue(evt.data.phase) ?? "";
                     const name = readStringValue(evt.data.name);
                     if (phase === "start" || phase === "update") {
+                      progressHeartbeat.noteProgress();
+                      progressHeartbeat.setActiveOperation(name);
                       const toolStartProgressPromise = params.opts?.onToolStart?.({
                         name,
                         phase,
@@ -1882,6 +1965,7 @@ export async function runAgentTurnWithFallback(params: {
                     evt.data.suppressChannelProgress === true &&
                     Boolean(params.opts?.onToolStart);
                   if (evt.stream === "item" && !suppressItemChannelProgress) {
+                    progressHeartbeat.noteProgress();
                     await params.opts?.onItemEvent?.({
                       itemId: readStringValue(evt.data.itemId),
                       kind: readStringValue(evt.data.kind),
@@ -1897,6 +1981,7 @@ export async function runAgentTurnWithFallback(params: {
                     });
                   }
                   if (evt.stream === "plan") {
+                    progressHeartbeat.noteProgress();
                     await params.opts?.onPlanUpdate?.({
                       phase: readStringValue(evt.data.phase),
                       title: readStringValue(evt.data.title),
@@ -1908,6 +1993,7 @@ export async function runAgentTurnWithFallback(params: {
                     });
                   }
                   if (evt.stream === "approval") {
+                    progressHeartbeat.noteProgress();
                     await params.opts?.onApprovalEvent?.({
                       phase: readStringValue(evt.data.phase),
                       kind: readStringValue(evt.data.kind),
@@ -1925,6 +2011,7 @@ export async function runAgentTurnWithFallback(params: {
                     });
                   }
                   if (evt.stream === "command_output") {
+                    progressHeartbeat.noteProgress();
                     await params.opts?.onCommandOutput?.({
                       itemId: readStringValue(evt.data.itemId),
                       phase: readStringValue(evt.data.phase),
@@ -1943,6 +2030,7 @@ export async function runAgentTurnWithFallback(params: {
                     });
                   }
                   if (evt.stream === "patch") {
+                    progressHeartbeat.noteProgress();
                     await params.opts?.onPatchSummary?.({
                       itemId: readStringValue(evt.data.itemId),
                       phase: readStringValue(evt.data.phase),
@@ -2087,6 +2175,7 @@ export async function runAgentTurnWithFallback(params: {
               lifecycleBackstop.emit("error", err);
               throw err;
             } finally {
+              progressHeartbeat.stop();
               autoCompactionCount += attemptCompactionCount;
             }
           })();

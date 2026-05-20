@@ -399,6 +399,46 @@ describe("runEmbeddedPiAgent incomplete-turn safety", () => {
     }
   });
 
+  it("emits lifecycle progress while retrying plan-only turns", async () => {
+    mockedClassifyFailoverReason.mockReturnValue(null);
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["I'll inspect the code, make the change, and run the checks."],
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: ["Done."] }));
+    const onAgentEvent = vi.fn();
+
+    await runEmbeddedPiAgent({
+      ...overflowBaseRunParams,
+      prompt: "Please inspect the code, make the change, and run the checks.",
+      provider: "openai",
+      model: "gpt-5.4",
+      runId: "run-plan-only-lifecycle-progress",
+      onAgentEvent,
+      config: {
+        agents: {
+          defaults: {
+            embeddedPi: {
+              executionContract: "default",
+            },
+          },
+          list: [{ id: "main" }],
+        },
+      } as OpenClawConfig,
+    });
+
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    const progressMessages = onAgentEvent.mock.calls
+      .map(([event]) => event as { stream?: string; data?: Record<string, unknown> })
+      .filter((event) => event.stream === "lifecycle" && event.data?.phase === "progress")
+      .map((event) => event.data?.message);
+    expect(progressMessages).toContain("Preparing run");
+    expect(progressMessages).toContain("Waiting for model response");
+    expect(progressMessages).toContain("Retrying after a plan-only response");
+  });
+
   it("detects replay-safe planning-only GPT turns", () => {
     const retryInstruction = resolvePlanningOnlyRetryInstruction({
       provider: "openai",
@@ -2287,16 +2327,28 @@ describe("resolvePlanningOnlyRetryInstruction single-action loophole", () => {
     expect(result).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
   });
 
-  it("does not retry when 2+ non-plan tool calls are present", () => {
+  it("retries when 2+ retry-safe lookup tool calls end with continuation prose", () => {
     const result = resolvePlanningOnlyRetryInstruction({
       ...openaiParams,
       prompt: "Please inspect the code, make the change, and run the checks.",
       aborted: false,
       timedOut: false,
-      attempt: makeAttemptWithTools(["read", "search"], "I'll verify the output."),
+      attempt: makeAttemptWithTools(["read", "search"], "I'll continue verifying the output."),
     });
 
-    expect(result).toBeNull();
+    expect(result).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
+  });
+
+  it("retries Chinese terminal continuation prose after retry-safe lookup tools", () => {
+    const result = resolvePlanningOnlyRetryInstruction({
+      ...openaiParams,
+      prompt: "请检查代码、修改问题并运行测试。",
+      aborted: false,
+      timedOut: false,
+      attempt: makeAttemptWithTools(["read", "search"], "接下来我会继续验证输出。"),
+    });
+
+    expect(result).toBe(PLANNING_ONLY_RETRY_INSTRUCTION);
   });
 
   it("does not retry when 1 tool call plus completion language is present", () => {

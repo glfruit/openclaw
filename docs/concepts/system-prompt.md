@@ -48,7 +48,8 @@ The prompt is intentionally compact and uses fixed sections:
 - **Tooling**: structured-tool source-of-truth reminder plus runtime tool-use guidance.
 - **Execution Bias**: compact follow-through guidance: act in-turn on
   actionable requests, continue until done or blocked, recover from weak tool
-  results, check mutable state live, and verify before finalizing.
+  results, check mutable state live, avoid terminal continuation promises,
+  report meaningful progress during longer work, and verify before finalizing.
 - **Safety**: short guardrail reminder to avoid power-seeking behavior or bypassing oversight.
 - **Skills** (when available): tells the model how to load skill instructions on demand.
 - **OpenClaw Control**: tells the model to prefer the `gateway` tool for

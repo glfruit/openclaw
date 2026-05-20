@@ -2398,6 +2398,96 @@ describe("runAgentTurnWithFallback", () => {
     });
   });
 
+  it("forwards embedded lifecycle progress to reply options", async () => {
+    const onItemEvent = vi.fn();
+    state.runEmbeddedPiAgentMock.mockImplementationOnce(async (params: EmbeddedAgentParams) => {
+      await params.onAgentEvent?.({
+        stream: "lifecycle",
+        data: {
+          phase: "progress",
+          message: "Waiting for model response",
+          status: "model",
+          provider: "openai",
+          model: "gpt-5.5",
+        },
+      });
+      return { payloads: [{ text: "final" }], meta: {} };
+    });
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    const result = await runAgentTurnWithFallback({
+      ...createMinimalRunAgentTurnParams({
+        opts: {
+          onItemEvent,
+        } satisfies GetReplyOptions,
+      }),
+    });
+
+    expect(result.kind).toBe("success");
+    expect(onItemEvent).toHaveBeenCalledWith({
+      kind: "lifecycle",
+      title: "Waiting for model response",
+      phase: "progress",
+      status: "model",
+    });
+  });
+
+  it("emits hard still-working progress while an embedded run is silent", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(1_000);
+    const onItemEvent = vi.fn();
+    let resolveRun: ((value: unknown) => void) | undefined;
+    const runPromise = new Promise((resolve) => {
+      resolveRun = resolve;
+    });
+    state.runEmbeddedPiAgentMock.mockImplementationOnce(async (params: EmbeddedAgentParams) => {
+      await params.onAgentEvent?.({
+        stream: "tool",
+        data: {
+          name: "execute_code",
+          phase: "start",
+          args: { code: "print('working')" },
+        },
+      });
+      return (await runPromise) as {
+        payloads: Array<{ text: string }>;
+        meta: Record<string, unknown>;
+      };
+    });
+
+    try {
+      const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+      const resultPromise = runAgentTurnWithFallback({
+        ...createMinimalRunAgentTurnParams({
+          opts: {
+            onItemEvent,
+          } satisfies GetReplyOptions,
+        }),
+      });
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(onItemEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "lifecycle",
+          phase: "progress",
+          status: "running",
+          title: expect.stringContaining("Still working..."),
+        }),
+      );
+      expect(onItemEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          title: expect.stringContaining("running: execute_code"),
+        }),
+      );
+
+      resolveRun?.({ payloads: [{ text: "final" }], meta: {} });
+      const result = await resultPromise;
+      expect(result.kind).toBe("success");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips channel item progress when a matching tool event carries the progress", async () => {
     const onItemEvent = vi.fn();
     const onToolStart = vi.fn();

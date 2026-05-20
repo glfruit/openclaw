@@ -899,6 +899,17 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("`style` can be `primary`, `success`, or `danger`");
   });
 
+  it("guards against terminal continuation promises and stale progress updates", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain("do not finish with a plan/promise");
+    expect(prompt).toContain("Do not end a visible reply with future-tense continuation");
+    expect(prompt).toContain("send concise progress updates");
+    expect(prompt).toContain("when stalled or errored");
+  });
+
   it("uses Slack interactive reply hints instead of generic inline button config guidance", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",

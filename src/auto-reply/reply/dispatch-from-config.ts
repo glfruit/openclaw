@@ -174,6 +174,21 @@ function formatSuppressedReplyPayloadForLog(reply: ReplyPayload): string {
     .join(" ");
 }
 
+function isHardLifecycleProgressPayload(payload: {
+  kind?: string;
+  phase?: string;
+  status?: string;
+  title?: string;
+}): boolean {
+  const title = normalizeOptionalString(payload.title);
+  return (
+    payload.kind === "lifecycle" &&
+    payload.phase === "progress" &&
+    payload.status === "running" &&
+    Boolean(title?.startsWith("Still working..."))
+  );
+}
+
 async function maybeApplyTtsToReplyPayload(
   params: Parameters<Awaited<ReturnType<typeof loadTtsRuntime>>["maybeApplyTtsToPayload"]>[0],
 ) {
@@ -1352,9 +1367,11 @@ export async function dispatchReplyFromConfig(
       sendPolicyDenied ||
       (suppressDelivery && !shouldDeliverVerboseProgressDespiteSourceSuppression());
     const onToolResultFromReplyOptions = params.replyOptions?.onToolResult;
+    const onItemEventFromReplyOptions = params.replyOptions?.onItemEvent;
     const onPlanUpdateFromReplyOptions = params.replyOptions?.onPlanUpdate;
     const onApprovalEventFromReplyOptions = params.replyOptions?.onApprovalEvent;
     const onPatchSummaryFromReplyOptions = params.replyOptions?.onPatchSummary;
+    const hardLifecycleProgressNoticesSent = new Set<string>();
     const allowSuppressedSourceProgressCallbacks =
       params.replyOptions?.allowProgressCallbacksWhenSourceDeliverySuppressed === true;
     const shouldForwardProgressCallback = (options?: {
@@ -1376,6 +1393,23 @@ export async function dispatchReplyFromConfig(
           await callback?.(...args);
         }
       };
+    };
+    const sendHardLifecycleProgressNotice = async (payload: { title?: string }): Promise<void> => {
+      if (shouldSuppressProgressDelivery()) {
+        return;
+      }
+      const title = normalizeOptionalString(payload.title);
+      if (!title || hardLifecycleProgressNoticesSent.has(title)) {
+        return;
+      }
+      hardLifecycleProgressNoticesSent.add(title);
+      markInboundDedupeReplayUnsafe();
+      const progressPayload: ReplyPayload = { text: title };
+      if (shouldRouteToOriginating) {
+        await sendPayloadAsync(progressPayload, undefined, false);
+        return;
+      }
+      dispatcher.sendToolResult(progressPayload);
     };
 
     const replyResolver =
@@ -1403,9 +1437,18 @@ export async function dispatchReplyFromConfig(
           onToolStart: wrapProgressCallback(params.replyOptions?.onToolStart, {
             forwardWhenSourceDeliverySuppressed: true,
           }),
-          onItemEvent: wrapProgressCallback(params.replyOptions?.onItemEvent, {
-            forwardWhenSourceDeliverySuppressed: true,
-          }),
+          onItemEvent: async (payload) => {
+            markProgress();
+            const didForwardProgressCallback =
+              shouldForwardProgressCallback({ forwardWhenSourceDeliverySuppressed: true }) &&
+              Boolean(onItemEventFromReplyOptions);
+            if (didForwardProgressCallback) {
+              await onItemEventFromReplyOptions?.(payload);
+            }
+            if (!didForwardProgressCallback && isHardLifecycleProgressPayload(payload)) {
+              await sendHardLifecycleProgressNotice(payload);
+            }
+          },
           onCommandOutput: wrapProgressCallback(params.replyOptions?.onCommandOutput, {
             forwardWhenSourceDeliverySuppressed: true,
           }),

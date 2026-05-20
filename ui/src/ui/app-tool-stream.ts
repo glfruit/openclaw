@@ -55,6 +55,17 @@ type ToolStreamHost = {
   chatToolMessages: Record<string, unknown>[];
   toolStreamSyncTimer: number | null;
   chatModelOverrides?: Record<string, ChatModelOverride | null>;
+  chatRunStatus?: RunProgressStatus | null;
+  requestUpdate?: () => void;
+};
+
+type RunProgressStatus = {
+  phase: "in-progress" | "done" | "interrupted";
+  runId: string | null;
+  sessionKey: string;
+  occurredAt: number;
+  label?: string;
+  detail?: string;
 };
 
 type SessionDefaultsSnapshot = {
@@ -633,6 +644,42 @@ function handleLifecycleFallbackEvent(host: CompactionHost, payload: AgentEventP
   }, FALLBACK_TOAST_DURATION_MS);
 }
 
+function handleLifecycleProgressEvent(host: ToolStreamHost, payload: AgentEventPayload) {
+  const data = payload.data ?? {};
+  const phase = toTrimmedString(data.phase);
+  const accepted = resolveAcceptedSession(host, payload, { allowSessionScopedWhenIdle: true });
+  if (!accepted.accepted) {
+    return;
+  }
+
+  if (phase === "progress" || phase === "start") {
+    const message =
+      toTrimmedString(data.message) ?? (phase === "start" ? "Starting run" : "Working");
+    const detailParts = [
+      toTrimmedString(data.status),
+      toTrimmedString(data.reason)?.replace(/_/g, " "),
+      resolveModelLabel(data.provider, data.model),
+    ].filter((item): item is string => Boolean(item));
+    host.chatRunStatus = {
+      phase: "in-progress",
+      runId: payload.runId || null,
+      sessionKey: accepted.sessionKey ?? host.sessionKey,
+      occurredAt: typeof payload.ts === "number" ? payload.ts : Date.now(),
+      label: message,
+      ...(detailParts.length > 0 ? { detail: detailParts.join(" / ") } : {}),
+    };
+    host.requestUpdate?.();
+    return;
+  }
+
+  if ((phase === "end" || phase === "error") && host.chatRunStatus?.phase === "in-progress") {
+    if (!host.chatRunStatus.runId || host.chatRunStatus.runId === payload.runId) {
+      host.chatRunStatus = null;
+      host.requestUpdate?.();
+    }
+  }
+}
+
 export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPayload) {
   if (!payload) {
     return;
@@ -647,6 +694,7 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
   if (payload.stream === "lifecycle") {
     handleLifecycleCompactionEvent(host as CompactionHost, payload);
     handleLifecycleFallbackEvent(host as CompactionHost, payload);
+    handleLifecycleProgressEvent(host, payload);
     return;
   }
 

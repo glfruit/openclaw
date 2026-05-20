@@ -953,6 +953,7 @@ export const dispatchTelegramMessage = async ({
   let hadErrorReplyFailureOrSkip = false;
   let isFirstTurnInSession = false;
   let dispatchError: unknown;
+  let lastStandaloneProgressNoticeText: string | undefined;
 
   try {
     const sticker = ctxPayload.Sticker;
@@ -1101,6 +1102,25 @@ export const dispatchTelegramMessage = async ({
         deliveryState.markDelivered();
       }
       return result.delivered;
+    };
+    const sendStandaloneProgressNotice = async (text: string) => {
+      const normalized = sanitizeProgressMarkdownText(text.replace(/\s+/g, " ").trim());
+      if (!normalized || normalized === lastStandaloneProgressNoticeText) {
+        return;
+      }
+      lastStandaloneProgressNoticeText = normalized;
+      try {
+        await (telegramDeps.deliverReplies ?? deliverReplies)({
+          ...deliveryBaseOptions,
+          transcriptMirror: undefined,
+          replies: [{ text: normalized }],
+          onVoiceRecording: sendRecordVoice,
+          silent: false,
+          mediaLoader: telegramDeps.loadWebMedia,
+        });
+      } catch (err) {
+        logVerbose(`telegram progress notice failed: ${formatErrorMessage(err)}`);
+      }
     };
     const emitPreviewFinalizedHook = (result: LaneDeliveryResult) => {
       if (isDispatchSuperseded() || result.kind !== "preview-finalized") {
@@ -1545,6 +1565,11 @@ export const dispatchTelegramMessage = async ({
                     await progressPromise;
                   },
                   onItemEvent: async (payload) => {
+                    const isLifecycleProgress = payload.kind === "lifecycle";
+                    if (isLifecycleProgress && !answerLane.stream && payload.title) {
+                      await sendStandaloneProgressNotice(payload.title);
+                      return;
+                    }
                     await pushStreamToolProgress(
                       buildChannelProgressDraftLineForEntry(telegramCfg, {
                         event: "item",
@@ -1553,11 +1578,12 @@ export const dispatchTelegramMessage = async ({
                         title: payload.title,
                         name: payload.name,
                         phase: payload.phase,
-                        status: payload.status,
+                        status: isLifecycleProgress ? undefined : payload.status,
                         summary: payload.summary,
                         progressText: payload.progressText,
                         meta: payload.meta,
                       }),
+                      isLifecycleProgress ? { startImmediately: true } : undefined,
                     );
                   },
                   onPlanUpdate: async (payload) => {

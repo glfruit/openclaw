@@ -1257,6 +1257,33 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     );
   });
 
+  it("shows lifecycle Slack progress immediately in status-final drafts", async () => {
+    const draftStream = createDraftStreamStub();
+    createSlackDraftStreamMock.mockReturnValueOnce(draftStream);
+    mockedSlackStreamingMode = "progress";
+    mockedSlackDraftMode = "status_final";
+    mockedDispatchSequence = [];
+    mockedReplyOptionEvents = [
+      {
+        kind: "item",
+        itemKind: "lifecycle",
+        title: "Still working... (2 min elapsed - running: execute_code)",
+        phase: "progress",
+        status: "running",
+      },
+    ];
+
+    await dispatchPreparedSlackMessage(
+      createPreparedSlackMessage({
+        accountConfig: { streaming: { progress: { label: "Shelling" } } },
+      }),
+    );
+
+    expect(draftStream.update).toHaveBeenCalledWith(
+      "Shelling\n• Still working... (2 min elapsed - running: execute\\_code)",
+    );
+  });
+
   it("honors Slack progress maxLines above the legacy eight-line cap", async () => {
     const draftStream = createDraftStreamStub();
     createSlackDraftStreamMock.mockReturnValueOnce(draftStream);

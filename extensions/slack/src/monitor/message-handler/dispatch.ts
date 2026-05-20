@@ -1146,7 +1146,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
 
   const pushPreviewToolProgress = async (
     line?: ChannelProgressDraftLine,
-    options?: { toolName?: string },
+    options?: { toolName?: string; startImmediately?: boolean },
   ) => {
     if (!draftStream) {
       return;
@@ -1194,7 +1194,11 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       });
     }
     const alreadyStarted = progressDraftGate.hasStarted;
-    await progressDraftGate.noteWork();
+    if (options?.startImmediately) {
+      await progressDraftGate.startNow();
+    } else {
+      await progressDraftGate.noteWork();
+    }
     if (alreadyStarted && progressDraftGate.hasStarted) {
       renderProgressDraft();
     }
@@ -1325,6 +1329,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
               );
             },
             onItemEvent: async (payload) => {
+              const isLifecycleProgress = payload.kind === "lifecycle";
               await pushPreviewToolProgress(
                 buildChannelProgressDraftLineForEntry(account.config, {
                   event: "item",
@@ -1333,11 +1338,12 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
                   title: payload.title,
                   name: payload.name,
                   phase: payload.phase,
-                  status: payload.status,
+                  status: isLifecycleProgress ? undefined : payload.status,
                   summary: payload.summary,
                   progressText: payload.progressText,
                   meta: payload.meta,
                 }),
+                isLifecycleProgress ? { startImmediately: true } : undefined,
               );
             },
             onPlanUpdate: async (payload) => {

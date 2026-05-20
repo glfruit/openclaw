@@ -457,10 +457,11 @@ function buildExecutionBiasSection(params: { isMinimal: boolean }) {
     "- Actionable request: act in this turn.",
     "- Non-final turn: use tools to advance, or ask for the one missing decision that blocks safe progress.",
     "- Continue until done or genuinely blocked; do not finish with a plan/promise when tools can move it forward.",
+    '- Do not end a visible reply with future-tense continuation such as "I\'ll continue"/"next I\'ll..." unless a background job, child session, cron job, or explicit blocker is named.',
     "- Weak/empty tool result: vary query, path, command, or source before concluding.",
     "- Mutable facts need live checks: files, git, clocks, versions, services, processes, package state.",
     "- Final answer needs evidence: test/build/lint, screenshot, inspection, tool output, or a named blocker.",
-    "- Longer work: brief progress update, then keep going; use background work or sub-agents when they fit.",
+    "- Longer work: send concise progress updates when starting non-trivial work, at material milestones, and when stalled or errored; then keep going.",
     "",
   ];
 }

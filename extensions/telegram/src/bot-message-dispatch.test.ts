@@ -1482,6 +1482,60 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(editMessageTelegram).not.toHaveBeenCalled();
   });
 
+  it("shows lifecycle Telegram progress drafts immediately", async () => {
+    const draftStream = createSequencedDraftStream(2001);
+    createTelegramDraftStream.mockReturnValue(draftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }) => {
+      await replyOptions?.onItemEvent?.({
+        kind: "lifecycle",
+        title: "Still working... (2 min elapsed - running: execute_code)",
+        phase: "progress",
+        status: "running",
+      });
+      return { queuedFinal: false };
+    });
+
+    await dispatchWithContext({
+      context: createContext(),
+      streamMode: "progress",
+      telegramCfg: { streaming: { mode: "progress", progress: { label: "Working" } } },
+    });
+
+    expect(draftStream.update).toHaveBeenCalledWith(
+      "Working\n• `Still working... (2 min elapsed - running: execute_code)`",
+    );
+  });
+
+  it("sends standalone lifecycle progress when Telegram draft streaming is off", async () => {
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ replyOptions }) => {
+      await replyOptions?.onItemEvent?.({
+        kind: "lifecycle",
+        title: "Still working... (2 min elapsed - running: execute_code)",
+        phase: "progress",
+        status: "running",
+      });
+      return { queuedFinal: false };
+    });
+    deliverReplies.mockResolvedValue({ delivered: true });
+
+    await dispatchWithContext({
+      context: createContext(),
+      streamMode: "off",
+    });
+
+    expectDeliveredReply(0, {
+      text: "Still working... (2 min elapsed - running: execute_code)",
+    });
+    expect(createTelegramDraftStream).not.toHaveBeenCalled();
+    expect(appendSessionTranscriptMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.objectContaining({
+          content: expect.stringContaining("Still working"),
+        }),
+      }),
+    );
+  });
+
   it("falls back to normal send for error payloads and clears the pending stream", async () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {

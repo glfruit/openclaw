@@ -111,8 +111,10 @@ type DispatchInboundParams = {
     }) => Promise<void> | void;
     onItemEvent?: (payload: {
       kind?: string;
+      phase?: string;
       progressText?: string;
       summary?: string;
+      status?: string;
       title?: string;
       name?: string;
     }) => Promise<void> | void;
@@ -2392,6 +2394,37 @@ describe("processDiscordMessage draft streaming", () => {
     );
     const updates = draftStream.update.mock.calls.map((call) => call[0]);
     expect(updates.join("\n")).not.toContain("Reasoning");
+  });
+
+  it("shows lifecycle progress immediately in Discord progress drafts", async () => {
+    const draftStream = createMockDraftStreamForTest();
+
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      await params?.replyOptions?.onItemEvent?.({
+        kind: "lifecycle",
+        title: "Still working... (2 min elapsed - running: execute_code)",
+        phase: "progress",
+        status: "running",
+      });
+      return createNoQueuedDispatchResult();
+    });
+
+    const ctx = await createAutomaticSourceDeliveryContext({
+      discordConfig: {
+        streaming: {
+          mode: "progress",
+          progress: {
+            label: "Clawing...",
+          },
+        },
+      },
+    });
+
+    await runProcessDiscordMessage(ctx);
+
+    expect(draftStream.update).toHaveBeenCalledWith(
+      "Clawing...\n• Still working... (2 min elapsed - running: execute_code)",
+    );
   });
 
   it("replaces reasoning snapshots instead of appending duplicates", async () => {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
+import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import type { GetReplyOptions } from "../types.js";
 import {
@@ -694,6 +695,39 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(onPartialReply).not.toHaveBeenCalled();
     expect(onBlockReply).not.toHaveBeenCalled();
     expect(res).toBeUndefined();
+  });
+
+  it("returns a visible source completion fallback after tool activity ends with NO_REPLY", async () => {
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      meta: { toolSummary: { calls: 1, tools: ["execute_code"] } },
+    });
+
+    const { run } = createMinimalRun({
+      opts: { sourceReplyDeliveryMode: "message_tool_only" },
+    });
+    const res = await run();
+    const payload = Array.isArray(res) ? res[0] : res;
+
+    expect(payload?.text).toBe(
+      "The run finished after tool activity, but the agent did not generate a final chat message.",
+    );
+    expect(getReplyPayloadMetadata(payload ?? {})).toMatchObject({
+      deliverDespiteSourceReplySuppression: true,
+    });
+  });
+
+  it("preserves explicit silent turns after tool activity when silence is allowed", async () => {
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      meta: { toolSummary: { calls: 1, tools: ["execute_code"] } },
+    });
+
+    const { run } = createMinimalRun({
+      runOverrides: { allowEmptyAssistantReplyAsSilent: true },
+    });
+
+    await expect(run()).resolves.toBeUndefined();
   });
 
   it("does not start typing on assistant message start without prior text in message mode", async () => {

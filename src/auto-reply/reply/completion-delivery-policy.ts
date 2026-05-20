@@ -46,13 +46,16 @@ export function completionRequiresMessageToolDelivery(params: {
   requesterSessionOrigin?: DeliveryContext;
   messageToolAvailable?: boolean;
 }): boolean {
+  const chatType = resolveCompletionChatType(params);
   return (
     resolveSourceReplyDeliveryMode({
       cfg: params.cfg,
       ctx: {
-        ChatType: resolveCompletionChatType(params),
+        ChatType: chatType,
       },
       messageToolAvailable: params.messageToolAvailable,
+      defaultVisibleReplies:
+        chatType === "group" || chatType === "channel" ? "message_tool" : undefined,
     }) === "message_tool_only"
   );
 }

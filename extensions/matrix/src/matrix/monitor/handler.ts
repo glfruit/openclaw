@@ -1536,7 +1536,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
 
       const pushPreviewToolProgress = async (
         line?: string | ChannelProgressDraftLine,
-        options?: { toolName?: string },
+        options?: { toolName?: string; startImmediately?: boolean },
       ) => {
         if (!draftStream) {
           return;
@@ -1581,7 +1581,11 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
           );
         }
         const alreadyStarted = progressDraftGate.hasStarted;
-        await progressDraftGate.noteWork();
+        if (options?.startImmediately) {
+          await progressDraftGate.startNow();
+        } else {
+          await progressDraftGate.noteWork();
+        }
         if (alreadyStarted && progressDraftGate.hasStarted) {
           renderProgressDraft();
         }
@@ -1629,6 +1633,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
             );
           },
           onItemEvent: async (payload) => {
+            const isLifecycleProgress = payload.kind === "lifecycle";
             await pushPreviewToolProgress(
               buildChannelProgressDraftLineForEntry(progressConfigEntry, {
                 event: "item",
@@ -1637,11 +1642,12 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 title: payload.title,
                 name: payload.name,
                 phase: payload.phase,
-                status: payload.status,
+                status: isLifecycleProgress ? undefined : payload.status,
                 summary: payload.summary,
                 progressText: payload.progressText,
                 meta: payload.meta,
               }),
+              isLifecycleProgress ? { startImmediately: true } : undefined,
             );
           },
           onPlanUpdate: async (payload) => {

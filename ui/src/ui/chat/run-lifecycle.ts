@@ -4,12 +4,15 @@ import type { SessionRunStatus, SessionsListResult } from "../types.ts";
 export const CHAT_RUN_STATUS_TOAST_DURATION_MS = 5_000;
 
 export type ChatRunUiStatus = {
-  phase: "done" | "interrupted";
+  phase: "in-progress" | "done" | "interrupted";
   runId: string | null;
   sessionKey: string;
   occurredAt: number;
+  label?: string;
+  detail?: string;
 };
 
+type ChatRunTerminalPhase = "done" | "interrupted";
 type TimerHandle = ReturnType<typeof globalThis.setTimeout>;
 
 type RunLifecycleHost = Partial<Parameters<typeof resetToolStream>[0]> & {
@@ -29,7 +32,7 @@ type RunLifecycleHost = Partial<Parameters<typeof resetToolStream>[0]> & {
 };
 
 type ReconcileOptions = {
-  outcome?: ChatRunUiStatus["phase"];
+  outcome?: ChatRunTerminalPhase;
   sessionStatus?: SessionRunStatus;
   runId?: string | null;
   sessionKey?: string | null;

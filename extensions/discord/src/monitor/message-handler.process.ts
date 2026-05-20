@@ -850,6 +850,7 @@ export async function processDiscordMessage(
               );
             },
             onItemEvent: async (payload) => {
+              const isLifecycleProgress = payload.kind === "lifecycle";
               await draftPreview.pushToolProgress(
                 buildChannelProgressDraftLineForEntry(discordConfig, {
                   event: "item",
@@ -858,7 +859,7 @@ export async function processDiscordMessage(
                   title: payload.title,
                   name: payload.name,
                   phase: payload.phase,
-                  status: payload.status,
+                  status: isLifecycleProgress ? undefined : payload.status,
                   summary: payload.summary,
                   progressText: payload.progressText,
                   meta: payload.meta,

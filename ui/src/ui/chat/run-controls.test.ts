@@ -188,6 +188,20 @@ describe("chat status indicators", () => {
 
       render(
         renderChatRunStatusIndicator({
+          phase: "in-progress",
+          label: "Waiting for model response",
+          detail: "model / openai/gpt-5.5",
+        }),
+        container,
+      );
+      indicator = container.querySelector(".agent-chat__run-status--in-progress");
+      expect(indicator?.textContent).toContain("Waiting for model response");
+      expect(indicator?.getAttribute("title")).toBe(
+        "Run status: Waiting for model response (model / openai/gpt-5.5)",
+      );
+
+      render(
+        renderChatRunStatusIndicator({
           phase: "done",
           runId: "run-1",
           sessionKey: "main",

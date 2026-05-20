@@ -14,6 +14,8 @@ type MutableHost = ToolStreamHost & {
   compactionClearTimer?: number | null;
   fallbackStatus?: FallbackStatus | null;
   fallbackClearTimer?: number | null;
+  chatRunStatus?: ToolStreamHost["chatRunStatus"];
+  requestUpdate?: ReturnType<typeof vi.fn>;
 };
 const TOOL_STREAM_TEST_NOW = new Date("2026-05-09T00:00:00.000Z").getTime();
 
@@ -33,6 +35,7 @@ function createHost(overrides?: Partial<MutableHost>): MutableHost {
     compactionClearTimer: null,
     fallbackStatus: null,
     fallbackClearTimer: null,
+    chatRunStatus: null,
     ...overrides,
   };
 }
@@ -107,6 +110,38 @@ describe("app-tool-stream fallback lifecycle handling", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("shows lifecycle progress in chat run status", () => {
+    useToolStreamFakeTimers();
+    const requestUpdate = vi.fn();
+    const host = createHost({ chatRunId: "run-1", requestUpdate });
+
+    handleAgentEvent(
+      host,
+      agentEvent("run-1", 1, "lifecycle", {
+        phase: "progress",
+        message: "Waiting for model response",
+        status: "model",
+        provider: "openai",
+        model: "gpt-5.5",
+      }),
+    );
+
+    expect(host.chatRunStatus).toEqual({
+      phase: "in-progress",
+      runId: "run-1",
+      sessionKey: "main",
+      occurredAt: TOOL_STREAM_TEST_NOW,
+      label: "Waiting for model response",
+      detail: "model / openai/gpt-5.5",
+    });
+    expect(requestUpdate).toHaveBeenCalledTimes(1);
+
+    handleAgentEvent(host, agentEvent("run-1", 2, "lifecycle", { phase: "end" }));
+
+    expect(host.chatRunStatus).toBeNull();
+    expect(requestUpdate).toHaveBeenCalledTimes(2);
   });
 
   it("accepts session-scoped fallback lifecycle events when no run is active", () => {

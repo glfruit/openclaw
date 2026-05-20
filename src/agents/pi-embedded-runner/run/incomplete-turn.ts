@@ -99,16 +99,16 @@ export function isIncompleteTerminalAssistantTurn(params: {
 }
 
 const PLANNING_ONLY_PROMISE_RE =
-  /\b(?:i(?:'ll| will)|let me|i(?:'m| am)\s+going to|first[, ]+i(?:'ll| will)|next[, ]+i(?:'ll| will)|i can do that)\b/i;
+  /\b(?:i(?:'ll| will)|let me|i(?:'m| am)\s+going to|first[, ]+i(?:'ll| will)|next[, ]+i(?:'ll| will)|i can do that)\b|(?:我(?:会|将|来|准备|打算)|接下来(?:我)?(?:会|将|来)?|下一步(?:我)?(?:会|将|来)?|让我)(?:继续|接着|检查|查看|调查|处理|修复|实现|运行|验证|推进|更新|修改|写|读|搜索)/iu;
 const PLANNING_ONLY_COMPLETION_RE =
-  /\b(?:done|finished|implemented|updated|fixed|changed|ran|verified|found|here(?:'s| is) what|blocked by|the blocker is)\b/i;
+  /\b(?:done|finished|implemented|updated|fixed|changed|ran|verified|found|here(?:'s| is) what|blocked by|the blocker is)\b|(?:已|已经)(?:完成|实现|修复|更新|修改|运行|验证|检查|发现)|(?:完成|修复|更新|修改|运行|验证|检查)了|发现(?:了|:|：)|阻塞|卡住|问题是/u;
 const PLANNING_ONLY_HEADING_RE = /^(?:plan|steps?|next steps?)\s*:/i;
 const PLANNING_ONLY_BULLET_RE = /^(?:[-*•]\s+|\d+[.)]\s+)/u;
 const PLANNING_ONLY_MAX_VISIBLE_TEXT = 700;
 const PLANNING_ONLY_ACTION_VERB_RE =
-  /\b(?:inspect|investigate|check|look(?:\s+into|\s+at)?|read|search|find|debug|fix|patch|update|change|edit|write|implement|run|test|verify|review|analy(?:s|z)e|summari(?:s|z)e|explain|answer|show|share|report|prepare|capture|take|refactor|restart|deploy|ship)\b/i;
+  /\b(?:inspect|investigate|check|look(?:\s+into|\s+at)?|read|search|find|debug|fix|patch|update|change|edit|write|implement|run|test|verify|review|analy(?:s|z)e|summari(?:s|z)e|explain|answer|show|share|report|prepare|capture|take|refactor|restart|deploy|ship)\b|(?:继续|接着|检查|查看|调查|处理|修复|实现|运行|测试|验证|推进|更新|修改|编辑|写|读|搜索|分析|总结|解释|回答|报告|准备|重构|部署|发布)/iu;
 const SINGLE_ACTION_EXPLICIT_CONTINUATION_RE =
-  /\b(?:going to|first[, ]+i(?:'ll| will)|next[, ]+i(?:'ll| will)|then[, ]+i(?:'ll| will)|i can do that next|let me (?!know\b)\w+(?:\s+\w+){0,3}\s+(?:next|then|first)\b)/i;
+  /\b(?:going to|first[, ]+i(?:'ll| will)|next[, ]+i(?:'ll| will)|then[, ]+i(?:'ll| will)|i can do that next|let me (?!know\b)\w+(?:\s+\w+){0,3}\s+(?:next|then|first)\b|i(?:'ll| will)\s+(?:continue|keep\s+(?:going|working|digging|investigating)|proceed|carry\s+on|follow\s+up|report\s+back|update\s+you))|(?:我(?:会|将)?(?:继续|接着)|接下来(?:我)?(?:会|将|来)?|下一步(?:我)?(?:会|将|来)?|继续推进|继续处理|继续调查|稍后(?:更新|回复)|有进展(?:再|会)?更新)/iu;
 const SINGLE_ACTION_MULTI_STEP_PROMISE_RE =
   /\bi(?:'ll| will)\b(?=[^.!?]{0,160}\b(?:next|then|after(?:wards)?|once)\b)/i;
 const SINGLE_ACTION_RESULT_STYLE_RE =
@@ -179,9 +179,9 @@ const ACK_EXECUTION_NORMALIZED_SET = new Set([
   "계속해",
 ]);
 const ACTIONABLE_PROMPT_DIRECTIVE_RE =
-  /^\s*(?:please\s+)?(?:check|look(?:\s+into|\s+at)?|read|write|edit|update|fix|investigate|debug|run|search|find|implement|add|remove|refactor|explain|summari(?:s|z)e|analy(?:s|z)e|review|tell|show|make|restart|deploy|prepare)\b/i;
+  /^\s*(?:please\s+)?(?:check|look(?:\s+into|\s+at)?|read|write|edit|update|fix|investigate|debug|run|search|find|implement|add|remove|refactor|explain|summari(?:s|z)e|analy(?:s|z)e|review|tell|show|make|restart|deploy|prepare)\b|^\s*(?:请|帮我|麻烦)?(?:检查|查看|读取|写|编辑|更新|修复|调查|调试|运行|搜索|查找|实现|添加|移除|删除|重构|解释|总结|分析|审查|告诉|展示|制作|重启|部署|准备)/iu;
 const ACTIONABLE_PROMPT_REQUEST_RE =
-  /\b(?:can|could|would|will)\s+you\b|\b(?:please|pls)\b|\b(?:help|explain|summari(?:s|z)e|analy(?:s|z)e|review|investigate|debug|fix|check|look(?:\s+into|\s+at)?|read|write|edit|update|run|search|find|implement|add|remove|refactor|show|tell me|walk me through)\b/i;
+  /\b(?:can|could|would|will)\s+you\b|\b(?:please|pls)\b|\b(?:help|explain|summari(?:s|z)e|analy(?:s|z)e|review|investigate|debug|fix|check|look(?:\s+into|\s+at)?|read|write|edit|update|run|search|find|implement|add|remove|refactor|show|tell me|walk me through)\b|(?:请|帮我|麻烦|能否|可以|能不能|需要你|继续|检查|查看|读取|写|编辑|更新|修复|调查|调试|运行|搜索|查找|实现|添加|移除|删除|重构|解释|总结|分析|审查|告诉|展示|制作|重启|部署|准备)/iu;
 
 export const PLANNING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn only described the plan. Do not restate the plan. Act now: take the first concrete tool action you can. If a real blocker prevents action, reply with the exact blocker in one sentence.";
@@ -775,18 +775,28 @@ function hasSingleRetrySafeNonPlanTool(toolMetas?: PlanningOnlyAttempt["toolMeta
   );
 }
 
+function hasOnlyRetrySafeNonPlanTools(toolMetas?: PlanningOnlyAttempt["toolMetas"]): boolean {
+  const nonPlanToolNames = normalizePlanningToolMetas(toolMetas)
+    .map((entry) => normalizeLowercaseStringOrEmpty(entry.toolName))
+    .filter((toolName) => toolName && toolName !== "update_plan");
+  return (
+    nonPlanToolNames.length > 0 &&
+    nonPlanToolNames.every((toolName) => SINGLE_ACTION_RETRY_SAFE_TOOL_NAMES.has(toolName))
+  );
+}
+
 /**
- * Treat a turn with exactly one non-plan tool call plus visible "I'll do X
- * next" prose as effectively planning-only from the user's perspective. This
- * closes the one-action-then-narrative loophole without changing the 2+ tool
- * call path, which still counts as real multi-step progress.
+ * Treat a turn with only retry-safe lookup tools plus visible "I'll do X next"
+ * prose as effectively planning-only from the user's perspective. Read/search
+ * progress is replay-safe, so the runner can continue instead of leaving the
+ * user with a terminal continuation promise.
  */
 function isSingleActionThenNarrativePattern(params: {
   toolMetas?: PlanningOnlyAttempt["toolMetas"];
   assistantTexts?: readonly string[];
 }): boolean {
   const nonPlanCount = countNonPlanToolCalls(params.toolMetas);
-  if (nonPlanCount !== 1) {
+  if (nonPlanCount < 1 || !hasOnlyRetrySafeNonPlanTools(params.toolMetas)) {
     return false;
   }
   const text = (params.assistantTexts ?? []).join("\n\n").trim();
@@ -824,8 +834,10 @@ export function resolvePlanningOnlyRetryInstruction(params: {
     toolMetas: params.attempt.toolMetas,
     assistantTexts: params.attempt.assistantTexts,
   });
-  const allowSingleActionRetryBypass =
-    singleActionNarrative && hasSingleRetrySafeNonPlanTool(params.attempt.toolMetas);
+  const allowSafeLookupRetryBypass =
+    singleActionNarrative &&
+    (hasSingleRetrySafeNonPlanTool(params.attempt.toolMetas) ||
+      hasOnlyRetrySafeNonPlanTools(params.attempt.toolMetas));
   if (
     !shouldApplyPlanningOnlyRetryGuard({
       provider: params.provider,
@@ -840,9 +852,9 @@ export function resolvePlanningOnlyRetryInstruction(params: {
     params.attempt.didSendDeterministicApprovalPrompt ||
     hasMessagingToolDeliveryEvidence(params.attempt) ||
     params.attempt.lastToolError ||
-    (hasNonPlanToolActivity(params.attempt.toolMetas) && !allowSingleActionRetryBypass) ||
+    (hasNonPlanToolActivity(params.attempt.toolMetas) && !allowSafeLookupRetryBypass) ||
     ((params.attempt.itemLifecycle?.startedCount ?? 0) > planOnlyToolMetaCount &&
-      !allowSingleActionRetryBypass) ||
+      !allowSafeLookupRetryBypass) ||
     resolveAttemptReplayMetadata(params.attempt).hadPotentialSideEffects
   ) {
     return null;

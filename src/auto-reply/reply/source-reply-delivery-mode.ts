@@ -64,7 +64,9 @@ export function resolveSourceReplyDeliveryMode(params: {
   let mode: SourceReplyDeliveryMode;
   if (chatType === "group" || chatType === "channel") {
     const configuredMode =
-      params.cfg.messages?.groupChat?.visibleReplies ?? params.cfg.messages?.visibleReplies;
+      params.cfg.messages?.groupChat?.visibleReplies ??
+      params.cfg.messages?.visibleReplies ??
+      params.defaultVisibleReplies;
     mode = configuredMode === "message_tool" ? "message_tool_only" : "automatic";
   } else {
     const configuredMode = params.cfg.messages?.visibleReplies ?? params.defaultVisibleReplies;

@@ -401,6 +401,14 @@ export function matchAllowlist(
   if (!trustPath) {
     return null;
   }
+  const pathCandidates = Array.from(
+    new Set(
+      [trustPath, resolution.resolvedPath, resolution.rawExecutable].filter(
+        (candidate): candidate is string =>
+          typeof candidate === "string" && candidate.trim().length > 0,
+      ),
+    ),
+  );
   let pathOnlyMatch: ExecAllowlistEntry | null = null;
   for (const entry of entries) {
     const pattern = entry.pattern?.trim();
@@ -408,7 +416,7 @@ export function matchAllowlist(
       continue;
     }
     const patternMatches = hasPathSelector(pattern)
-      ? matchesExecAllowlistPattern(pattern, trustPath)
+      ? pathCandidates.some((candidate) => matchesExecAllowlistPattern(pattern, candidate))
       : pattern !== "*" && matchesExecutableBasenamePattern(pattern, resolution);
     if (!patternMatches) {
       continue;

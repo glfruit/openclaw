@@ -1377,7 +1377,7 @@ describe("subagent announce formatting", () => {
           threadId: 99,
         },
         requesterSessionMeta: {},
-        expectedThreadId: 99,
+        expectedThreadId: "99",
       },
     ] as const;
 

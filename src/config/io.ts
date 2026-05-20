@@ -1597,6 +1597,7 @@ export function createConfigIO(
           config: metadataConfig,
           workspaceDir: resolveAgentWorkspaceDir(metadataConfig, defaultAgentId),
           env: deps.env,
+          stateDir: resolveStateDir(deps.env, deps.homedir),
         });
         return pluginMetadataSnapshot;
       };
@@ -1816,6 +1817,7 @@ export function createConfigIO(
           config: metadataConfig,
           workspaceDir: resolveAgentWorkspaceDir(metadataConfig, defaultAgentId),
           env: deps.env,
+          stateDir: resolveStateDir(deps.env, deps.homedir),
         });
         return pluginMetadataSnapshot;
       };

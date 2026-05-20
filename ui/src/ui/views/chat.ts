@@ -979,7 +979,15 @@ export function renderChat(props: ChatProps) {
   const canCompose = props.connected;
   const isBusy = props.sending || props.stream !== null;
   const canAbort = Boolean(props.canAbort && props.onAbort);
-  const composerRunStatus = canAbort ? { phase: "in-progress" as const } : props.runStatus;
+  const progressRunStatus = props.runStatus?.phase === "in-progress" ? props.runStatus : null;
+  const composerRunStatus = canAbort
+    ? {
+        phase: "in-progress" as const,
+        label: progressRunStatus?.label,
+        detail: progressRunStatus?.detail,
+        occurredAt: progressRunStatus?.occurredAt,
+      }
+    : props.runStatus;
   const compactBusy =
     props.compactionStatus?.phase === "active" || props.compactionStatus?.phase === "retrying";
   const activeSession = props.sessions?.sessions?.find((row) => row.key === props.sessionKey);

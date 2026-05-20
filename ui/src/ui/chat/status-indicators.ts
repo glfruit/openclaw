@@ -11,6 +11,8 @@ export type ComposerRunStatus =
   | {
       phase: "in-progress";
       occurredAt?: number | null;
+      label?: string;
+      detail?: string;
     };
 
 export function renderChatRunStatusIndicator(status: ComposerRunStatus | null | undefined) {
@@ -25,7 +27,7 @@ export function renderChatRunStatusIndicator(status: ComposerRunStatus | null | 
   }
   const label =
     status.phase === "in-progress"
-      ? "In progress"
+      ? (status.label ?? "In progress")
       : status.phase === "done"
         ? "Done"
         : "Interrupted";
@@ -41,7 +43,7 @@ export function renderChatRunStatusIndicator(status: ComposerRunStatus | null | 
       role="status"
       aria-live="polite"
       aria-label=${`Run status: ${label}`}
-      title=${`Run status: ${label}`}
+      title=${status.detail ? `Run status: ${label} (${status.detail})` : `Run status: ${label}`}
     >
       ${icon}<span class="agent-chat__run-status-label">${label}</span>
     </span>

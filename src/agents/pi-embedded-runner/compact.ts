@@ -393,7 +393,7 @@ function classifyCompactionFallbackResult(
     code: result.failure?.code,
   });
   const failoverError = coerceToFailoverError(failureError, { provider, model });
-  return failoverError ? { error: failoverError } : null;
+  return { error: failoverError ?? failureError };
 }
 
 function fallbackFailureToCompactionResult(err: unknown): EmbeddedPiCompactResult {
