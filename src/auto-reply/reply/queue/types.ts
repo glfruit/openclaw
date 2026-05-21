@@ -40,6 +40,8 @@ export type FollowupRun = {
   abortSignal?: AbortSignal;
   deliveryCorrelations?: QueuedReplyDeliveryCorrelation[];
   queuedLifecycle?: QueuedReplyLifecycle;
+  /** Internal retry budget used when a session lock detects concurrent writers. */
+  sessionContentionRetryCount?: number;
   /** Provider message ID, when available (for deduplication). */
   messageId?: string;
   summaryLine?: string;

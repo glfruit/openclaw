@@ -13,6 +13,7 @@ import {
   formatEmbeddedPiQueueFailureSummary,
   queueEmbeddedPiMessageWithOutcomeAsync,
 } from "../../agents/pi-embedded-runner/runs.js";
+import { isSessionContentionError } from "../../agents/session-contention-error.js";
 import { deriveContextPromptTokens, hasNonzeroUsage, normalizeUsage } from "../../agents/usage.js";
 import { enqueueCommitmentExtraction } from "../../commitments/runtime.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -106,6 +107,9 @@ import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
+const SESSION_CONTENTION_REQUEUE_MAX = 1;
+const SESSION_CONTENTION_REQUEUE_TEXT =
+  "⚠️ 当前会话刚被另一轮写入推进，我已把这条消息重新排队，等前一轮收尾后会继续处理。";
 
 function markBeforeAgentRunBlockedPayloads(payloads: ReplyPayload[]): ReplyPayload[] {
   return payloads.map((payload) =>
@@ -1190,6 +1194,8 @@ export async function runReplyAgent(params: {
     sessionEntry: activeSessionEntry,
     sessionStore: activeSessionStore,
     sessionKey,
+    queueKey,
+    queueSettings: resolvedQueue,
     storePath,
     defaultModel,
     agentCfgContextTokens,
@@ -1399,6 +1405,8 @@ export async function runReplyAgent(params: {
       sessionEntry: activeSessionEntry,
       sessionStore: activeSessionStore,
       sessionKey,
+      queueKey,
+      queueSettings: resolvedQueue,
       storePath,
       defaultModel,
       agentCfgContextTokens,
@@ -2194,6 +2202,31 @@ export async function runReplyAgent(params: {
       return returnWithQueuedFollowupDrain(
         markReplyPayloadForSourceSuppressionDelivery({
           text: "⚠️ Gateway is restarting. Please wait a few seconds and try again.",
+        }),
+      );
+    }
+    if (
+      isSessionContentionError(error) &&
+      (followupRun.sessionContentionRetryCount ?? 0) < SESSION_CONTENTION_REQUEUE_MAX
+    ) {
+      replyOperation.fail("run_failed", error);
+      enqueueFollowupRun(
+        queueKey,
+        {
+          ...followupRun,
+          run: { ...followupRun.run },
+          enqueuedAt: Date.now(),
+          sessionContentionRetryCount: (followupRun.sessionContentionRetryCount ?? 0) + 1,
+          queuedLifecycle: undefined,
+        },
+        resolvedQueue,
+        "none",
+        runFollowupTurn,
+        false,
+      );
+      return returnWithQueuedFollowupDrain(
+        markReplyPayloadForSourceSuppressionDelivery({
+          text: SESSION_CONTENTION_REQUEUE_TEXT,
         }),
       );
     }

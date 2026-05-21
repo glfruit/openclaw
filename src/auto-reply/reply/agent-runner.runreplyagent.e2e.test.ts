@@ -335,6 +335,29 @@ describe("runReplyAgent heartbeat followup guard", () => {
       persistSpy.mockRestore();
     }
   });
+
+  it("requeues a live turn once when session contention is detected", async () => {
+    const err = new Error("session file changed while embedded prompt lock was released: /tmp/s");
+    err.name = "EmbeddedAttemptSessionTakeoverError";
+    state.runEmbeddedPiAgentMock.mockRejectedValueOnce(err);
+
+    const { run } = createMinimalRun({
+      resolvedQueueMode: "followup",
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({
+      text: expect.stringContaining("重新排队"),
+    });
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueFollowupRun).mock.calls[0]?.[0]).toBe("main");
+    expect(vi.mocked(enqueueFollowupRun).mock.calls[0]?.[3]).toBe("none");
+    expect(vi.mocked(scheduleFollowupDrain)).toHaveBeenCalledTimes(1);
+    const requeued = vi.mocked(enqueueFollowupRun).mock.calls[0]?.[1] as FollowupRun;
+    expect(requeued.prompt).toBe("hello");
+    expect(requeued.sessionContentionRetryCount).toBe(1);
+  });
 });
 
 describe("runReplyAgent pending final delivery capture", () => {

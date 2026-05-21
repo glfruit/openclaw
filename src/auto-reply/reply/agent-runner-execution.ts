@@ -45,6 +45,7 @@ import {
 import { sanitizeUserFacingText } from "../../agents/pi-embedded-helpers/sanitize-user-facing-text.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import { buildAgentRuntimeOutcomePlan } from "../../agents/runtime-plan/build.js";
+import { isSessionContentionError } from "../../agents/session-contention-error.js";
 import {
   resolveGroupSessionKey,
   type SessionEntry,
@@ -2194,6 +2195,9 @@ export async function runAgentTurnWithFallback(params: {
         fallbackProvider = err.provider;
         fallbackModel = err.model;
         continue;
+      }
+      if (isSessionContentionError(err)) {
+        throw err;
       }
       const message = formatErrorMessage(err);
       const isBilling = isFallbackSummaryError(err)
