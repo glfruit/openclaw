@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import type { TemplateContext } from "../templating.js";
+import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions } from "../types.js";
 import {
   enqueueFollowupRun,
@@ -336,7 +337,7 @@ describe("runReplyAgent heartbeat followup guard", () => {
     }
   });
 
-  it("requeues a live turn once when session contention is detected", async () => {
+  it("silently requeues a live turn once when session contention is detected", async () => {
     const err = new Error("session file changed while embedded prompt lock was released: /tmp/s");
     err.name = "EmbeddedAttemptSessionTakeoverError";
     state.runEmbeddedPiAgentMock.mockRejectedValueOnce(err);
@@ -347,9 +348,7 @@ describe("runReplyAgent heartbeat followup guard", () => {
 
     const result = await run();
 
-    expect(result).toMatchObject({
-      text: expect.stringContaining("重新排队"),
-    });
+    expect(result).toMatchObject({ text: SILENT_REPLY_TOKEN });
     expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(enqueueFollowupRun).mock.calls[0]?.[0]).toBe("main");
     expect(vi.mocked(enqueueFollowupRun).mock.calls[0]?.[3]).toBe("none");
