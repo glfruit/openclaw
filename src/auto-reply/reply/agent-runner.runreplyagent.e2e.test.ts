@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import type { TemplateContext } from "../templating.js";
+import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions } from "../types.js";
 import {
   enqueueFollowupRun,
@@ -334,6 +335,27 @@ describe("runReplyAgent heartbeat followup guard", () => {
     } finally {
       persistSpy.mockRestore();
     }
+  });
+
+  it("silently requeues a live turn once when session contention is detected", async () => {
+    const err = new Error("session file changed while embedded prompt lock was released: /tmp/s");
+    err.name = "EmbeddedAttemptSessionTakeoverError";
+    state.runEmbeddedPiAgentMock.mockRejectedValueOnce(err);
+
+    const { run } = createMinimalRun({
+      resolvedQueueMode: "followup",
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({ text: SILENT_REPLY_TOKEN });
+    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(enqueueFollowupRun).mock.calls[0]?.[0]).toBe("main");
+    expect(vi.mocked(enqueueFollowupRun).mock.calls[0]?.[3]).toBe("none");
+    expect(vi.mocked(scheduleFollowupDrain)).toHaveBeenCalledTimes(1);
+    const requeued = vi.mocked(enqueueFollowupRun).mock.calls[0]?.[1] as FollowupRun;
+    expect(requeued.prompt).toBe("hello");
+    expect(requeued.sessionContentionRetryCount).toBe(1);
   });
 });
 

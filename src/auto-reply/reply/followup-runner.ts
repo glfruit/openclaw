@@ -18,6 +18,7 @@ import {
   buildAgentRuntimeDeliveryPlan,
   buildAgentRuntimeOutcomePlan,
 } from "../../agents/runtime-plan/build.js";
+import { isSessionContentionError } from "../../agents/session-contention-error.js";
 import { updateSessionStore, type SessionEntry } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
@@ -43,9 +44,11 @@ import { resolveFollowupDeliveryPayloads } from "./followup-delivery.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import {
   completeFollowupRunLifecycle,
+  enqueueFollowupRun,
   isFollowupRunAborted,
   refreshQueuedFollowupSession,
   type FollowupRun,
+  type QueueSettings,
 } from "./queue.js";
 import { createReplyOperation } from "./reply-run-registry.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
@@ -54,6 +57,8 @@ import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
 
 type EmbeddedAgentRunResult = Awaited<ReturnType<typeof runEmbeddedPiAgent>>;
+
+const SESSION_CONTENTION_REQUEUE_MAX = 1;
 
 type FollowupAgentEvent = { stream: string; data: Record<string, unknown> };
 
@@ -195,6 +200,8 @@ export function createFollowupRunner(params: {
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
+  queueKey?: string;
+  queueSettings?: QueueSettings;
   storePath?: string;
   defaultModel: string;
   agentCfgContextTokens?: number;
@@ -207,6 +214,8 @@ export function createFollowupRunner(params: {
     sessionEntry,
     sessionStore,
     sessionKey,
+    queueKey,
+    queueSettings,
     storePath,
     defaultModel,
     agentCfgContextTokens,
@@ -839,6 +848,29 @@ export function createFollowupRunner(params: {
           pendingDeferredCliTerminal = undefined;
         }
         await drainProgressDeliveries();
+        if (
+          isSessionContentionError(err) &&
+          queueKey &&
+          queueSettings &&
+          (queued.sessionContentionRetryCount ?? 0) < SESSION_CONTENTION_REQUEUE_MAX
+        ) {
+          enqueueFollowupRun(
+            queueKey,
+            {
+              ...queued,
+              run: { ...queued.run },
+              enqueuedAt: Date.now(),
+              sessionContentionRetryCount: (queued.sessionContentionRetryCount ?? 0) + 1,
+              queuedLifecycle: undefined,
+            },
+            queueSettings,
+            "none",
+            undefined,
+            false,
+          );
+          logVerbose(`followup queue: requeued after session contention: ${message}`);
+          return;
+        }
         defaultRuntime.error?.(`Followup agent failed before reply: ${message}`);
         return;
       }
