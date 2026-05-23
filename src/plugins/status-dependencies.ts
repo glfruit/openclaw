@@ -9,6 +9,8 @@ export type PluginDependencyEntry = {
   installed: boolean;
   optional: boolean;
   resolvedPath?: string;
+  installedVersion?: string;
+  versionMismatch?: boolean;
 };
 
 export type PluginDependencyStatus = {
@@ -18,6 +20,8 @@ export type PluginDependencyStatus = {
   optionalInstalled: boolean;
   missing: string[];
   missingOptional: string[];
+  versionMismatches: string[];
+  versionMismatchesOptional: string[];
   dependencies: PluginDependencyEntry[];
   optionalDependencies: PluginDependencyEntry[];
 };
@@ -80,6 +84,26 @@ function findDependencyPackageDir(params: { fromDir: string; name: string }): st
   }
 }
 
+function readInstalledPackageVersion(packageDir: string | undefined): string | undefined {
+  if (!packageDir) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as {
+      version?: unknown;
+    };
+    return typeof payload.version === "string" && payload.version.trim()
+      ? payload.version.trim()
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isExactVersionSpec(spec: string): boolean {
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(spec);
+}
+
 function buildDependencyEntries(params: {
   rootDir: string | undefined;
   dependencies: PluginDependencySpecMap;
@@ -91,14 +115,26 @@ function buildDependencyEntries(params: {
       const resolvedPath = params.rootDir
         ? findDependencyPackageDir({ fromDir: params.rootDir, name })
         : undefined;
+      const installedVersion = readInstalledPackageVersion(resolvedPath);
+      const versionMismatch =
+        resolvedPath !== undefined &&
+        installedVersion !== undefined &&
+        isExactVersionSpec(spec) &&
+        installedVersion !== spec;
       const entry: PluginDependencyEntry = {
         name,
         spec,
-        installed: resolvedPath !== undefined,
+        installed: resolvedPath !== undefined && !versionMismatch,
         optional: params.optional,
       };
       if (resolvedPath) {
         entry.resolvedPath = resolvedPath;
+      }
+      if (installedVersion) {
+        entry.installedVersion = installedVersion;
+      }
+      if (versionMismatch) {
+        entry.versionMismatch = true;
       }
       return entry;
     });
@@ -123,6 +159,12 @@ export function buildPluginDependencyStatus(params: {
   const missingOptional = optionalDependencies
     .filter((entry) => !entry.installed)
     .map((entry) => entry.name);
+  const versionMismatches = dependencies
+    .filter((entry) => entry.versionMismatch)
+    .map((entry) => entry.name);
+  const versionMismatchesOptional = optionalDependencies
+    .filter((entry) => entry.versionMismatch)
+    .map((entry) => entry.name);
   const requiredInstalled = missing.length === 0;
   const optionalInstalled = missingOptional.length === 0;
   return {
@@ -132,6 +174,8 @@ export function buildPluginDependencyStatus(params: {
     optionalInstalled,
     missing,
     missingOptional,
+    versionMismatches,
+    versionMismatchesOptional,
     dependencies,
     optionalDependencies,
   };

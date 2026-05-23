@@ -232,6 +232,54 @@ describe("buildPluginRegistrySnapshotReport", () => {
     expect(isColdPluginRuntimeLoaded(fixture)).toBe(false);
   });
 
+  it("reports exact package dependency version mismatches without importing plugin runtime", () => {
+    const rootDir = makeTempDir();
+    const fixture = createColdPluginFixture({
+      rootDir,
+      pluginId: "dependency-version-demo",
+      packageJson: {
+        dependencies: {
+          "version-mismatch": "1.2.3",
+        },
+      },
+      manifest: {
+        id: "dependency-version-demo",
+        name: "Dependency Version Demo",
+      },
+    });
+    const depDir = path.join(rootDir, "node_modules", "version-mismatch");
+    fs.mkdirSync(depDir, { recursive: true });
+    fs.writeFileSync(path.join(depDir, "package.json"), JSON.stringify({ version: "1.2.2" }));
+
+    const report = buildPluginRegistrySnapshotReport({
+      config: {
+        plugins: {
+          load: { paths: [fixture.rootDir] },
+        },
+      },
+    });
+
+    const plugin = requirePlugin(report.plugins, "dependency-version-demo");
+    const dependencyStatus = requireRecord(plugin.dependencyStatus);
+    expectFields(dependencyStatus, {
+      installed: false,
+      requiredInstalled: false,
+      missing: ["version-mismatch"],
+      versionMismatches: ["version-mismatch"],
+    });
+    expectFields(
+      requireNamedEntry(requireRecordArray(dependencyStatus.dependencies), "version-mismatch"),
+      {
+        name: "version-mismatch",
+        spec: "1.2.3",
+        installed: false,
+        installedVersion: "1.2.2",
+        versionMismatch: true,
+      },
+    );
+    expect(isColdPluginRuntimeLoaded(fixture)).toBe(false);
+  });
+
   it("replays persisted list metadata without importing plugin runtime", async () => {
     const fixture = createColdPluginFixture({
       rootDir: makeTempDir(),
