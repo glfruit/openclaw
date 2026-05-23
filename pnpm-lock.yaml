@@ -82,6 +82,9 @@ importers:
       '@mozilla/readability':
         specifier: 0.6.0
         version: 0.6.0
+      '@openai/codex':
+        specifier: 0.132.0
+        version: 0.132.0
       '@openclaw/fs-safe':
         specifier: 0.2.7
         version: 0.2.7
