@@ -180,6 +180,53 @@ describe("channelsHandlers channels.status", () => {
     expect(probeArgs.cfg).toBe(autoEnabledConfig);
   });
 
+  it("downgrades broad probe requests from non-CLI clients", async () => {
+    const autoEnabledConfig = { autoEnabled: true };
+    const probeAccount = vi.fn(async () => ({ ok: true }));
+    const respond = vi.fn();
+    mocks.applyPluginAutoEnable.mockReturnValue({ config: autoEnabledConfig, changes: [] });
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "whatsapp",
+        config: {
+          listAccountIds: () => ["default"],
+          resolveAccount: () => ({}),
+          isEnabled: () => true,
+          isConfigured: async () => true,
+        },
+        status: {
+          probeAccount,
+        },
+      },
+    ]);
+
+    await channelsHandlers["channels.status"](
+      createOptions(
+        { probe: true, timeoutMs: 1000 },
+        {
+          respond,
+          client: {
+            connect: {
+              client: {
+                id: "openclaw-control-ui",
+                mode: "ui",
+                version: "dev",
+                platform: "test",
+              },
+            },
+          } as never,
+        },
+      ),
+    );
+
+    expect(probeAccount).not.toHaveBeenCalled();
+    const payload = requireRespondPayload(respond);
+    expect(payload.partial).toBe(true);
+    expect(payload.warnings).toEqual([
+      "all-channel probe skipped for non-CLI client; pass channel for a targeted deep probe",
+    ]);
+  });
+
   it("filters channel status to a requested channel", async () => {
     const autoEnabledConfig = { autoEnabled: true };
     const whatsappProbe = vi.fn(async () => ({ ok: true }));

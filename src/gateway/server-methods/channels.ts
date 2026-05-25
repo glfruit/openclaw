@@ -22,6 +22,7 @@ import {
   DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
   evaluateChannelHealth,
 } from "../channel-health-policy.js";
+import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "../protocol/client-info.js";
 import {
   ErrorCodes,
   errorShape,
@@ -33,7 +34,7 @@ import {
 } from "../protocol/index.js";
 import type { ChannelRuntimeSnapshot } from "../server-channel-runtime.types.js";
 import { formatForLog } from "../ws-log.js";
-import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
+import type { GatewayClient, GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
 
 type ChannelLogoutPayload = {
   channel: ChannelId;
@@ -174,6 +175,18 @@ function resolveChannelsStatusTimeoutMs(params: { probe: boolean; timeoutMsRaw: 
   return Math.min(Math.max(1000, params.timeoutMsRaw), CHANNEL_STATUS_MAX_TIMEOUT_MS);
 }
 
+function canRunBroadChannelsStatusProbe(client: GatewayClient | null): boolean {
+  if (!client) {
+    return true;
+  }
+  const clientInfo = client.connect.client;
+  return (
+    clientInfo.id === GATEWAY_CLIENT_IDS.CLI ||
+    clientInfo.mode === GATEWAY_CLIENT_MODES.CLI ||
+    clientInfo.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT
+  );
+}
+
 function resolveRuntimeAccountSnapshot(params: {
   runtime: ChannelRuntimeSnapshot;
   channelId: ChannelId;
@@ -283,7 +296,7 @@ export async function stopChannelAccount(params: {
 }
 
 export const channelsHandlers: GatewayRequestHandlers = {
-  "channels.status": async ({ params, respond, context }) => {
+  "channels.status": async ({ params, respond, context, client }) => {
     if (!validateChannelsStatusParams(params)) {
       respond(
         false,
@@ -295,12 +308,15 @@ export const channelsHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const probe = (params as { probe?: boolean }).probe === true;
+    const requestedProbe = (params as { probe?: boolean }).probe === true;
     const timeoutMsRaw = (params as { timeoutMs?: unknown }).timeoutMs;
-    const timeoutMs = resolveChannelsStatusTimeoutMs({ probe, timeoutMsRaw });
     const rawChannel = (params as { channel?: unknown }).channel;
     const requestedChannel =
       typeof rawChannel === "string" ? normalizeChannelId(rawChannel) : undefined;
+    const broadProbeDowngraded =
+      requestedProbe && !requestedChannel && !canRunBroadChannelsStatusProbe(client);
+    const probe = requestedProbe && !broadProbeDowngraded;
+    const timeoutMs = resolveChannelsStatusTimeoutMs({ probe, timeoutMsRaw });
     const cfg = applyPluginAutoEnable({
       config: context.getRuntimeConfig(),
       env: process.env,
@@ -322,6 +338,11 @@ export const channelsHandlers: GatewayRequestHandlers = {
       selectedPlugins.map((plugin) => [plugin.id, plugin]),
     );
     const statusWarnings: string[] = [];
+    if (broadProbeDowngraded) {
+      statusWarnings.push(
+        "all-channel probe skipped for non-CLI client; pass channel for a targeted deep probe",
+      );
+    }
 
     const resolveRuntimeSnapshot = (
       channelId: ChannelId,
