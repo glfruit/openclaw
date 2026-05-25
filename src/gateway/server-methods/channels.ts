@@ -22,7 +22,6 @@ import {
   DEFAULT_CHANNEL_STALE_EVENT_THRESHOLD_MS,
   evaluateChannelHealth,
 } from "../channel-health-policy.js";
-import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "../protocol/client-info.js";
 import {
   ErrorCodes,
   errorShape,
@@ -176,15 +175,9 @@ function resolveChannelsStatusTimeoutMs(params: { probe: boolean; timeoutMsRaw: 
 }
 
 function canRunBroadChannelsStatusProbe(client: GatewayClient | null): boolean {
-  if (!client) {
-    return true;
-  }
-  const clientInfo = client.connect.client;
-  return (
-    clientInfo.id === GATEWAY_CLIENT_IDS.CLI ||
-    clientInfo.mode === GATEWAY_CLIENT_MODES.CLI ||
-    clientInfo.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT
-  );
+  void client;
+  const raw = process.env.OPENCLAW_ALLOW_BROAD_CHANNEL_PROBE?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
 function resolveRuntimeAccountSnapshot(params: {
@@ -340,7 +333,7 @@ export const channelsHandlers: GatewayRequestHandlers = {
     const statusWarnings: string[] = [];
     if (broadProbeDowngraded) {
       statusWarnings.push(
-        "all-channel probe skipped for non-CLI client; pass channel for a targeted deep probe",
+        "all-channel live probe skipped by default; pass channel for a targeted deep probe",
       );
     }
 

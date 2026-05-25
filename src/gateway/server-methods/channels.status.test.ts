@@ -173,14 +173,16 @@ describe("channelsHandlers channels.status", () => {
       },
     ]);
 
-    await channelsHandlers["channels.status"](createOptions({ probe: true, timeoutMs: 999_999 }));
+    await channelsHandlers["channels.status"](
+      createOptions({ channel: "whatsapp", probe: true, timeoutMs: 999_999 }),
+    );
 
     const probeArgs = requireRecord(requireFirstCallArg(probeAccount));
     expect(probeArgs.timeoutMs).toBe(30_000);
     expect(probeArgs.cfg).toBe(autoEnabledConfig);
   });
 
-  it("downgrades broad probe requests from non-CLI clients", async () => {
+  it("downgrades broad probe requests by default", async () => {
     const autoEnabledConfig = { autoEnabled: true };
     const probeAccount = vi.fn(async () => ({ ok: true }));
     const respond = vi.fn();
@@ -223,8 +225,47 @@ describe("channelsHandlers channels.status", () => {
     const payload = requireRespondPayload(respond);
     expect(payload.partial).toBe(true);
     expect(payload.warnings).toEqual([
-      "all-channel probe skipped for non-CLI client; pass channel for a targeted deep probe",
+      "all-channel live probe skipped by default; pass channel for a targeted deep probe",
     ]);
+  });
+
+  it("allows broad probe requests only behind the explicit operator escape hatch", async () => {
+    const previous = process.env.OPENCLAW_ALLOW_BROAD_CHANNEL_PROBE;
+    process.env.OPENCLAW_ALLOW_BROAD_CHANNEL_PROBE = "1";
+    const autoEnabledConfig = { autoEnabled: true };
+    const probeAccount = vi.fn(async () => ({ ok: true }));
+    const respond = vi.fn();
+    mocks.applyPluginAutoEnable.mockReturnValue({ config: autoEnabledConfig, changes: [] });
+    mocks.listChannelPlugins.mockReturnValue([
+      {
+        id: "whatsapp",
+        config: {
+          listAccountIds: () => ["default"],
+          resolveAccount: () => ({}),
+          isEnabled: () => true,
+          isConfigured: async () => true,
+        },
+        status: {
+          probeAccount,
+        },
+      },
+    ]);
+
+    try {
+      await channelsHandlers["channels.status"](
+        createOptions({ probe: true, timeoutMs: 1000 }, { respond }),
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENCLAW_ALLOW_BROAD_CHANNEL_PROBE;
+      } else {
+        process.env.OPENCLAW_ALLOW_BROAD_CHANNEL_PROBE = previous;
+      }
+    }
+
+    expect(probeAccount).toHaveBeenCalledTimes(1);
+    const payload = requireRespondPayload(respond);
+    expect(payload.warnings).toBeUndefined();
   });
 
   it("filters channel status to a requested channel", async () => {
@@ -316,7 +357,7 @@ describe("channelsHandlers channels.status", () => {
     ]);
 
     await channelsHandlers["channels.status"](
-      createOptions({ probe: true, timeoutMs: 1000 }, { respond }),
+      createOptions({ channel: "whatsapp", probe: true, timeoutMs: 1000 }, { respond }),
     );
 
     const payload = getSuccessPayload(respond);
@@ -354,7 +395,7 @@ describe("channelsHandlers channels.status", () => {
       ]);
       const respond = vi.fn();
       const run = channelsHandlers["channels.status"](
-        createOptions({ probe: true, timeoutMs: 1000 }, { respond }),
+        createOptions({ channel: "whatsapp", probe: true, timeoutMs: 1000 }, { respond }),
       );
 
       await vi.advanceTimersByTimeAsync(1000);
