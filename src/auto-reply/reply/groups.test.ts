@@ -111,6 +111,21 @@ describe("group runtime loading", () => {
     expect(disallowed).not.toContain("Never say that you are staying quiet");
   });
 
+  it("treats always-on group topics as routed input without requiring mentions", () => {
+    const context = groups.buildGroupChatContext({
+      sessionCtx: { Provider: "telegram" },
+      groupActivation: "always",
+      silentToken: "NO_REPLY",
+      silentReplyPolicy: "allow",
+    });
+
+    expect(context).toContain("configured as always-on for you");
+    expect(context).toContain("the sender should not need to @ mention you");
+    expect(context).toContain("do not use it for actionable input in this routed chat/topic");
+    expect(context).not.toContain("mostly lurk");
+    expect(context).not.toContain("reply only when directly addressed");
+  });
+
   it("marks non-visible assistant replies silent for groups with silence allowed", () => {
     expect(
       groups.resolveGroupSilentReplyBehavior({

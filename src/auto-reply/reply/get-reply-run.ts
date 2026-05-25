@@ -503,6 +503,13 @@ export async function runPreparedReply(
   const shouldInjectGroupIntro = Boolean(
     isGroupChat && (isFirstTurnInSession || sessionEntry?.groupActivationNeedsSystemIntro),
   );
+  const groupSilentReplyBehavior = isGroupChat
+    ? resolveGroupSilentReplyBehavior({
+        sessionEntry,
+        defaultActivation,
+        silentReplyPolicy: silentReplySettings.policy,
+      })
+    : undefined;
   const directChatContext = isDirectChat
     ? buildDirectChatContext({
         sessionCtx: promptSessionCtx,
@@ -513,6 +520,7 @@ export async function runPreparedReply(
   const groupChatContext = isGroupChat
     ? buildGroupChatContext({
         sessionCtx: promptSessionCtx,
+        groupActivation: groupSilentReplyBehavior?.activation,
         sourceReplyDeliveryMode: opts?.sourceReplyDeliveryMode,
         silentReplyPolicy: silentReplySettings.policy,
         silentToken: SILENT_REPLY_TOKEN,
@@ -533,12 +541,7 @@ export async function runPreparedReply(
     (isDirectChat &&
       silentReplyConversationType === "direct" &&
       silentReplySettings.policy === "allow") ||
-    (isGroupChat &&
-      resolveGroupSilentReplyBehavior({
-        sessionEntry,
-        defaultActivation,
-        silentReplyPolicy: silentReplySettings.policy,
-      }).allowEmptyAssistantReplyAsSilent);
+    (isGroupChat && groupSilentReplyBehavior?.allowEmptyAssistantReplyAsSilent === true);
   const groupSystemPrompt = normalizeOptionalString(promptSessionCtx.GroupSystemPrompt) ?? "";
   const inboundMetaPrompt = buildInboundMetaSystemPrompt(
     isNewSession ? sessionCtx : { ...sessionCtx, ThreadStarterBody: undefined },

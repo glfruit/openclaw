@@ -220,12 +220,14 @@ function resolveProviderLabel(rawProvider: string | undefined): string {
 
 export function buildGroupChatContext(params: {
   sessionCtx: TemplateContext;
+  groupActivation?: "always" | "mention";
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   silentReplyPolicy?: SilentReplyPolicy;
   silentToken?: string;
 }): string {
   const providerLabel = resolveProviderLabel(params.sessionCtx.Provider);
   const messageToolOnly = params.sourceReplyDeliveryMode === "message_tool_only";
+  const alwaysOn = params.groupActivation === "always";
 
   const lines: string[] = [];
   lines.push(`You are in a ${providerLabel} group chat.`);
@@ -238,9 +240,15 @@ export function buildGroupChatContext(params: {
       "Your replies are automatically sent to this group chat. Do not use the message tool to send to this same group - just reply normally.",
     );
   }
-  lines.push(
-    "Be a good group participant: mostly lurk and follow the conversation; reply only when directly addressed or you can add clear value. Emoji reactions are welcome when available.",
-  );
+  if (alwaysOn) {
+    lines.push(
+      "This group chat or topic is configured as always-on for you. Treat messages in this routed chat/topic as intended for you unless they are clearly unrelated chatter or addressed to someone else; the sender should not need to @ mention you.",
+    );
+  } else {
+    lines.push(
+      "Be a good group participant: mostly lurk and follow the conversation; reply only when directly addressed or you can add clear value. Emoji reactions are welcome when available.",
+    );
+  }
   lines.push(
     "Write like a human. Avoid Markdown tables. Minimize empty lines and use normal chat conventions, not document-style spacing. Don't type literal \\n sequences; use real line breaks sparingly.",
   );
@@ -262,7 +270,11 @@ export function buildGroupChatContext(params: {
     lines.push(
       `If no response is needed, reply with exactly "${params.silentToken}" (and nothing else) so OpenClaw stays silent.`,
     );
-    lines.push("Be extremely selective: reply only when directly addressed or clearly helpful.");
+    lines.push(
+      alwaysOn
+        ? "Use this only for clearly unrelated chatter, duplicate context, or messages addressed to someone else; do not use it for actionable input in this routed chat/topic."
+        : "Be extremely selective: reply only when directly addressed or clearly helpful.",
+    );
     lines.push(
       "Do not add any other words, punctuation, tags, markdown/code blocks, or explanations.",
     );
