@@ -1222,6 +1222,12 @@ function isAgentForegroundWaitOverrideEnabled(): boolean {
   return process.env.OPENCLAW_ALLOW_AGENT_FOREGROUND_WAIT === "1";
 }
 
+function isAgentExecContext(params: { agentId?: string; sessionKey?: string }): boolean {
+  return Boolean(
+    normalizeOptionalString(params.agentId) || parseAgentSessionKey(params.sessionKey),
+  );
+}
+
 function argvHasExecutableWithFlag(
   argv: readonly string[],
   executable: string,
@@ -1255,6 +1261,129 @@ function extractInlineShellCommandArg(argv: readonly string[]): string | null {
     }
   }
   return null;
+}
+
+const AGENT_FOREGROUND_LONG_COMMAND_BINARIES = new Set([
+  "blender",
+  "ffmpeg",
+  "hyperframes",
+  "libreoffice",
+  "manim",
+  "soffice",
+]);
+
+const AGENT_FOREGROUND_LONG_INTERPRETERS = new Set([
+  "bun",
+  "deno",
+  "node",
+  "python",
+  "python3",
+  "tsx",
+]);
+
+const AGENT_FOREGROUND_LONG_SCRIPT_PATTERN =
+  /(?:^|[\\/_.-])(?:build|compose|generate|merge|movie|render|slides?|synth(?:esize)?|template|tts|video|voice)(?:$|[\\/_.-])/iu;
+
+function normalizeExecutableBase(token: string | undefined): string {
+  return normalizeOptionalLowercaseString(token?.split(/[\\/]/u).at(-1)) ?? "";
+}
+
+function tokenLooksLikeAgentLongTaskTarget(token: string | undefined): boolean {
+  const normalized = normalizeOptionalString(token);
+  if (!normalized) {
+    return false;
+  }
+  return AGENT_FOREGROUND_LONG_SCRIPT_PATTERN.test(normalized);
+}
+
+function detectInterpreterLongTaskTarget(argv: readonly string[]): string | null {
+  const base = normalizeExecutableBase(argv[0]);
+  if (!AGENT_FOREGROUND_LONG_INTERPRETERS.has(base)) {
+    return null;
+  }
+  for (let i = 1; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (!token) {
+      continue;
+    }
+    if (token === "-c" || token === "-e" || token === "--eval") {
+      return null;
+    }
+    if (token === "-m") {
+      return tokenLooksLikeAgentLongTaskTarget(argv[i + 1]) ? `${base} -m ${argv[i + 1]}` : null;
+    }
+    if (token.startsWith("-")) {
+      continue;
+    }
+    return tokenLooksLikeAgentLongTaskTarget(token) ? `${base} ${token}` : null;
+  }
+  return null;
+}
+
+function detectAgentForegroundLongCommandArgv(
+  argv: readonly string[],
+  seen: Set<string>,
+): string | null {
+  const base = normalizeExecutableBase(argv[0]);
+  if (AGENT_FOREGROUND_LONG_COMMAND_BINARIES.has(base)) {
+    return base;
+  }
+  const interpreterTarget = detectInterpreterLongTaskTarget(argv);
+  if (interpreterTarget) {
+    return interpreterTarget;
+  }
+  const inlineCommand = extractInlineShellCommandArg(argv);
+  if (inlineCommand) {
+    return detectAgentForegroundLongCommandPattern(inlineCommand, seen, {
+      allowRawFallback: false,
+    });
+  }
+  return null;
+}
+
+function detectAgentForegroundLongCommandPattern(
+  command: string,
+  seen = new Set<string>(),
+  options: { allowRawFallback?: boolean } = {},
+): string | null {
+  const trimmed = command.trim();
+  if (!trimmed || seen.has(trimmed)) {
+    return null;
+  }
+  seen.add(trimmed);
+  const analysis = analyzeShellCommand({ command: trimmed });
+  if (!analysis.ok) {
+    const argv = splitShellArgs(trimmed);
+    if (argv) {
+      return detectAgentForegroundLongCommandArgv(argv, seen);
+    }
+    if (options.allowRawFallback === false) {
+      return null;
+    }
+    const rawBinaryMatch = trimmed.match(
+      /\b(?:blender|ffmpeg|hyperframes|libreoffice|manim|soffice)\b/iu,
+    );
+    if (rawBinaryMatch?.[0]) {
+      return rawBinaryMatch[0].toLowerCase();
+    }
+    const rawInterpreterMatch = trimmed.match(
+      /\b(?:bun|deno|node|python3?|tsx)\b[\s\S]{0,240}(?:build|compose|generate|merge|movie|render|slides?|synth(?:esize)?|template|tts|video|voice)/iu,
+    );
+    return rawInterpreterMatch ? "interpreter long-task command" : null;
+  }
+  for (const segment of analysis.segments) {
+    const matched = detectAgentForegroundLongCommandArgv(segment.argv, seen);
+    if (matched) {
+      return matched;
+    }
+  }
+  return null;
+}
+
+function commandMatchesAgentForegroundLongCommandPattern(command: string): string | null {
+  return detectAgentForegroundLongCommandPattern(command, new Set<string>(), {
+    allowRawFallback: true,
+  });
 }
 
 function detectAgentForegroundWaitArgv(argv: readonly string[], seen: Set<string>): string | null {
@@ -1335,10 +1464,7 @@ function rejectAgentForegroundWaitCommand(params: {
   if (isAgentForegroundWaitOverrideEnabled()) {
     return;
   }
-  const isAgentContext = Boolean(
-    normalizeOptionalString(params.agentId) || parseAgentSessionKey(params.sessionKey),
-  );
-  if (!isAgentContext) {
+  if (!isAgentExecContext(params)) {
     return;
   }
   const matched = commandMatchesAgentForegroundWaitPattern(params.command);
@@ -1350,6 +1476,35 @@ function rejectAgentForegroundWaitCommand(params: {
       `exec blocked ${matched} in an OpenClaw agent context.`,
       "Long work must not keep the chat/tool call occupied.",
       "Start the task with exec background=true or yieldMs, or use the team's background runner, then return a status packet with owner, session/PID, log path, checkpoint, stop command, and next progress milestone.",
+      "Manual maintenance can override at gateway process start with OPENCLAW_ALLOW_AGENT_FOREGROUND_WAIT=1.",
+    ].join("\n"),
+  );
+}
+
+function rejectAgentForegroundLongCommand(params: {
+  command: string;
+  agentId?: string;
+  sessionKey?: string;
+  backgroundRequested: boolean;
+  yieldRequested: boolean;
+}): void {
+  if (
+    isAgentForegroundWaitOverrideEnabled() ||
+    params.backgroundRequested ||
+    params.yieldRequested ||
+    !isAgentExecContext(params)
+  ) {
+    return;
+  }
+  const matched = commandMatchesAgentForegroundLongCommandPattern(params.command);
+  if (!matched) {
+    return;
+  }
+  throw new Error(
+    [
+      `exec blocked foreground long-task command (${matched}) in an OpenClaw agent context.`,
+      "Long work must be registered as a background process before it starts so the agent can return a visible status update and later inspect logs.",
+      "Re-run with exec background=true or an explicit yieldMs, or use the team's background runner, then report owner, session/PID, log path, checkpoint, stop command, and next progress milestone.",
       "Manual maintenance can override at gateway process start with OPENCLAW_ALLOW_AGENT_FOREGROUND_WAIT=1.",
     ].join("\n"),
   );
@@ -1439,10 +1594,19 @@ export function createExecTool(
       if (!params.command) {
         throw new Error("Provide a command to start.");
       }
+      const backgroundRequested = params.background === true;
+      const yieldRequested = typeof params.yieldMs === "number";
       rejectAgentForegroundWaitCommand({
         command: params.command,
         agentId,
         sessionKey: defaults?.sessionKey,
+      });
+      rejectAgentForegroundLongCommand({
+        command: params.command,
+        agentId,
+        sessionKey: defaults?.sessionKey,
+        backgroundRequested,
+        yieldRequested,
       });
 
       const maxOutput = DEFAULT_MAX_OUTPUT;
@@ -1453,8 +1617,6 @@ export function createExecTool(
         warnings.push(approvalWarningText);
       }
       let execCommandOverride: string | undefined;
-      const backgroundRequested = params.background === true;
-      const yieldRequested = typeof params.yieldMs === "number";
       if (!allowBackground && (backgroundRequested || yieldRequested)) {
         warnings.push("Warning: background execution is disabled; running synchronously.");
       }

@@ -595,6 +595,34 @@ describe("exec tool agent foreground wait guard", () => {
     );
   });
 
+  it("blocks foreground media/render commands in agent sessions", async () => {
+    await expect(
+      executeExecCommand(
+        createAgentExecTool(),
+        "python3 courses/huai-case-submission-20260524/build_huai_template_shaou_v6.py",
+      ),
+    ).rejects.toThrow("exec blocked foreground long-task command");
+
+    await expect(
+      executeExecCommand(createAgentExecTool(), "ffmpeg -i in.mp4 -y out.mp4"),
+    ).rejects.toThrow("exec blocked foreground long-task command");
+  });
+
+  it("blocks foreground long commands inside inline shell wrappers", async () => {
+    await expect(
+      executeExecCommand(createAgentExecTool(), 'bash -lc "python3 scripts/render_video.py"'),
+    ).rejects.toThrow("exec blocked foreground long-task command");
+  });
+
+  it("allows explicit yield for long commands in agent sessions", async () => {
+    const result = await executeExecCommand(
+      createAgentExecTool(),
+      "python3 scripts/render_video.py",
+      { yieldMs: 0 },
+    );
+    expect(readProcessStatus(result.details)).toBe(PROCESS_STATUS_COMPLETED);
+  });
+
   it("does not block quoted status text in normal commands", async () => {
     const result = await executeExecCommand(createAgentExecTool(), "echo 'tmux-run.sh --wait'");
     expect(readTextContent(result.content) ?? "").toContain("tmux-run.sh --wait");
