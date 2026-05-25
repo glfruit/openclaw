@@ -892,11 +892,12 @@ function scoreEntry(entry: ToolSearchCatalogEntry, terms: string[]): number {
   }
   const name = entry.name.toLowerCase();
   const id = entry.id.toLowerCase();
+  const sourceName = (entry.sourceName ?? "").toLowerCase();
   const label = (entry.label ?? "").toLowerCase();
   const description = entry.description.toLowerCase();
   let score = 0;
   for (const term of terms) {
-    if (name === term || id === term) {
+    if (name === term || id === term || sourceName === term) {
       score += 20;
     }
     if (name.includes(term)) {
@@ -904,6 +905,9 @@ function scoreEntry(entry: ToolSearchCatalogEntry, terms: string[]): number {
     }
     if (id.includes(term)) {
       score += 6;
+    }
+    if (sourceName.includes(term)) {
+      score += 12;
     }
     if (label.includes(term)) {
       score += 4;

@@ -153,6 +153,58 @@ describe("Tool Search", () => {
     expect(telemetry.callCount).toBe(1);
   });
 
+  it("prioritizes tools owned by a searched plugin source name", async () => {
+    const searchTool = fakeTool(TOOL_SEARCH_RAW_TOOL_NAME, "search");
+    const describeTool = fakeTool(TOOL_DESCRIBE_RAW_TOOL_NAME, "describe");
+    const callTool = fakeTool(TOOL_CALL_RAW_TOOL_NAME, "call");
+    const ai4scholarTool = pluginTool(
+      "semantic_search",
+      "Search academic papers semantically",
+      "ai4scholar",
+    );
+    const incidentalTool = pluginTool(
+      "ai4scholar_fake_helper",
+      "A similarly named helper from another plugin",
+      "other-plugin",
+    );
+
+    applyToolSearchCatalog({
+      tools: [searchTool, describeTool, callTool, ai4scholarTool, incidentalTool],
+      config: {
+        tools: {
+          toolSearch: { enabled: true, mode: "tools" },
+        },
+      } as never,
+      sessionId: "session-plugin-source-search",
+      sessionKey: "agent:research-tl:telegram:group:-1003896323748",
+    });
+
+    const [, runtimeSearchTool] = createToolSearchTools({
+      sessionId: "session-plugin-source-search",
+      sessionKey: "agent:research-tl:telegram:group:-1003896323748",
+      config: {
+        tools: {
+          toolSearch: { enabled: true, mode: "tools" },
+        },
+      } as never,
+    });
+    const result = await runtimeSearchTool.execute("call-search-source", {
+      query: "ai4scholar",
+      limit: 2,
+    });
+
+    expect(result.details).toMatchObject([
+      {
+        name: "semantic_search",
+        sourceName: "ai4scholar",
+      },
+      {
+        name: "ai4scholar_fake_helper",
+        sourceName: "other-plugin",
+      },
+    ]);
+  });
+
   it("scopes catalogs by run id when attempts share a session", async () => {
     const runATool = pluginTool("fake_run_a", "Tool visible only to run A");
     const runBTool = pluginTool("fake_run_b", "Tool visible only to run B");

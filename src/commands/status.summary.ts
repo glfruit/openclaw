@@ -198,114 +198,146 @@ export async function getStatusSummary(
     storeCache.set(storePath, store);
     return store;
   };
-  const buildSessionRows = (
-    store: Record<string, SessionEntry | undefined>,
-    opts: { agentIdOverride?: string } = {},
-  ) =>
+  type SessionRowSeed = {
+    key: string;
+    entry: SessionEntry | undefined;
+    updatedAt: number | null;
+  };
+  const buildSessionRowSeeds = (store: Record<string, SessionEntry | undefined>) =>
     Object.entries(store)
       .filter(([key]) => key !== "global" && key !== "unknown")
-      .map(([key, entry]) => {
-        const updatedAt = entry?.updatedAt ?? null;
-        const age = updatedAt ? now - updatedAt : null;
-        const parsedAgentId = parseAgentSessionKey(key)?.agentId;
-        const agentId = opts.agentIdOverride ?? parsedAgentId;
-        const configuredForSession = resolveConfiguredStatusModelRef({
+      .map(
+        ([key, entry]): SessionRowSeed => ({
+          key,
+          entry,
+          updatedAt: entry?.updatedAt ?? null,
+        }),
+      )
+      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  const buildSessionRow = (
+    seed: SessionRowSeed,
+    opts: { agentIdOverride?: string; detail?: "full" | "brief" } = {},
+  ): SessionStatus => {
+    const { key, entry, updatedAt } = seed;
+    const age = updatedAt ? now - updatedAt : null;
+    const parsedAgentId = parseAgentSessionKey(key)?.agentId;
+    const agentId = opts.agentIdOverride ?? parsedAgentId;
+    const fullDetail = opts.detail !== "brief";
+    const configuredForSession = fullDetail
+      ? resolveConfiguredStatusModelRef({
           cfg,
           defaultProvider: DEFAULT_PROVIDER,
           defaultModel: DEFAULT_MODEL,
           agentId,
-        });
-        const configuredSessionModel = configuredForSession.model ?? DEFAULT_MODEL;
-        const configuredSessionModelLabel = `${configuredForSession.provider ?? DEFAULT_PROVIDER}/${configuredSessionModel}`;
-        const resolvedModel = resolveSessionModelRef(cfg, entry, opts.agentIdOverride);
-        const model = resolvedModel.model ?? configuredSessionModel ?? null;
-        const selectedModelLabel =
-          resolvedModel.provider && model ? `${resolvedModel.provider}/${model}` : model;
-        const modelSelectionDiffers =
-          selectedModelLabel != null &&
-          selectedModelLabel !== configuredSessionModelLabel &&
-          !areRuntimeModelRefsEquivalent(selectedModelLabel, configuredSessionModelLabel) &&
-          hasUserPinnedModelSelection(entry);
-        const contextTokens =
-          resolveContextTokensForModel({
-            cfg,
-            provider: resolvedModel.provider,
-            model,
-            contextTokensOverride: entry?.contextTokens,
-            fallbackContextTokens: configContextTokens ?? undefined,
-            allowAsyncLoad: false,
-          }) ?? null;
-        const total = resolveSessionTotalTokens(entry);
-        const totalTokensFresh =
-          typeof entry?.totalTokens === "number" ? entry?.totalTokensFresh !== false : false;
-        const remaining =
-          contextTokens != null && total !== undefined ? Math.max(0, contextTokens - total) : null;
-        const pct =
-          contextTokens && contextTokens > 0 && total !== undefined
-            ? Math.min(999, Math.round((total / contextTokens) * 100))
-            : null;
-        const runtime = resolveSessionRuntimeLabel({
+        })
+      : null;
+    const configuredSessionModel = configuredForSession?.model ?? DEFAULT_MODEL;
+    const configuredSessionModelLabel = configuredForSession
+      ? `${configuredForSession.provider ?? DEFAULT_PROVIDER}/${configuredSessionModel}`
+      : null;
+    const resolvedModel = fullDetail
+      ? resolveSessionModelRef(cfg, entry, opts.agentIdOverride)
+      : {
+          provider: entry?.modelProvider ?? null,
+          model: entry?.model ?? entry?.modelOverride ?? null,
+        };
+    const model = resolvedModel.model ?? (fullDetail ? configuredSessionModel : null);
+    const selectedModelLabel =
+      resolvedModel.provider && model ? `${resolvedModel.provider}/${model}` : model;
+    const modelSelectionDiffers =
+      fullDetail &&
+      selectedModelLabel != null &&
+      configuredSessionModelLabel != null &&
+      selectedModelLabel !== configuredSessionModelLabel &&
+      !areRuntimeModelRefsEquivalent(selectedModelLabel, configuredSessionModelLabel) &&
+      hasUserPinnedModelSelection(entry);
+    const contextTokens = fullDetail
+      ? (resolveContextTokensForModel({
+          cfg,
+          provider: resolvedModel.provider ?? undefined,
+          model: model ?? undefined,
+          contextTokensOverride: entry?.contextTokens,
+          fallbackContextTokens: configContextTokens ?? undefined,
+          allowAsyncLoad: false,
+        }) ?? null)
+      : (entry?.contextTokens ?? null);
+    const total = resolveSessionTotalTokens(entry);
+    const totalTokensFresh =
+      typeof entry?.totalTokens === "number" ? entry?.totalTokensFresh !== false : false;
+    const remaining =
+      contextTokens != null && total !== undefined ? Math.max(0, contextTokens - total) : null;
+    const pct =
+      contextTokens && contextTokens > 0 && total !== undefined
+        ? Math.min(999, Math.round((total / contextTokens) * 100))
+        : null;
+    const runtime = fullDetail
+      ? resolveSessionRuntimeLabel({
           cfg,
           entry,
-          provider: resolvedModel.provider,
+          provider: resolvedModel.provider ?? DEFAULT_PROVIDER,
           model: model ?? "",
           agentId,
           sessionKey: key,
-        });
+        })
+      : null;
 
-        return {
-          agentId,
-          key,
-          kind: classifySessionKey(key, entry),
-          sessionId: entry?.sessionId,
-          updatedAt,
-          age,
-          thinkingLevel: entry?.thinkingLevel,
-          fastMode: entry?.fastMode,
-          verboseLevel: entry?.verboseLevel,
-          traceLevel: entry?.traceLevel,
-          reasoningLevel: entry?.reasoningLevel,
-          elevatedLevel: entry?.elevatedLevel,
-          systemSent: entry?.systemSent,
-          abortedLastRun: entry?.abortedLastRun,
-          inputTokens: entry?.inputTokens,
-          outputTokens: entry?.outputTokens,
-          cacheRead: entry?.cacheRead,
-          cacheWrite: entry?.cacheWrite,
-          totalTokens: total ?? null,
-          totalTokensFresh,
-          remainingTokens: remaining,
-          percentUsed: pct,
-          model,
-          configuredModel: configuredSessionModelLabel,
-          selectedModel: selectedModelLabel,
-          modelSelectionReason: modelSelectionDiffers ? "session override" : null,
-          runtime,
-          contextTokens,
-          flags: buildFlags(entry),
-        } satisfies SessionStatus;
-      })
-      .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    return {
+      agentId,
+      key,
+      kind: classifySessionKey(key, entry),
+      sessionId: entry?.sessionId,
+      updatedAt,
+      age,
+      thinkingLevel: entry?.thinkingLevel,
+      fastMode: entry?.fastMode,
+      verboseLevel: entry?.verboseLevel,
+      traceLevel: entry?.traceLevel,
+      reasoningLevel: entry?.reasoningLevel,
+      elevatedLevel: entry?.elevatedLevel,
+      systemSent: entry?.systemSent,
+      abortedLastRun: entry?.abortedLastRun,
+      inputTokens: entry?.inputTokens,
+      outputTokens: entry?.outputTokens,
+      cacheRead: entry?.cacheRead,
+      cacheWrite: entry?.cacheWrite,
+      totalTokens: total ?? null,
+      totalTokensFresh,
+      remainingTokens: remaining,
+      percentUsed: pct,
+      model,
+      configuredModel: configuredSessionModelLabel,
+      selectedModel: selectedModelLabel,
+      modelSelectionReason: modelSelectionDiffers ? "session override" : null,
+      runtime,
+      contextTokens,
+      flags: buildFlags(entry),
+    };
+  };
 
   const paths = new Set<string>();
   const byAgent = agentList.agents.map((agent) => {
     const storePath = resolveStorePath(cfg.session?.store, { agentId: agent.id });
     paths.add(storePath);
     const store = loadStore(storePath);
-    const sessions = buildSessionRows(store, { agentIdOverride: agent.id });
+    const sessionSeeds = buildSessionRowSeeds(store);
     return {
       agentId: agent.id,
       path: storePath,
-      count: sessions.length,
-      recent: sessions.slice(0, 10),
+      count: sessionSeeds.length,
+      recent: sessionSeeds.slice(0, 10).map((seed) =>
+        buildSessionRow(seed, {
+          agentIdOverride: agent.id,
+          detail: "brief",
+        }),
+      ),
     };
   });
 
-  const allSessions = Array.from(paths)
-    .flatMap((storePath) => buildSessionRows(loadStore(storePath)))
+  const allSessionSeeds = Array.from(paths)
+    .flatMap((storePath) => buildSessionRowSeeds(loadStore(storePath)))
     .toSorted((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-  const recent = allSessions.slice(0, 10);
-  const totalSessions = allSessions.length;
+  const recent = allSessionSeeds.slice(0, 10).map((seed) => buildSessionRow(seed));
+  const totalSessions = allSessionSeeds.length;
 
   const summary: StatusSummary = {
     runtimeVersion: resolveRuntimeServiceVersion(process.env),
