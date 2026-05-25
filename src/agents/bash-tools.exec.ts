@@ -1218,6 +1218,143 @@ function rejectUnsafeControlShellCommand(command: string): void {
   }
 }
 
+function isAgentForegroundWaitOverrideEnabled(): boolean {
+  return process.env.OPENCLAW_ALLOW_AGENT_FOREGROUND_WAIT === "1";
+}
+
+function argvHasExecutableWithFlag(
+  argv: readonly string[],
+  executable: string,
+  flag: string,
+): boolean {
+  const executableIndex = argv.findIndex((token) => {
+    const base = normalizeOptionalLowercaseString(token.split(/[\\/]/u).at(-1)) ?? "";
+    return base === executable;
+  });
+  return executableIndex >= 0 && argv.slice(executableIndex + 1).includes(flag);
+}
+
+function isSleepCommandArgv(argv: readonly string[]): boolean {
+  const base = normalizeOptionalLowercaseString(argv[0]?.split(/[\\/]/u).at(-1)) ?? "";
+  return base === "sleep" && typeof argv[1] === "string" && /^\d+(?:\.\d+)?[smhd]?$/u.test(argv[1]);
+}
+
+function isShellInlineCommandFlag(token: string): boolean {
+  return token === "-c" || /^-[A-Za-z]*c[A-Za-z]*$/u.test(token);
+}
+
+function extractInlineShellCommandArg(argv: readonly string[]): string | null {
+  const base = normalizeOptionalLowercaseString(argv[0]?.split(/[\\/]/u).at(-1)) ?? "";
+  if (!["ash", "bash", "dash", "fish", "ksh", "sh", "zsh"].includes(base)) {
+    return null;
+  }
+  for (let i = 1; i < argv.length - 1; i += 1) {
+    const token = argv[i];
+    if (isShellInlineCommandFlag(token)) {
+      return argv[i + 1] ?? null;
+    }
+  }
+  return null;
+}
+
+function detectAgentForegroundWaitArgv(argv: readonly string[], seen: Set<string>): string | null {
+  if (argvHasExecutableWithFlag(argv, "tmux-run.sh", "--wait")) {
+    return "tmux-run.sh --wait";
+  }
+  const inlineCommand = extractInlineShellCommandArg(argv);
+  if (inlineCommand) {
+    const nested = detectAgentForegroundWaitPattern(inlineCommand, seen, {
+      allowRawFallback: false,
+    });
+    if (nested) {
+      return nested;
+    }
+  }
+  return null;
+}
+
+function detectAgentForegroundWaitPattern(
+  command: string,
+  seen = new Set<string>(),
+  options: { allowRawFallback?: boolean } = {},
+): string | null {
+  const trimmed = command.trim();
+  if (!trimmed || seen.has(trimmed)) {
+    return null;
+  }
+  seen.add(trimmed);
+  const analysis = analyzeShellCommand({ command: trimmed });
+  if (!analysis.ok) {
+    const argv = splitShellArgs(trimmed);
+    if (argv) {
+      return detectAgentForegroundWaitArgv(argv, seen);
+    }
+    return options.allowRawFallback === false
+      ? null
+      : /\bsleep\s+\d+(?:\.\d+)?[smhd]?\b[\s\S]{0,400}tmux-run\.sh[\s\S]{0,200}\s--status(?:\s|$)/u.test(
+            trimmed,
+          )
+        ? "sleep + tmux-run.sh --status polling"
+        : null;
+  }
+  for (const segment of analysis.segments) {
+    const matched = detectAgentForegroundWaitArgv(segment.argv, seen);
+    if (matched) {
+      return matched;
+    }
+  }
+  const chains = analysis.chains ?? [analysis.segments];
+  for (const chain of chains) {
+    let sawSleep = false;
+    for (const segment of chain) {
+      sawSleep = sawSleep || isSleepCommandArgv(segment.argv);
+      if (sawSleep && argvHasExecutableWithFlag(segment.argv, "tmux-run.sh", "--status")) {
+        return "sleep + tmux-run.sh --status polling";
+      }
+    }
+  }
+  if (
+    /\bsleep\s+\d+(?:\.\d+)?[smhd]?\b[\s\S]{0,400}tmux-run\.sh[\s\S]{0,200}\s--status(?:\s|$)/u.test(
+      trimmed,
+    )
+  ) {
+    return "sleep + tmux-run.sh --status polling";
+  }
+  return null;
+}
+
+function commandMatchesAgentForegroundWaitPattern(command: string): string | null {
+  return detectAgentForegroundWaitPattern(command, new Set<string>(), { allowRawFallback: true });
+}
+
+function rejectAgentForegroundWaitCommand(params: {
+  command: string;
+  agentId?: string;
+  sessionKey?: string;
+}): void {
+  if (isAgentForegroundWaitOverrideEnabled()) {
+    return;
+  }
+  const isAgentContext = Boolean(
+    normalizeOptionalString(params.agentId) || parseAgentSessionKey(params.sessionKey),
+  );
+  if (!isAgentContext) {
+    return;
+  }
+  const matched = commandMatchesAgentForegroundWaitPattern(params.command);
+  if (!matched) {
+    return;
+  }
+  throw new Error(
+    [
+      `exec blocked ${matched} in an OpenClaw agent context.`,
+      "Long work must not keep the chat/tool call occupied.",
+      "Start the task with exec background=true or yieldMs, or use the team's background runner, then return a status packet with owner, session/PID, log path, checkpoint, stop command, and next progress milestone.",
+      "Manual maintenance can override at gateway process start with OPENCLAW_ALLOW_AGENT_FOREGROUND_WAIT=1.",
+    ].join("\n"),
+  );
+}
+
 export function createExecTool(
   defaults?: ExecToolDefaults,
 ): AgentToolWithMeta<typeof execSchema, ExecToolDetails> {
@@ -1302,6 +1439,11 @@ export function createExecTool(
       if (!params.command) {
         throw new Error("Provide a command to start.");
       }
+      rejectAgentForegroundWaitCommand({
+        command: params.command,
+        agentId,
+        sessionKey: defaults?.sessionKey,
+      });
 
       const maxOutput = DEFAULT_MAX_OUTPUT;
       const pendingMaxOutput = DEFAULT_PENDING_MAX_OUTPUT;

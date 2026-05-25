@@ -570,6 +570,37 @@ const runDisallowedElevationCase = async ({
   }
   expect(readTextContent(result.content) ?? "").toContain(expectedOutputIncludes);
 };
+
+describe("exec tool agent foreground wait guard", () => {
+  const createAgentExecTool = () =>
+    createTestExecTool({
+      agentId: "edu-tl",
+      sessionKey: DEFAULT_NOTIFY_SESSION_KEY,
+    });
+
+  it("blocks tmux-run wait commands in agent sessions", async () => {
+    await expect(
+      executeExecCommand(createAgentExecTool(), "bash scripts/tmux-run.sh --wait huai_v7_build"),
+    ).rejects.toThrow("exec blocked tmux-run.sh --wait in an OpenClaw agent context");
+  });
+
+  it("blocks sleep/status polling commands in agent sessions", async () => {
+    await expect(
+      executeExecCommand(
+        createAgentExecTool(),
+        "sleep 180; bash scripts/tmux-run.sh --status huai_v7_build",
+      ),
+    ).rejects.toThrow(
+      "exec blocked sleep + tmux-run.sh --status polling in an OpenClaw agent context",
+    );
+  });
+
+  it("does not block quoted status text in normal commands", async () => {
+    const result = await executeExecCommand(createAgentExecTool(), "echo 'tmux-run.sh --wait'");
+    expect(readTextContent(result.content) ?? "").toContain("tmux-run.sh --wait");
+  });
+});
+
 const runShortLogExpectationCase = async ({
   lines,
   options,
