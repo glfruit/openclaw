@@ -1829,26 +1829,7 @@ export const dispatchTelegramMessage = async ({
   }
   let sentFallback = false;
   const deliverySummary = deliveryState.snapshot();
-  const shouldSendFailureFallback =
-    !isRoomEvent &&
-    (dispatchError ||
-      (!deliverySummary.delivered &&
-        (deliverySummary.skippedNonSilent > 0 || deliverySummary.failedNonSilent > 0)));
-  if (shouldSendFailureFallback) {
-    const fallbackText = dispatchError
-      ? "Something went wrong while processing your request. Please try again."
-      : EMPTY_RESPONSE_FALLBACK;
-    const result = await (telegramDeps.deliverReplies ?? deliverReplies)({
-      replies: [{ text: fallbackText }],
-      ...deliveryBaseOptions,
-      silent: silentErrorReplies && (dispatchError != null || hadErrorReplyFailureOrSkip),
-      mediaLoader: telegramDeps.loadWebMedia,
-    });
-    sentFallback = result.delivered;
-  }
-
   if (
-    !sentFallback &&
     !dispatchError &&
     !deliverySummary.delivered &&
     !suppressSilentReplyFallback &&
@@ -1879,6 +1860,25 @@ export const dispatchTelegramMessage = async ({
         sentFallback = result.delivered;
       }
     }
+  }
+
+  const shouldSendFailureFallback =
+    !sentFallback &&
+    !isRoomEvent &&
+    (dispatchError ||
+      (!deliverySummary.delivered &&
+        (deliverySummary.skippedNonSilent > 0 || deliverySummary.failedNonSilent > 0)));
+  if (shouldSendFailureFallback) {
+    const fallbackText = dispatchError
+      ? "Something went wrong while processing your request. Please try again."
+      : EMPTY_RESPONSE_FALLBACK;
+    const result = await (telegramDeps.deliverReplies ?? deliverReplies)({
+      replies: [{ text: fallbackText }],
+      ...deliveryBaseOptions,
+      silent: silentErrorReplies && (dispatchError != null || hadErrorReplyFailureOrSkip),
+      mediaLoader: telegramDeps.loadWebMedia,
+    });
+    sentFallback = result.delivered;
   }
 
   if (
