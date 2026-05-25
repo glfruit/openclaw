@@ -105,6 +105,47 @@ function shouldSkipStartupModelPrewarm(env: NodeJS.ProcessEnv = process.env): bo
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
+function collectProviderIdsFromModelConfig(value: unknown, out: Set<string>): void {
+  if (typeof value === "string") {
+    const provider = value.split("/", 1)[0]?.trim();
+    if (provider && provider !== value.trim()) {
+      out.add(provider);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectProviderIdsFromModelConfig(item, out);
+    }
+    return;
+  }
+  if (!value || typeof value !== "object") {
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  collectProviderIdsFromModelConfig(record.primary, out);
+  collectProviderIdsFromModelConfig(record.secondary, out);
+  collectProviderIdsFromModelConfig(record.fallback, out);
+  collectProviderIdsFromModelConfig(record.fallbacks, out);
+  collectProviderIdsFromModelConfig(record.secondaries, out);
+}
+
+function resolveDefaultProviderAuthPrewarmProviderIds(
+  cfg: OpenClawConfig,
+  defaultAgentId: string,
+): string[] {
+  const providerIds = new Set<string>();
+  collectProviderIdsFromModelConfig(cfg.agents?.defaults?.model, providerIds);
+  const defaultAgent = cfg.agents?.list?.find((agent) => agent?.id === defaultAgentId);
+  collectProviderIdsFromModelConfig(defaultAgent?.model, providerIds);
+  for (const provider of Object.keys(cfg.models?.providers ?? {})) {
+    if (provider.trim()) {
+      providerIds.add(provider);
+    }
+  }
+  return [...providerIds];
+}
+
 function resolveGatewayMemoryStartupPolicy(cfg: OpenClawConfig): GatewayMemoryStartupPolicy {
   if (cfg.memory?.backend !== "qmd") {
     return { mode: "off" };
@@ -193,16 +234,23 @@ function scheduleProviderAuthStatePrewarm(params: {
       await import("../agents/model-provider-auth.js");
     const { resolveDefaultAgentId } = await import("../agents/agent-scope-config.js");
     const { setAuthProfileFailureHook } = await import("../agents/auth-profiles.js");
-    const warmDefaultProviderAuthState = (cfg: OpenClawConfig) =>
-      warmCurrentProviderAuthState(cfg, {
+    const warmDefaultProviderAuthState = (cfg: OpenClawConfig) => {
+      const defaultAgentId = resolveDefaultAgentId(cfg);
+      return warmCurrentProviderAuthState(cfg, {
         isCancelled: isStopped,
         // Startup/reload auth warming is an optimization for common picker/status
         // paths. Warming every configured agent can synchronously scan auth stores
         // and plugin state for minutes on large local deployments, which starves
         // channel ingress after a restart. Non-default agents still compute lazily
         // on first use when their scope is not in the prepared map.
-        agentIds: [resolveDefaultAgentId(cfg)],
+        agentIds: [defaultAgentId],
+        // Use configured providers rather than the full model catalog. Loading
+        // every catalog/provider plugin during post-ready warmup is observable
+        // as channel latency after restart, while missing providers remain
+        // correct because callers fall through to lazy computation.
+        providerIds: resolveDefaultProviderAuthPrewarmProviderIds(cfg, defaultAgentId),
       });
+    };
     const runRewarm = async (reason: string) => {
       if (isStopped()) {
         return;

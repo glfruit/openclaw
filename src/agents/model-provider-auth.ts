@@ -197,7 +197,11 @@ export function createProviderAuthChecker(params: {
 
 export async function warmCurrentProviderAuthState(
   cfg: OpenClawConfig,
-  options: { isCancelled?: () => boolean; agentIds?: Iterable<string> } = {},
+  options: {
+    isCancelled?: () => boolean;
+    agentIds?: Iterable<string>;
+    providerIds?: Iterable<string>;
+  } = {},
 ): Promise<void> {
   // Claim a fresh generation; any concurrent warm or clear bumps this and
   // turns our published state stale.
@@ -205,13 +209,22 @@ export async function warmCurrentProviderAuthState(
   const ownGeneration = currentProviderAuthStateGeneration;
   const isWarmStale = () =>
     options.isCancelled?.() === true || ownGeneration !== currentProviderAuthStateGeneration;
-  const catalog = await loadModelCatalog({ config: cfg });
-  if (isWarmStale()) {
-    return;
-  }
   const providers = new Set<string>();
-  for (const entry of catalog) {
-    providers.add(normalizeProviderId(entry.provider));
+  if (options.providerIds) {
+    for (const provider of options.providerIds) {
+      const normalized = normalizeProviderId(provider);
+      if (normalized) {
+        providers.add(normalized);
+      }
+    }
+  } else {
+    const catalog = await loadModelCatalog({ config: cfg });
+    if (isWarmStale()) {
+      return;
+    }
+    for (const entry of catalog) {
+      providers.add(normalizeProviderId(entry.provider));
+    }
   }
   const providerList = [...providers];
   const configFingerprint = resolveProviderAuthConfigFingerprint(cfg) ?? "";

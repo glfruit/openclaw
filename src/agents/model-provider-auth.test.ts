@@ -115,6 +115,19 @@ describe("prepared provider auth state", () => {
     expect(modelAuthMocks.hasRuntimeAvailableProviderAuth).toHaveBeenCalledTimes(1);
   });
 
+  it("can warm only explicitly requested provider IDs without loading the full catalog", async () => {
+    const cfg = {} as OpenClawConfig;
+    modelAuthMocks.hasRuntimeAvailableProviderAuth.mockReturnValue(false);
+
+    await warmCurrentProviderAuthState(cfg, { providerIds: ["openai"] });
+
+    expect(modelCatalogMocks.loadModelCatalog).not.toHaveBeenCalled();
+    expect(modelAuthMocks.hasRuntimeAvailableProviderAuth).toHaveBeenCalledTimes(1);
+    expect(modelAuthMocks.hasRuntimeAvailableProviderAuth.mock.calls[0]?.[0].provider).toBe(
+      "openai",
+    );
+  });
+
   it("hasAuthForModelProvider returns the prepared answer after warm and falls through to compute after clear", async () => {
     const cfg = {} as OpenClawConfig;
     modelCatalogMocks.loadModelCatalog.mockResolvedValue([
