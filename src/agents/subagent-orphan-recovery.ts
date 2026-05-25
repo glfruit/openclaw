@@ -44,6 +44,68 @@ const log = createSubsystemLogger("subagent-orphan-recovery");
 
 /** Delay before attempting recovery to let the gateway finish bootstrapping. */
 const DEFAULT_RECOVERY_DELAY_MS = 5_000;
+const MAX_ORPHAN_RECOVERY_RUN_AGE_MS = 30 * 60_000;
+const MAX_ORPHAN_RECOVERY_ENDED_TIMEOUT_AGE_MS = 10 * 60_000;
+
+function formatDurationMinutes(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+function resolveStaleOrphanRecoveryBlockReason(params: {
+  runRecord: SubagentRunRecord;
+  now: number;
+}): string | undefined {
+  const { runRecord, now } = params;
+  const startedAt =
+    typeof runRecord.sessionStartedAt === "number" && Number.isFinite(runRecord.sessionStartedAt)
+      ? runRecord.sessionStartedAt
+      : typeof runRecord.startedAt === "number" && Number.isFinite(runRecord.startedAt)
+        ? runRecord.startedAt
+        : runRecord.createdAt;
+  if (typeof startedAt === "number" && Number.isFinite(startedAt)) {
+    const ageMs = now - startedAt;
+    if (ageMs > MAX_ORPHAN_RECOVERY_RUN_AGE_MS) {
+      return (
+        `subagent orphan recovery blocked because the interrupted run is stale ` +
+        `(${formatDurationMinutes(ageMs)} old, limit ${formatDurationMinutes(
+          MAX_ORPHAN_RECOVERY_RUN_AGE_MS,
+        )}); retry the task or reconcile it manually`
+      );
+    }
+  }
+
+  if (
+    typeof runRecord.accumulatedRuntimeMs === "number" &&
+    Number.isFinite(runRecord.accumulatedRuntimeMs) &&
+    runRecord.accumulatedRuntimeMs > MAX_ORPHAN_RECOVERY_RUN_AGE_MS
+  ) {
+    return (
+      `subagent orphan recovery blocked because the interrupted run already accumulated ` +
+      `${formatDurationMinutes(runRecord.accumulatedRuntimeMs)} of runtime ` +
+      `(limit ${formatDurationMinutes(MAX_ORPHAN_RECOVERY_RUN_AGE_MS)}); retry the task or ` +
+      `reconcile it manually`
+    );
+  }
+
+  if (
+    typeof runRecord.endedAt === "number" &&
+    Number.isFinite(runRecord.endedAt) &&
+    runRecord.endedAt > 0
+  ) {
+    const endedAgeMs = now - runRecord.endedAt;
+    if (endedAgeMs > MAX_ORPHAN_RECOVERY_ENDED_TIMEOUT_AGE_MS) {
+      return (
+        `subagent orphan recovery blocked because the restart-timeout marker is stale ` +
+        `(${formatDurationMinutes(endedAgeMs)} old, limit ${formatDurationMinutes(
+          MAX_ORPHAN_RECOVERY_ENDED_TIMEOUT_AGE_MS,
+        )}); retry the task or reconcile it manually`
+      );
+    }
+  }
+
+  return undefined;
+}
 
 function isRestartAbortedTimeoutRun(
   runRecord: SubagentRunRecord,
@@ -307,6 +369,42 @@ export async function recoverOrphanedSubagentSessions(params: {
         // Check if this session was aborted by the restart
         if (!entry.abortedLastRun) {
           result.skipped++;
+          continue;
+        }
+
+        const staleBlockReason = resolveStaleOrphanRecoveryBlockReason({ runRecord, now });
+        if (staleBlockReason) {
+          try {
+            await updateSessionStore(storePath, (currentStore) => {
+              const current = currentStore[childSessionKey];
+              if (current) {
+                markSubagentRecoveryWedged({
+                  entry: current,
+                  now,
+                  runId,
+                  reason: staleBlockReason,
+                });
+                currentStore[childSessionKey] = current;
+              }
+            });
+            markSubagentRecoveryWedged({
+              entry,
+              now,
+              runId,
+              reason: staleBlockReason,
+            });
+          } catch (err) {
+            log.warn(
+              `failed to persist stale subagent recovery marker for ${childSessionKey}: ${String(err)}`,
+            );
+          }
+          log.warn(`skipping orphan recovery for ${childSessionKey}: ${staleBlockReason}`);
+          result.skipped++;
+          result.failedRuns.push({
+            runId,
+            childSessionKey,
+            error: staleBlockReason,
+          });
           continue;
         }
 

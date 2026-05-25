@@ -481,6 +481,52 @@ describe("subagent-orphan-recovery", () => {
     expect(sessions.updateSessionStore).not.toHaveBeenCalled();
   });
 
+  it("tombstones stale interrupted runs instead of resuming them", async () => {
+    mockSingleAbortedSession();
+
+    const result = await recoverOrphanedSubagentSessions({
+      getActiveRuns: () =>
+        createActiveRuns(
+          createTestRunRecord({
+            createdAt: Date.now() - 31 * 60_000,
+            startedAt: Date.now() - 31 * 60_000,
+            sessionStartedAt: Date.now() - 31 * 60_000,
+          }),
+        ),
+    });
+
+    expect(result.recovered).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.failedRuns).toHaveLength(1);
+    expect(result.failedRuns[0]?.error).toContain("interrupted run is stale");
+    expect(gateway.callGateway).not.toHaveBeenCalled();
+    expect(sessions.updateSessionStore).toHaveBeenCalledOnce();
+  });
+
+  it("tombstones stale restart-timeout markers instead of resuming them", async () => {
+    mockSingleAbortedSession();
+
+    const result = await recoverOrphanedSubagentSessions({
+      getActiveRuns: () =>
+        createActiveRuns(
+          createTestRunRecord({
+            createdAt: Date.now() - 60_000,
+            startedAt: Date.now() - 60_000,
+            endedAt: Date.now() - 11 * 60_000,
+            outcome: { status: "timeout" },
+          }),
+        ),
+    });
+
+    expect(result.recovered).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.failedRuns[0]?.error).toContain("restart-timeout marker is stale");
+    expect(gateway.callGateway).not.toHaveBeenCalled();
+    expect(sessions.updateSessionStore).toHaveBeenCalledOnce();
+  });
+
   it("truncates long task descriptions in resume message", async () => {
     mockSingleAbortedSession();
 
