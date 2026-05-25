@@ -191,7 +191,18 @@ function scheduleProviderAuthStatePrewarm(params: {
   void (async () => {
     const { clearCurrentProviderAuthState, warmCurrentProviderAuthState } =
       await import("../agents/model-provider-auth.js");
+    const { resolveDefaultAgentId } = await import("../agents/agent-scope-config.js");
     const { setAuthProfileFailureHook } = await import("../agents/auth-profiles.js");
+    const warmDefaultProviderAuthState = (cfg: OpenClawConfig) =>
+      warmCurrentProviderAuthState(cfg, {
+        isCancelled: isStopped,
+        // Startup/reload auth warming is an optimization for common picker/status
+        // paths. Warming every configured agent can synchronously scan auth stores
+        // and plugin state for minutes on large local deployments, which starves
+        // channel ingress after a restart. Non-default agents still compute lazily
+        // on first use when their scope is not in the prepared map.
+        agentIds: [resolveDefaultAgentId(cfg)],
+      });
     const runRewarm = async (reason: string) => {
       if (isStopped()) {
         return;
@@ -199,9 +210,7 @@ function scheduleProviderAuthStatePrewarm(params: {
       const cfg = params.getConfig();
       rewarmInFlight = true;
       try {
-        const metrics = await measureProviderAuthWarm(() =>
-          warmCurrentProviderAuthState(cfg, { isCancelled: isStopped }),
-        );
+        const metrics = await measureProviderAuthWarm(() => warmDefaultProviderAuthState(cfg));
         if (isStopped()) {
           return;
         }
@@ -252,9 +261,7 @@ function scheduleProviderAuthStatePrewarm(params: {
             return;
           }
           const cfg = params.getConfig();
-          const metrics = await measureProviderAuthWarm(() =>
-            warmCurrentProviderAuthState(cfg, { isCancelled: isStopped }),
-          );
+          const metrics = await measureProviderAuthWarm(() => warmDefaultProviderAuthState(cfg));
           if (isStopped()) {
             return;
           }

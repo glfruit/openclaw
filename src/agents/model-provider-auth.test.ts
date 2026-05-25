@@ -34,6 +34,13 @@ const authProfilesMocks = vi.hoisted(() => ({
   listProfilesForProvider: vi.fn(() => []),
 }));
 
+const agentScopeMocks = vi.hoisted(() => ({
+  listAgentIds: vi.fn(() => ["default"]),
+  resolveAgentDir: vi.fn(() => "/warm/default-agent"),
+  resolveAgentWorkspaceDir: vi.fn(() => "/warm/default-workspace"),
+  resolveDefaultAgentId: vi.fn(() => "default"),
+}));
+
 vi.mock("./model-catalog.js", () => ({
   loadModelCatalog: modelCatalogMocks.loadModelCatalog,
 }));
@@ -57,10 +64,10 @@ vi.mock("./workspace.js", () => ({
 }));
 
 vi.mock("./agent-scope-config.js", () => ({
-  listAgentIds: () => ["default"],
-  resolveAgentDir: () => "/warm/default-agent",
-  resolveAgentWorkspaceDir: () => "/warm/default-workspace",
-  resolveDefaultAgentId: () => "default",
+  listAgentIds: agentScopeMocks.listAgentIds,
+  resolveAgentDir: agentScopeMocks.resolveAgentDir,
+  resolveAgentWorkspaceDir: agentScopeMocks.resolveAgentWorkspaceDir,
+  resolveDefaultAgentId: agentScopeMocks.resolveDefaultAgentId,
 }));
 
 const { clearCurrentProviderAuthState, hasAuthForModelProvider, warmCurrentProviderAuthState } =
@@ -70,6 +77,10 @@ describe("prepared provider auth state", () => {
   afterEach(() => {
     clearCurrentProviderAuthState();
     vi.clearAllMocks();
+    agentScopeMocks.listAgentIds.mockReturnValue(["default"]);
+    agentScopeMocks.resolveAgentDir.mockReturnValue("/warm/default-agent");
+    agentScopeMocks.resolveAgentWorkspaceDir.mockReturnValue("/warm/default-workspace");
+    agentScopeMocks.resolveDefaultAgentId.mockReturnValue("default");
   });
 
   it("reuses prepared runtime auth lookup data while warming providers", async () => {
@@ -88,6 +99,20 @@ describe("prepared provider auth state", () => {
     const secondLookup =
       modelAuthMocks.hasRuntimeAvailableProviderAuth.mock.calls[1]?.[0].runtimeLookup;
     expect(firstLookup).toBe(secondLookup);
+  });
+
+  it("can warm only explicitly requested agent IDs", async () => {
+    const cfg = {} as OpenClawConfig;
+    agentScopeMocks.listAgentIds.mockReturnValue(["default", "other"]);
+    modelCatalogMocks.loadModelCatalog.mockResolvedValue([
+      { id: "gpt", name: "gpt", provider: "openai" },
+    ]);
+    modelAuthMocks.hasRuntimeAvailableProviderAuth.mockReturnValue(false);
+
+    await warmCurrentProviderAuthState(cfg, { agentIds: ["default"] });
+
+    expect(agentScopeMocks.listAgentIds).not.toHaveBeenCalled();
+    expect(modelAuthMocks.hasRuntimeAvailableProviderAuth).toHaveBeenCalledTimes(1);
   });
 
   it("hasAuthForModelProvider returns the prepared answer after warm and falls through to compute after clear", async () => {

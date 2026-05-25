@@ -197,7 +197,7 @@ export function createProviderAuthChecker(params: {
 
 export async function warmCurrentProviderAuthState(
   cfg: OpenClawConfig,
-  options: { isCancelled?: () => boolean } = {},
+  options: { isCancelled?: () => boolean; agentIds?: Iterable<string> } = {},
 ): Promise<void> {
   // Claim a fresh generation; any concurrent warm or clear bumps this and
   // turns our published state stale.
@@ -216,10 +216,11 @@ export async function warmCurrentProviderAuthState(
   const providerList = [...providers];
   const configFingerprint = resolveProviderAuthConfigFingerprint(cfg) ?? "";
   const states = new Map<string, PreparedProviderAuthState>();
-  // Warm one entry per configured agent so callers hit the prepared map for
-  // any agentId. The catalog above is shared across agents; the per-agent
-  // work is the auth-discovery sweep against that agent's store.
-  for (const agentId of listAgentIds(cfg)) {
+  // Warm one entry per selected agent so callers hit the prepared map for
+  // covered agentIds. The catalog above is shared across agents; the
+  // per-agent work is the auth-discovery sweep against that agent's store.
+  const agentIds = options.agentIds ? [...options.agentIds] : listAgentIds(cfg);
+  for (const agentId of agentIds) {
     if (isWarmStale()) {
       return;
     }

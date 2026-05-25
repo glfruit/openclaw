@@ -916,6 +916,9 @@ describe("startGatewayPostAttachRuntime", () => {
       await vi.waitFor(() => {
         expect(hoisted.warmCurrentProviderAuthState).toHaveBeenCalledTimes(1);
       });
+      expect(hoisted.warmCurrentProviderAuthState.mock.calls[0]?.[1]).toMatchObject({
+        agentIds: ["main"],
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -1058,6 +1061,12 @@ describe("startGatewayPostAttachRuntime", () => {
       });
       expect(hoisted.warmCurrentProviderAuthState.mock.calls[0]?.[0]).toBe(reloadedCfg);
       expect(hoisted.warmCurrentProviderAuthState.mock.calls[1]?.[0]).toBe(afterFailureCfg);
+      expect(hoisted.warmCurrentProviderAuthState.mock.calls[0]?.[1]).toMatchObject({
+        agentIds: ["main"],
+      });
+      expect(hoisted.warmCurrentProviderAuthState.mock.calls[1]?.[1]).toMatchObject({
+        agentIds: ["main"],
+      });
     } finally {
       vi.useRealTimers();
     }
