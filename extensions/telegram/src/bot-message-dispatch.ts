@@ -1859,6 +1859,40 @@ export const dispatchTelegramMessage = async ({
       ctxPayload.CommandSource === "native"
         ? (ctxPayload.CommandTargetSessionKey ?? ctxPayload.SessionKey)
         : ctxPayload.SessionKey;
+    const transcriptFinalText = await resolveCurrentTurnTranscriptFinalText();
+    if (transcriptFinalText?.trim()) {
+      const transcriptFinalPayloads = projectOutboundPayloadPlanForDelivery(
+        createOutboundPayloadPlan([{ text: transcriptFinalText }], {
+          cfg,
+          sessionKey: policySessionKey,
+          surface: "telegram",
+        }),
+      );
+      if (transcriptFinalPayloads.length > 0) {
+        const result = await (telegramDeps.deliverReplies ?? deliverReplies)({
+          replies: transcriptFinalPayloads,
+          ...deliveryBaseOptions,
+          transcriptMirror: undefined,
+          silent: false,
+          mediaLoader: telegramDeps.loadWebMedia,
+        });
+        sentFallback = result.delivered;
+      }
+    }
+  }
+
+  if (
+    !sentFallback &&
+    !dispatchError &&
+    !deliverySummary.delivered &&
+    !suppressSilentReplyFallback &&
+    !queuedFinal &&
+    isGroup
+  ) {
+    const policySessionKey =
+      ctxPayload.CommandSource === "native"
+        ? (ctxPayload.CommandTargetSessionKey ?? ctxPayload.SessionKey)
+        : ctxPayload.SessionKey;
     const silentReplyFallback = projectOutboundPayloadPlanForDelivery(
       createOutboundPayloadPlan([{ text: "NO_REPLY" }], {
         cfg,

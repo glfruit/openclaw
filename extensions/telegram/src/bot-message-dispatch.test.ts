@@ -1111,6 +1111,46 @@ describe("dispatchTelegramMessage draft streaming", () => {
     });
   });
 
+  it("delivers current-turn transcript final text before group empty-response fallback", async () => {
+    const context = createContext({
+      ctxPayload: {
+        SessionKey: "agent:default:telegram:group:-100123",
+        ChatType: "group",
+      } as unknown as TelegramMessageContext["ctxPayload"],
+      msg: {
+        chat: { id: -100123, type: "supergroup" },
+        message_id: 99,
+      } as unknown as TelegramMessageContext["msg"],
+      chatId: -100123,
+      isGroup: true,
+      threadSpec: { id: undefined, scope: "none" },
+    });
+    loadSessionStore.mockReturnValue({
+      "agent:default:telegram:group:-100123": { sessionId: "s1" },
+    });
+    readLatestAssistantTextFromSessionTranscript.mockResolvedValue({
+      text: "Transcript-backed final answer",
+      timestamp: Date.now() + 1_000,
+    });
+    dispatchReplyWithBufferedBlockDispatcher.mockResolvedValue({
+      queuedFinal: false,
+      counts: { block: 0, final: 0, tool: 0 },
+    });
+
+    await dispatchWithContext({ context });
+
+    expect(deliverReplies).toHaveBeenCalledTimes(1);
+    expectDeliveredReply(0, { text: "Transcript-backed final answer" });
+    const params = mockCallArg(deliverReplies) as {
+      replies?: Array<{ text?: string }>;
+      transcriptMirror?: unknown;
+    };
+    expect(params.replies?.map((reply) => reply.text)).not.toContain(
+      "No response generated. Please try again.",
+    );
+    expect(params.transcriptMirror).toBeUndefined();
+  });
+
   it("emits the redacted appended message in transcript updates", async () => {
     setupDraftStreams({ answerMessageId: 2001 });
     const context = createContext();
