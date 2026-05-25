@@ -1,6 +1,6 @@
 import type { resolveCodexAppServerAuthProfileIdForAgent } from "./auth-bridge.js";
 import type { CodexAppServerClient } from "./client.js";
-import type { CodexAppServerStartOptions } from "./config.js";
+import type { CodexAppServerRuntimeOptions, CodexAppServerStartOptions } from "./config.js";
 
 type AuthProfileOrderConfig = Parameters<
   typeof resolveCodexAppServerAuthProfileIdForAgent
@@ -11,6 +11,10 @@ export type CodexAppServerClientFactory = (
   authProfileId?: string,
   agentDir?: string,
   config?: AuthProfileOrderConfig,
+  runtimeOptions?: Pick<
+    CodexAppServerRuntimeOptions,
+    "sharedClientIdleTimeoutMs" | "sharedClientMaxClients"
+  >,
 ) => Promise<CodexAppServerClient>;
 
 export const defaultCodexAppServerClientFactory: CodexAppServerClientFactory = (
@@ -18,7 +22,14 @@ export const defaultCodexAppServerClientFactory: CodexAppServerClientFactory = (
   authProfileId,
   agentDir,
   config,
+  runtimeOptions,
 ) =>
   import("./shared-client.js").then(({ getSharedCodexAppServerClient }) =>
-    getSharedCodexAppServerClient({ startOptions, authProfileId, agentDir, config }),
+    getSharedCodexAppServerClient({
+      startOptions,
+      authProfileId,
+      agentDir,
+      config,
+      runtimeOptions,
+    }),
   );

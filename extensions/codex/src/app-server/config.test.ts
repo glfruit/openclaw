@@ -71,6 +71,8 @@ describe("Codex app-server config", () => {
           codeModeOnly: true,
           turnCompletionIdleTimeoutMs: 120_000,
           postToolRawAssistantCompletionIdleTimeoutMs: 180_000,
+          sharedClientIdleTimeoutMs: 240_000,
+          sharedClientMaxClients: 2,
         },
       },
       env: {
@@ -87,6 +89,8 @@ describe("Codex app-server config", () => {
       codeModeOnly: true,
       turnCompletionIdleTimeoutMs: 120_000,
       postToolRawAssistantCompletionIdleTimeoutMs: 180_000,
+      sharedClientIdleTimeoutMs: 240_000,
+      sharedClientMaxClients: 2,
     });
     expectFields(runtime.start, "runtime start", {
       transport: "websocket",
@@ -624,7 +628,8 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
       resolveRuntimeForTest({
         pluginConfig: {
           appServer: {
-            command: "node C:\\Users\\me\\.openclaw\\npm\\node_modules\\@openai\\codex\\bin\\codex.js",
+            command:
+              "node C:\\Users\\me\\.openclaw\\npm\\node_modules\\@openai\\codex\\bin\\codex.js",
           },
         },
       }),

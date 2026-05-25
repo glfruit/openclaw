@@ -179,6 +179,16 @@
             "type": "number",
             "minimum": 1
           },
+          "sharedClientIdleTimeoutMs": {
+            "type": "number",
+            "minimum": 1,
+            "default": 1800000
+          },
+          "sharedClientMaxClients": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 6
+          },
           "approvalPolicy": {
             "type": "string",
             "enum": ["never", "on-request", "on-failure", "untrusted"]
@@ -362,6 +372,16 @@
     "appServer.postToolRawAssistantCompletionIdleTimeoutMs": {
       "label": "Post-Tool Raw Assistant Completion Idle Timeout",
       "help": "Completion-idle guard after a tool handoff when Codex emits raw assistant completion or progress without turn/completed. Defaults to the assistant completion idle timeout when unset.",
+      "advanced": true
+    },
+    "appServer.sharedClientIdleTimeoutMs": {
+      "label": "Shared Client Idle Timeout",
+      "help": "Maximum idle time before an unused shared Codex app-server client is closed.",
+      "advanced": true
+    },
+    "appServer.sharedClientMaxClients": {
+      "label": "Shared Client Max Clients",
+      "help": "Maximum number of idle shared Codex app-server clients OpenClaw keeps warm.",
       "advanced": true
     },
     "appServer.approvalPolicy": {

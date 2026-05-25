@@ -169,7 +169,10 @@ import {
   type CodexAppServerThreadBinding,
 } from "./session-binding.js";
 import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
-import { clearSharedCodexAppServerClientIfCurrent } from "./shared-client.js";
+import {
+  acquireSharedCodexAppServerClientLease,
+  clearSharedCodexAppServerClientIfCurrent,
+} from "./shared-client.js";
 import {
   areCodexDynamicToolFingerprintsCompatible,
   buildDeveloperInstructions,
@@ -1456,6 +1459,7 @@ export async function runCodexAppServerAttempt(
   let trajectoryEndRecorded = false;
   let nativeHookRelay: NativeHookRelayRegistrationHandle | undefined;
   let startupClientForCleanup: CodexAppServerClient | undefined;
+  let releaseSharedClientLease: (() => void) | undefined;
   let sandboxExecEnvironmentAcquired = false;
   const releaseSandboxExecEnvironment = async () => {
     if (sandboxExecEnvironmentAcquired) {
@@ -1573,6 +1577,7 @@ export async function runCodexAppServerAttempt(
             startupAuthProfileId,
             agentDir,
             params.config,
+            appServer,
           );
           attemptedClient = startupClient;
           startupClientForCleanup = startupClient;
@@ -1747,6 +1752,7 @@ export async function runCodexAppServerAttempt(
       },
     });
     client = startupResult.client;
+    releaseSharedClientLease = acquireSharedCodexAppServerClientLease(client);
     thread = startupResult.thread;
     sandboxExecEnvironmentAcquired = Boolean(startupResult.sandboxEnvironment);
     codexEnvironmentSelection = startupResult.environmentSelection;
@@ -3286,6 +3292,8 @@ export async function runCodexAppServerAttempt(
     notificationCleanup();
     requestCleanup();
     closeCleanup?.();
+    releaseSharedClientLease?.();
+    releaseSharedClientLease = undefined;
     nativeHookRelay?.unregister();
     await releaseSandboxExecEnvironment();
     runAbortController.signal.removeEventListener("abort", abortListener);

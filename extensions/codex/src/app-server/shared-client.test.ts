@@ -37,6 +37,7 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
 }));
 
 let listCodexAppServerModels: typeof import("./models.js").listCodexAppServerModels;
+let acquireSharedCodexAppServerClientLease: typeof import("./shared-client.js").acquireSharedCodexAppServerClientLease;
 let clearSharedCodexAppServerClient: typeof import("./shared-client.js").clearSharedCodexAppServerClient;
 let clearSharedCodexAppServerClientIfCurrent: typeof import("./shared-client.js").clearSharedCodexAppServerClientIfCurrent;
 let clearSharedCodexAppServerClientIfCurrentAndWait: typeof import("./shared-client.js").clearSharedCodexAppServerClientIfCurrentAndWait;
@@ -110,6 +111,7 @@ describe("shared Codex app-server client", () => {
   beforeAll(async () => {
     ({ listCodexAppServerModels } = await import("./models.js"));
     ({
+      acquireSharedCodexAppServerClientLease,
       clearSharedCodexAppServerClient,
       clearSharedCodexAppServerClientIfCurrent,
       clearSharedCodexAppServerClientIfCurrentAndWait,
@@ -338,6 +340,72 @@ describe("shared Codex app-server client", () => {
 
     expect(startSpy).toHaveBeenCalledTimes(2);
     expect(first.process.stdin.destroyed).toBe(false);
+    expect(second.process.stdin.destroyed).toBe(false);
+  });
+
+  it("closes idle shared clients after the configured idle timeout", async () => {
+    vi.useFakeTimers();
+    const harness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start").mockReturnValue(harness.client);
+
+    const clientPromise = getSharedCodexAppServerClient({
+      timeoutMs: 1000,
+      runtimeOptions: { sharedClientIdleTimeoutMs: 25, sharedClientMaxClients: 6 },
+    });
+    await sendInitializeResult(harness, "openclaw/0.125.0 (macOS; test)");
+    await expect(clientPromise).resolves.toBe(harness.client);
+
+    await vi.advanceTimersByTimeAsync(24);
+    expect(harness.process.stdin.destroyed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(harness.process.stdin.destroyed).toBe(true);
+  });
+
+  it("does not close leased shared clients until the lease is released", async () => {
+    vi.useFakeTimers();
+    const harness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start").mockReturnValue(harness.client);
+
+    const clientPromise = getSharedCodexAppServerClient({
+      timeoutMs: 1000,
+      runtimeOptions: { sharedClientIdleTimeoutMs: 25, sharedClientMaxClients: 6 },
+    });
+    await sendInitializeResult(harness, "openclaw/0.125.0 (macOS; test)");
+    const client = await clientPromise;
+    const release = acquireSharedCodexAppServerClientLease(client);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(harness.process.stdin.destroyed).toBe(false);
+    release?.();
+    await vi.advanceTimersByTimeAsync(25);
+    expect(harness.process.stdin.destroyed).toBe(true);
+  });
+
+  it("prunes oldest idle shared clients over the configured max client count", async () => {
+    const first = createClientHarness();
+    const second = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start")
+      .mockReturnValueOnce(first.client)
+      .mockReturnValueOnce(second.client);
+
+    const runtimeOptions = { sharedClientIdleTimeoutMs: 60_000, sharedClientMaxClients: 1 };
+    const firstClient = getSharedCodexAppServerClient({
+      timeoutMs: 1000,
+      agentDir: "/tmp/openclaw-agent-one",
+      runtimeOptions,
+    });
+    await sendInitializeResult(first, "openclaw/0.125.0 (macOS; test)");
+    await expect(firstClient).resolves.toBe(first.client);
+
+    const secondClient = getSharedCodexAppServerClient({
+      timeoutMs: 1000,
+      agentDir: "/tmp/openclaw-agent-two",
+      runtimeOptions,
+    });
+    await sendInitializeResult(second, "openclaw/0.125.0 (macOS; test)");
+    await expect(secondClient).resolves.toBe(second.client);
+
+    expect(first.process.stdin.destroyed).toBe(true);
     expect(second.process.stdin.destroyed).toBe(false);
   });
 

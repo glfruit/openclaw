@@ -8,6 +8,7 @@ import { CodexAppServerClient } from "./client.js";
 import {
   codexAppServerStartOptionsKey,
   resolveCodexAppServerRuntimeOptions,
+  type CodexAppServerRuntimeOptions,
   type CodexAppServerStartOptions,
 } from "./config.js";
 import { resolveManagedCodexAppServerStartOptions } from "./managed-binary.js";
@@ -16,6 +17,11 @@ import { withTimeout } from "./timeout.js";
 type SharedCodexAppServerClientEntry = {
   client?: CodexAppServerClient;
   promise?: Promise<CodexAppServerClient>;
+  activeCount: number;
+  lastUsedAt: number;
+  idleTimeoutMs: number;
+  maxClients: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
 };
 
 type SharedCodexAppServerClientState = {
@@ -41,7 +47,15 @@ function getSharedCodexAppServerClientState(): SharedCodexAppServerClientState {
   const clients = new Map<string, SharedCodexAppServerClientEntry>();
   if (legacyState?.key && (legacyState.client || legacyState.promise)) {
     const legacyKey = legacyState.key;
-    clients.set(legacyKey, { client: legacyState.client, promise: legacyState.promise });
+    const runtimeOptions = resolveCodexAppServerRuntimeOptions();
+    clients.set(legacyKey, {
+      client: legacyState.client,
+      promise: legacyState.promise,
+      activeCount: 0,
+      lastUsedAt: Date.now(),
+      idleTimeoutMs: runtimeOptions.sharedClientIdleTimeoutMs,
+      maxClients: runtimeOptions.sharedClientMaxClients,
+    });
     legacyState.client?.addCloseHandler((closedClient) =>
       clearSharedClientEntryIfCurrent(legacyKey, closedClient),
     );
@@ -76,6 +90,10 @@ export async function getSharedCodexAppServerClient(options?: {
   authProfileId?: string | null;
   agentDir?: string;
   config?: Parameters<typeof resolveCodexAppServerAuthProfileIdForAgent>[0]["config"];
+  runtimeOptions?: Pick<
+    CodexAppServerRuntimeOptions,
+    "sharedClientIdleTimeoutMs" | "sharedClientMaxClients"
+  >;
 }): Promise<CodexAppServerClient> {
   const agentDir = options?.agentDir ?? resolveDefaultAgentDir(options?.config ?? {});
   const usesNativeAuth = options?.authProfileId === null;
@@ -90,6 +108,7 @@ export async function getSharedCodexAppServerClient(options?: {
       });
   const requestedStartOptions =
     options?.startOptions ?? resolveCodexAppServerRuntimeOptions().start;
+  const runtimeOptions = options?.runtimeOptions ?? resolveCodexAppServerRuntimeOptions();
   const managedStartOptions = await resolveManagedCodexAppServerStartOptions(requestedStartOptions);
   const startOptions = await bridgeCodexAppServerStartOptions({
     startOptions: managedStartOptions,
@@ -103,6 +122,9 @@ export async function getSharedCodexAppServerClient(options?: {
   });
   const state = getSharedCodexAppServerClientState();
   const entry = getOrCreateSharedClientEntry(state, key);
+  entry.idleTimeoutMs = runtimeOptions.sharedClientIdleTimeoutMs;
+  entry.maxClients = runtimeOptions.sharedClientMaxClients;
+  touchSharedClientEntry(entry);
   const sharedPromise =
     entry.promise ??
     (entry.promise = (async () => {
@@ -118,6 +140,8 @@ export async function getSharedCodexAppServerClient(options?: {
           startOptions,
           config: options?.config,
         });
+        scheduleSharedClientIdleCleanup(key, entry, entry.idleTimeoutMs);
+        pruneIdleSharedClients(state, entry.maxClients);
         return client;
       } catch (error) {
         // Startup failures happen before callers own the shared client, so close
@@ -187,14 +211,53 @@ export async function createIsolatedCodexAppServerClient(options?: {
   }
 }
 
+export function acquireSharedCodexAppServerClientLease(
+  client: CodexAppServerClient | undefined,
+): (() => void) | undefined {
+  if (!client) {
+    return undefined;
+  }
+  const state = getSharedCodexAppServerClientState();
+  for (const [key, entry] of state.clients) {
+    if (entry.client !== client) {
+      continue;
+    }
+    entry.activeCount += 1;
+    touchSharedClientEntry(entry);
+    clearSharedClientIdleTimer(entry);
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      const currentEntry = state.clients.get(key);
+      if (currentEntry !== entry) {
+        return;
+      }
+      entry.activeCount = Math.max(0, entry.activeCount - 1);
+      touchSharedClientEntry(entry);
+      scheduleSharedClientIdleCleanup(key, entry, entry.idleTimeoutMs);
+      pruneIdleSharedClients(state, entry.maxClients);
+    };
+  }
+  return undefined;
+}
+
 export function resetSharedCodexAppServerClientForTests(): void {
   const state = getSharedCodexAppServerClientState();
+  for (const entry of state.clients.values()) {
+    clearSharedClientIdleTimer(entry);
+  }
   state.clients.clear();
 }
 
 export function clearSharedCodexAppServerClient(): void {
   const state = getSharedCodexAppServerClientState();
   const clients = collectSharedClients(state);
+  for (const entry of state.clients.values()) {
+    clearSharedClientIdleTimer(entry);
+  }
   state.clients.clear();
   for (const client of clients) {
     client.close();
@@ -210,6 +273,7 @@ export function clearSharedCodexAppServerClientIfCurrent(
   const state = getSharedCodexAppServerClientState();
   for (const [key, entry] of state.clients) {
     if (entry.client === client) {
+      clearSharedClientIdleTimer(entry);
       state.clients.delete(key);
       client.close();
       return true;
@@ -231,6 +295,7 @@ export async function clearSharedCodexAppServerClientIfCurrentAndWait(
   const state = getSharedCodexAppServerClientState();
   for (const [key, entry] of state.clients) {
     if (entry.client === client) {
+      clearSharedClientIdleTimer(entry);
       state.clients.delete(key);
       await client.closeAndWait(options);
       return true;
@@ -245,6 +310,9 @@ export async function clearSharedCodexAppServerClientAndWait(options?: {
 }): Promise<void> {
   const state = getSharedCodexAppServerClientState();
   const clients = collectSharedClients(state);
+  for (const entry of state.clients.values()) {
+    clearSharedClientIdleTimer(entry);
+  }
   state.clients.clear();
   await Promise.all(clients.map((client) => client.closeAndWait(options)));
 }
@@ -255,7 +323,13 @@ function getOrCreateSharedClientEntry(
 ): SharedCodexAppServerClientEntry {
   let entry = state.clients.get(key);
   if (!entry) {
-    entry = {};
+    const runtimeOptions = resolveCodexAppServerRuntimeOptions();
+    entry = {
+      activeCount: 0,
+      lastUsedAt: Date.now(),
+      idleTimeoutMs: runtimeOptions.sharedClientIdleTimeoutMs,
+      maxClients: runtimeOptions.sharedClientMaxClients,
+    };
     state.clients.set(key, entry);
   }
   return entry;
@@ -266,6 +340,7 @@ function clearSharedClientEntry(key: string, entry: SharedCodexAppServerClientEn
   if (state.clients.get(key) !== entry) {
     return;
   }
+  clearSharedClientIdleTimer(entry);
   state.clients.delete(key);
   entry.client?.close();
 }
@@ -274,7 +349,65 @@ function clearSharedClientEntryIfCurrent(key: string, client: CodexAppServerClie
   const state = getSharedCodexAppServerClientState();
   const entry = state.clients.get(key);
   if (entry?.client === client) {
+    clearSharedClientIdleTimer(entry);
     state.clients.delete(key);
+  }
+}
+
+function touchSharedClientEntry(entry: SharedCodexAppServerClientEntry): void {
+  entry.lastUsedAt = Date.now();
+}
+
+function clearSharedClientIdleTimer(entry: SharedCodexAppServerClientEntry): void {
+  if (entry.idleTimer) {
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = undefined;
+  }
+}
+
+function scheduleSharedClientIdleCleanup(
+  key: string,
+  entry: SharedCodexAppServerClientEntry,
+  idleTimeoutMs: number,
+): void {
+  clearSharedClientIdleTimer(entry);
+  if (
+    !entry.client ||
+    entry.activeCount > 0 ||
+    !Number.isFinite(idleTimeoutMs) ||
+    idleTimeoutMs <= 0
+  ) {
+    return;
+  }
+  entry.idleTimer = setTimeout(
+    () => {
+      const state = getSharedCodexAppServerClientState();
+      const currentEntry = state.clients.get(key);
+      if (currentEntry !== entry || entry.activeCount > 0 || !entry.client) {
+        return;
+      }
+      state.clients.delete(key);
+      entry.client.close();
+    },
+    Math.max(1, Math.floor(idleTimeoutMs)),
+  );
+  entry.idleTimer.unref?.();
+}
+
+function pruneIdleSharedClients(state: SharedCodexAppServerClientState, maxClients: number): void {
+  const limit = Math.max(1, Math.floor(maxClients));
+  const entries = [...state.clients.entries()].filter(([, entry]) => Boolean(entry.client));
+  if (entries.length <= limit) {
+    return;
+  }
+  const idleEntries = entries
+    .filter(([, entry]) => entry.activeCount <= 0)
+    .sort(([, a], [, b]) => a.lastUsedAt - b.lastUsedAt);
+  for (const [key, entry] of idleEntries) {
+    if (state.clients.size <= limit) {
+      break;
+    }
+    clearSharedClientEntry(key, entry);
   }
 }
 
