@@ -115,6 +115,44 @@ describe("cron service store load: missing sessionTarget", () => {
     expect(assertSupportedJobSpec(job)).toBeUndefined();
   });
 
+  it("loads persisted command cron jobs", async () => {
+    const { storePath } = await makeStorePath();
+
+    await writeSingleJobStore(storePath, {
+      id: "persisted-command-job",
+      name: "persisted command job",
+      enabled: true,
+      createdAtMs: STORE_TEST_NOW - 60_000,
+      updatedAtMs: STORE_TEST_NOW - 60_000,
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "command",
+        command: "/usr/bin/true",
+        timeoutSeconds: 60,
+        successRegex: "OK|DONE",
+        outputMode: "lastLine",
+      },
+      delivery: { mode: "none" },
+      state: {},
+    });
+
+    const state = createStoreTestState(storePath);
+    await ensureLoaded(state);
+
+    const job = findJobOrThrow(state, "persisted-command-job");
+    expect(job.payload).toEqual({
+      kind: "command",
+      command: "/usr/bin/true",
+      timeoutSeconds: 60,
+      successRegex: "OK|DONE",
+      outputMode: "lastLine",
+    });
+    expect(job.sessionTarget).toBe("isolated");
+    expect(assertSupportedJobSpec(job)).toBeUndefined();
+  });
+
   it("assertSupportedJobSpec throws a clear error when sessionTarget is missing", () => {
     const bogus = {
       payload: { kind: "agentTurn" as const, message: "ping" },
