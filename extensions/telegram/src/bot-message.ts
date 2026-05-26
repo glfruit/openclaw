@@ -29,6 +29,24 @@ const TELEGRAM_VISIBLE_PROGRESS_TEXT =
   "收到，正在准备上下文并排队处理；如果任务较重，我会继续在这里报进度。";
 const TELEGRAM_VISIBLE_PROGRESS_HEARTBEAT_TEXT =
   "仍在处理，没有卡死；我会继续推进，并在阶段完成后同步结果。";
+const TELEGRAM_GATEWAY_RESTARTING_TEXT =
+  "系统正在重启，我已收到这条消息；当前进程不会继续处理，重启完成后会自动重试。";
+
+let telegramGatewayShutdownPending = false;
+
+function markTelegramGatewayShutdownPending(): void {
+  telegramGatewayShutdownPending = true;
+}
+
+process.once("SIGINT", markTelegramGatewayShutdownPending);
+process.once("SIGTERM", markTelegramGatewayShutdownPending);
+
+class TelegramGatewayRestartInProgressError extends Error {
+  constructor() {
+    super("Telegram message deferred because gateway shutdown is already in progress.");
+    this.name = "TelegramGatewayRestartInProgressError";
+  }
+}
 
 export function formatTelegramInboundLogLine(params: {
   from: string;
@@ -51,7 +69,7 @@ type TelegramMessageProcessorDeps = Omit<
   streamMode: TelegramStreamMode;
   textLimit: number;
   telegramDeps: TelegramBotDeps;
-  opts: Pick<TelegramBotOptions, "token">;
+  opts: Pick<TelegramBotOptions, "token" | "fetchAbortSignal">;
 };
 
 export type TelegramMessageProcessorLifecycle = {
@@ -68,30 +86,16 @@ function startTelegramVisibleProgressNotices(params: {
   }
   let stopped = false;
   let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
-  const baseThreadParams = buildTelegramThreadParams(context.threadSpec);
-  const replyParams =
-    typeof context.msg.message_id === "number"
-      ? {
-          reply_parameters: {
-            message_id: context.msg.message_id,
-            allow_sending_without_reply: true,
-          },
-        }
-      : {};
   const sendNotice = async (text: string) => {
     if (stopped) {
       return;
     }
-    try {
-      await params.bot.api.sendMessage(context.chatId, text, {
-        ...baseThreadParams,
-        ...replyParams,
-      });
-    } catch (err) {
-      logVerbose(
-        `telegram visible progress notice failed for chat ${context.chatId}: ${String(err)}`,
-      );
-    }
+    await sendTelegramVisibleNotice({
+      bot: params.bot,
+      context,
+      text,
+      logLabel: "telegram visible progress notice",
+    });
   };
   const scheduleHeartbeat = () => {
     heartbeatTimer = setTimeout(() => {
@@ -113,6 +117,42 @@ function startTelegramVisibleProgressNotices(params: {
       clearTimeout(heartbeatTimer);
     }
   };
+}
+
+function buildTelegramVisibleNoticeOptions(
+  context: NonNullable<Awaited<ReturnType<typeof buildTelegramMessageContext>>>,
+) {
+  const baseThreadParams = buildTelegramThreadParams(context.threadSpec);
+  const replyParams =
+    typeof context.msg.message_id === "number"
+      ? {
+          reply_parameters: {
+            message_id: context.msg.message_id,
+            allow_sending_without_reply: true,
+          },
+        }
+      : {};
+  return {
+    ...baseThreadParams,
+    ...replyParams,
+  };
+}
+
+async function sendTelegramVisibleNotice(params: {
+  bot: TelegramMessageProcessorDeps["bot"];
+  context: NonNullable<Awaited<ReturnType<typeof buildTelegramMessageContext>>>;
+  text: string;
+  logLabel: string;
+}): Promise<void> {
+  try {
+    await params.bot.api.sendMessage(
+      params.context.chatId,
+      params.text,
+      buildTelegramVisibleNoticeOptions(params.context),
+    );
+  } catch (err) {
+    logVerbose(`${params.logLabel} failed for chat ${params.context.chatId}: ${String(err)}`);
+  }
 }
 
 export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDeps) => {
@@ -240,6 +280,15 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
         mediaType: allMedia[0]?.contentType,
       }),
     );
+    if (telegramGatewayShutdownPending || opts.fetchAbortSignal?.aborted) {
+      await sendTelegramVisibleNotice({
+        bot,
+        context,
+        text: TELEGRAM_GATEWAY_RESTARTING_TEXT,
+        logLabel: "telegram gateway restart notice",
+      });
+      throw new TelegramGatewayRestartInProgressError();
+    }
     const stopVisibleProgressNotices = startTelegramVisibleProgressNotices({ bot, context });
     await lifecycle?.onDispatchStart?.();
     try {
@@ -275,4 +324,10 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
     }
     return true;
   };
+};
+
+export const __testing = {
+  setTelegramGatewayShutdownPendingForTest(value: boolean): void {
+    telegramGatewayShutdownPending = value;
+  },
 };

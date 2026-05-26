@@ -29,11 +29,15 @@ vi.mock("./bot-message-dispatch.js", () => ({
 
 let createTelegramMessageProcessor: typeof import("./bot-message.js").createTelegramMessageProcessor;
 let formatTelegramInboundLogLine: typeof import("./bot-message.js").formatTelegramInboundLogLine;
+let telegramMessageTesting: typeof import("./bot-message.js").__testing;
 
 describe("telegram bot message processor", () => {
   beforeAll(async () => {
-    ({ createTelegramMessageProcessor, formatTelegramInboundLogLine } =
-      await import("./bot-message.js"));
+    ({
+      createTelegramMessageProcessor,
+      formatTelegramInboundLogLine,
+      __testing: telegramMessageTesting,
+    } = await import("./bot-message.js"));
   });
 
   beforeEach(() => {
@@ -41,6 +45,7 @@ describe("telegram bot message processor", () => {
     dispatchTelegramMessage.mockReset();
     telegramInboundInfo.mockClear();
     upsertChannelPairingRequest.mockClear();
+    telegramMessageTesting.setTelegramGatewayShutdownPendingForTest(false);
   });
 
   afterEach(() => {
@@ -253,6 +258,40 @@ describe("telegram bot message processor", () => {
 
     finishDispatch?.();
     await processing;
+  });
+
+  it("defers dispatch and sends a restart notice when shutdown is already pending", async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    telegramMessageTesting.setTelegramGatewayShutdownPendingForTest(true);
+    buildTelegramMessageContext.mockResolvedValue(
+      createMessageContext({
+        chatId: 123,
+        msg: { message_id: 456 },
+        threadSpec: { id: 99, scope: "forum" },
+      }),
+    );
+
+    const processMessage = createTelegramMessageProcessor({
+      ...baseDeps,
+      bot: { api: { sendMessage } },
+    } as unknown as Parameters<typeof createTelegramMessageProcessor>[0]);
+
+    await expect(processSampleMessage(processMessage)).rejects.toThrow(
+      "gateway shutdown is already in progress",
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      123,
+      "系统正在重启，我已收到这条消息；当前进程不会继续处理，重启完成后会自动重试。",
+      {
+        message_thread_id: 99,
+        reply_parameters: {
+          message_id: 456,
+          allow_sending_without_reply: true,
+        },
+      },
+    );
+    expect(dispatchTelegramMessage).not.toHaveBeenCalled();
   });
 
   it("does not run the dispatch-start lifecycle when no context is produced", async () => {

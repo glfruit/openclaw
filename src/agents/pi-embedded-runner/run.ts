@@ -770,6 +770,12 @@ export async function runEmbeddedPiAgent(
         if (resolvedOrder.length > 0) {
           return resolvedOrder;
         }
+        const storeProfileOrder = Object.keys(attemptAuthProfileStore.profiles ?? {}).filter(
+          isForwardablePluginHarnessAuthProfile,
+        );
+        if (storeProfileOrder.length > 0) {
+          return storeProfileOrder;
+        }
         if (requestedProfileId && isForwardablePluginHarnessAuthProfile(requestedProfileId)) {
           return [requestedProfileId];
         }
