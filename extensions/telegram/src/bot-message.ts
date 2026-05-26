@@ -27,8 +27,12 @@ const VISIBLE_PROGRESS_HEARTBEAT_MS = 20 * 60_000;
 const VISIBLE_PROGRESS_QUEUED_NOTICE_COOLDOWN_MS = 2 * 60_000;
 
 const TELEGRAM_VISIBLE_PROGRESS_TEXT = "收到，已进入处理队列；如果任务较重，我会继续在这里报进度。";
+const TELEGRAM_VISIBLE_PROGRESS_STATUS_TEXT =
+  "我在查当前任务状态，不会重复开工；查到结果后会直接回 RUNNING / PASS / FAILED / BLOCKED。";
 const TELEGRAM_VISIBLE_PROGRESS_QUEUED_TEXT =
   "上一轮还在处理，这条消息已排队；我会等前一轮收尾后继续处理，不会重复开工。";
+const TELEGRAM_VISIBLE_PROGRESS_QUEUED_STATUS_TEXT =
+  "上一轮还在处理，我已收到这条状态追问；不会重复开工，等前一轮收尾后继续核对。";
 const TELEGRAM_VISIBLE_PROGRESS_HEARTBEAT_TEXT =
   "仍在处理，没有卡死；我会继续推进，并在阶段完成后同步结果。";
 const TELEGRAM_GATEWAY_RESTARTING_TEXT =
@@ -109,6 +113,26 @@ function claimTelegramVisibleProgressLane(
   };
 }
 
+function isTelegramStatusCheckMessage(rawBody: string): boolean {
+  const normalized = rawBody
+    .replace(/\s+/g, "")
+    .replace(/[？?。.!！~～]+$/g, "")
+    .toLowerCase();
+  if (!normalized || normalized.length > 80) {
+    return false;
+  }
+  if (/^v\d+[a-z0-9_-]*$/.test(normalized)) {
+    return true;
+  }
+  return [
+    /^(怎么样了?|现在怎么样了?|搞好了吗|好了没|完成了吗|做完了吗|处理完没有|处理完了吗)$/,
+    /^(进度|当前进度|什么进度|状态|当前状态)$/,
+    /^(为什么没回复|怎么不回复|为什么没有反馈|怎么没有反馈)$/,
+    /^(我问你)?(处理完没有|处理完了吗|完成了吗|搞好了吗)$/,
+    /^我是问你v\d+[a-z0-9_-]*$/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 export function formatTelegramInboundLogLine(params: {
   from: string;
   to: string;
@@ -140,6 +164,7 @@ export type TelegramMessageProcessorLifecycle = {
 function startTelegramVisibleProgressNotices(params: {
   bot: TelegramMessageProcessorDeps["bot"];
   context: Awaited<ReturnType<typeof buildTelegramMessageContext>>;
+  initialNoticeText?: string;
   suppressInitialNotice?: boolean;
 }): () => void {
   const context = params.context;
@@ -171,7 +196,7 @@ function startTelegramVisibleProgressNotices(params: {
   const initialTimer = setTimeout(() => {
     scheduleHeartbeat();
     if (!params.suppressInitialNotice) {
-      void sendNotice(TELEGRAM_VISIBLE_PROGRESS_TEXT);
+      void sendNotice(params.initialNoticeText ?? TELEGRAM_VISIBLE_PROGRESS_TEXT);
     }
   }, VISIBLE_PROGRESS_INITIAL_DELAY_MS);
   return () => {
@@ -353,18 +378,24 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
       });
       throw new TelegramGatewayRestartInProgressError();
     }
+    const isStatusCheckMessage = isTelegramStatusCheckMessage(context.ctxPayload.RawBody);
     const visibleProgressLane = claimTelegramVisibleProgressLane(context);
     if (visibleProgressLane.shouldSendQueuedNotice) {
       await sendTelegramVisibleNotice({
         bot,
         context,
-        text: TELEGRAM_VISIBLE_PROGRESS_QUEUED_TEXT,
+        text: isStatusCheckMessage
+          ? TELEGRAM_VISIBLE_PROGRESS_QUEUED_STATUS_TEXT
+          : TELEGRAM_VISIBLE_PROGRESS_QUEUED_TEXT,
         logLabel: "telegram queued progress notice",
       });
     }
     const stopVisibleProgressNotices = startTelegramVisibleProgressNotices({
       bot,
       context,
+      initialNoticeText: isStatusCheckMessage
+        ? TELEGRAM_VISIBLE_PROGRESS_STATUS_TEXT
+        : TELEGRAM_VISIBLE_PROGRESS_TEXT,
       suppressInitialNotice: visibleProgressLane.alreadyActive,
     });
     await lifecycle?.onDispatchStart?.();

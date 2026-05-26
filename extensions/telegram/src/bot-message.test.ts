@@ -280,6 +280,105 @@ describe("telegram bot message processor", () => {
     await second;
   });
 
+  it("uses status-check progress text for short follow-up status questions", async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    let finishDispatch: (() => void) | undefined;
+    dispatchTelegramMessage.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDispatch = resolve;
+        }),
+    );
+    buildTelegramMessageContext.mockResolvedValue(
+      createMessageContext({
+        chatId: 123,
+        msg: { message_id: 456 },
+        ctxPayload: {
+          From: "telegram:123",
+          To: "telegram:123",
+          ChatType: "direct",
+          RawBody: "处理完没有？",
+        },
+      }),
+    );
+
+    const processMessage = createTelegramMessageProcessor({
+      ...baseDeps,
+      bot: { api: { sendMessage } },
+    } as unknown as Parameters<typeof createTelegramMessageProcessor>[0]);
+    const processing = processSampleMessage(processMessage);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      123,
+      "我在查当前任务状态，不会重复开工；查到结果后会直接回 RUNNING / PASS / FAILED / BLOCKED。",
+      {
+        reply_parameters: {
+          message_id: 456,
+          allow_sending_without_reply: true,
+        },
+      },
+    );
+
+    finishDispatch?.();
+    await processing;
+  });
+
+  it("uses queued status text for status questions while a lane is already processing", async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const finishDispatches: Array<() => void> = [];
+    let rawBody = "继续";
+    dispatchTelegramMessage.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDispatches.push(resolve);
+        }),
+    );
+    buildTelegramMessageContext.mockImplementation(() =>
+      Promise.resolve(
+        createMessageContext({
+          chatId: 123,
+          msg: { message_id: 456 },
+          route: { sessionKey: "agent:edu-tl:telegram:group:-1003802090799" },
+          ctxPayload: {
+            From: "telegram:123",
+            To: "telegram:123",
+            ChatType: "direct",
+            RawBody: rawBody,
+          },
+        }),
+      ),
+    );
+
+    const processMessage = createTelegramMessageProcessor({
+      ...baseDeps,
+      bot: { api: { sendMessage } },
+    } as unknown as Parameters<typeof createTelegramMessageProcessor>[0]);
+    const first = processSampleMessage(processMessage);
+    await vi.advanceTimersByTimeAsync(1);
+    rawBody = "怎么样了";
+    const second = processSampleMessage(processMessage);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      123,
+      "上一轮还在处理，我已收到这条状态追问；不会重复开工，等前一轮收尾后继续核对。",
+      {
+        reply_parameters: {
+          message_id: 456,
+          allow_sending_without_reply: true,
+        },
+      },
+    );
+
+    finishDispatches.forEach((finish) => finish());
+    await first;
+    await second;
+  });
+
   it("suppresses repeated queued notices for the same active lane during cooldown", async () => {
     vi.useFakeTimers();
     const sendMessage = vi.fn().mockResolvedValue(undefined);
