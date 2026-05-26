@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelegramBotDeps } from "./bot-deps.js";
 
 const buildTelegramMessageContext = vi.hoisted(() => vi.fn());
@@ -37,10 +37,14 @@ describe("telegram bot message processor", () => {
   });
 
   beforeEach(() => {
-    buildTelegramMessageContext.mockClear();
-    dispatchTelegramMessage.mockClear();
+    buildTelegramMessageContext.mockReset();
+    dispatchTelegramMessage.mockReset();
     telegramInboundInfo.mockClear();
     upsertChannelPairingRequest.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   const telegramDepsForTest = {
@@ -109,6 +113,7 @@ describe("telegram bot message processor", () => {
   function createMessageContext(context: Record<string, unknown> = {}) {
     return {
       chatId: 123,
+      msg: { message_id: 456 },
       ctxPayload: {
         From: "telegram:123",
         To: "telegram:123",
@@ -164,6 +169,90 @@ describe("telegram bot message processor", () => {
     expect(onDispatchStart.mock.invocationCallOrder[0]).toBeLessThan(
       dispatchTelegramMessage.mock.invocationCallOrder[0],
     );
+  });
+
+  it("sends a visible progress notice when dispatch remains silent", async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    let finishDispatch: (() => void) | undefined;
+    dispatchTelegramMessage.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDispatch = resolve;
+        }),
+    );
+    buildTelegramMessageContext.mockResolvedValue(
+      createMessageContext({
+        chatId: 123,
+        msg: { message_id: 456 },
+        threadSpec: { id: 99, scope: "forum" },
+      }),
+    );
+
+    const processMessage = createTelegramMessageProcessor({
+      ...baseDeps,
+      bot: { api: { sendMessage } },
+    } as unknown as Parameters<typeof createTelegramMessageProcessor>[0]);
+    const processing = processSampleMessage(processMessage);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      123,
+      "收到，正在准备上下文并排队处理；如果任务较重，我会继续在这里报进度。",
+      {
+        message_thread_id: 99,
+        reply_parameters: {
+          message_id: 456,
+          allow_sending_without_reply: true,
+        },
+      },
+    );
+
+    finishDispatch?.();
+    await processing;
+  });
+
+  it("keeps long silent dispatches alive with visible heartbeat notices", async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    let finishDispatch: (() => void) | undefined;
+    dispatchTelegramMessage.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDispatch = resolve;
+        }),
+    );
+    buildTelegramMessageContext.mockResolvedValue(
+      createMessageContext({
+        chatId: 123,
+        msg: { message_id: 456 },
+      }),
+    );
+
+    const processMessage = createTelegramMessageProcessor({
+      ...baseDeps,
+      bot: { api: { sendMessage } },
+    } as unknown as Parameters<typeof createTelegramMessageProcessor>[0]);
+    const processing = processSampleMessage(processMessage);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      123,
+      "仍在处理，没有卡死；我会继续推进，并在阶段完成后同步结果。",
+      {
+        reply_parameters: {
+          message_id: 456,
+          allow_sending_without_reply: true,
+        },
+      },
+    );
+
+    finishDispatch?.();
+    await processing;
   });
 
   it("does not run the dispatch-start lifecycle when no context is produced", async () => {

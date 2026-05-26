@@ -6,8 +6,17 @@ import {
   releaseFeishuMessageProcessing,
   tryBeginFeishuMessageProcessing,
 } from "./processing-claims.js";
+import { sendMessageFeishu } from "./send.js";
 import { createSequentialQueue } from "./sequential-queue.js";
 import type { FeishuChatType } from "./types.js";
+
+const VISIBLE_PROGRESS_INITIAL_DELAY_MS = 5_000;
+const VISIBLE_PROGRESS_HEARTBEAT_MS = 20 * 60_000;
+
+const FEISHU_VISIBLE_PROGRESS_TEXT =
+  "收到，正在准备上下文并排队处理；如果任务较重，我会继续在这里报进度。";
+const FEISHU_VISIBLE_PROGRESS_HEARTBEAT_TEXT =
+  "仍在处理，没有卡死；我会继续推进，并在阶段完成后同步结果。";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -159,6 +168,56 @@ function resolveFeishuDebounceMentions(params: {
   return botMentions.length > 0 ? botMentions : undefined;
 }
 
+function startFeishuVisibleProgressNotices(params: {
+  cfg: ClawdbotConfig;
+  accountId: string;
+  event: FeishuMessageEvent;
+  runtime?: RuntimeEnv;
+}): () => void {
+  let stopped = false;
+  let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+  const chatId = params.event.message.chat_id;
+  const replyToMessageId = params.event.message.message_id;
+  const sendNotice = async (text: string) => {
+    if (stopped) {
+      return;
+    }
+    try {
+      await sendMessageFeishu({
+        cfg: params.cfg,
+        to: chatId,
+        text,
+        replyToMessageId,
+        accountId: params.accountId,
+      });
+    } catch (err) {
+      params.runtime?.log?.(
+        `feishu[${params.accountId}]: visible progress notice failed for message ${replyToMessageId}: ${String(err)}`,
+      );
+    }
+  };
+  const scheduleHeartbeat = () => {
+    heartbeatTimer = setTimeout(() => {
+      void sendNotice(FEISHU_VISIBLE_PROGRESS_HEARTBEAT_TEXT).finally(() => {
+        if (!stopped) {
+          scheduleHeartbeat();
+        }
+      });
+    }, VISIBLE_PROGRESS_HEARTBEAT_MS);
+  };
+  const initialTimer = setTimeout(() => {
+    scheduleHeartbeat();
+    void sendNotice(FEISHU_VISIBLE_PROGRESS_TEXT);
+  }, VISIBLE_PROGRESS_INITIAL_DELAY_MS);
+  return () => {
+    stopped = true;
+    clearTimeout(initialTimer);
+    if (heartbeatTimer) {
+      clearTimeout(heartbeatTimer);
+    }
+  };
+}
+
 export function createFeishuMessageReceiveHandler({
   cfg,
   core,
@@ -196,18 +255,37 @@ export function createFeishuMessageReceiveHandler({
       botOpenId: getBotOpenId(accountId),
       botName: getBotName(accountId),
     });
-    const task = () =>
-      handleMessage({
-        cfg,
-        event,
-        botOpenId: getBotOpenId(accountId),
-        botName: getBotName(accountId),
-        runtime,
-        chatHistories,
-        accountId,
-        processingClaimHeld: true,
-      });
-    await enqueue(sequentialKey, task);
+    const stopVisibleProgressNotices = startFeishuVisibleProgressNotices({
+      cfg,
+      accountId,
+      event,
+      runtime,
+    });
+    let taskStarted = false;
+    const task = async () => {
+      taskStarted = true;
+      try {
+        await handleMessage({
+          cfg,
+          event,
+          botOpenId: getBotOpenId(accountId),
+          botName: getBotName(accountId),
+          runtime,
+          chatHistories,
+          accountId,
+          processingClaimHeld: true,
+        });
+      } finally {
+        stopVisibleProgressNotices();
+      }
+    };
+    try {
+      await enqueue(sequentialKey, task);
+    } finally {
+      if (!taskStarted) {
+        stopVisibleProgressNotices();
+      }
+    }
   };
 
   const resolveSenderDebounceId = (event: FeishuMessageEvent): string | undefined => {

@@ -22,6 +22,13 @@ import type { TelegramContext, TelegramStreamMode } from "./bot/types.js";
 import type { TelegramReplyChainEntry } from "./message-cache.js";
 
 const telegramInboundLog = createSubsystemLogger("gateway/channels/telegram").child("inbound");
+const VISIBLE_PROGRESS_INITIAL_DELAY_MS = 5_000;
+const VISIBLE_PROGRESS_HEARTBEAT_MS = 20 * 60_000;
+
+const TELEGRAM_VISIBLE_PROGRESS_TEXT =
+  "收到，正在准备上下文并排队处理；如果任务较重，我会继续在这里报进度。";
+const TELEGRAM_VISIBLE_PROGRESS_HEARTBEAT_TEXT =
+  "仍在处理，没有卡死；我会继续推进，并在阶段完成后同步结果。";
 
 export function formatTelegramInboundLogLine(params: {
   from: string;
@@ -50,6 +57,63 @@ type TelegramMessageProcessorDeps = Omit<
 export type TelegramMessageProcessorLifecycle = {
   onDispatchStart?: () => Promise<void> | void;
 };
+
+function startTelegramVisibleProgressNotices(params: {
+  bot: TelegramMessageProcessorDeps["bot"];
+  context: Awaited<ReturnType<typeof buildTelegramMessageContext>>;
+}): () => void {
+  const context = params.context;
+  if (!context || context.ctxPayload.InboundEventKind === "room_event") {
+    return () => undefined;
+  }
+  let stopped = false;
+  let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
+  const baseThreadParams = buildTelegramThreadParams(context.threadSpec);
+  const replyParams =
+    typeof context.msg.message_id === "number"
+      ? {
+          reply_parameters: {
+            message_id: context.msg.message_id,
+            allow_sending_without_reply: true,
+          },
+        }
+      : {};
+  const sendNotice = async (text: string) => {
+    if (stopped) {
+      return;
+    }
+    try {
+      await params.bot.api.sendMessage(context.chatId, text, {
+        ...baseThreadParams,
+        ...replyParams,
+      });
+    } catch (err) {
+      logVerbose(
+        `telegram visible progress notice failed for chat ${context.chatId}: ${String(err)}`,
+      );
+    }
+  };
+  const scheduleHeartbeat = () => {
+    heartbeatTimer = setTimeout(() => {
+      void sendNotice(TELEGRAM_VISIBLE_PROGRESS_HEARTBEAT_TEXT).finally(() => {
+        if (!stopped) {
+          scheduleHeartbeat();
+        }
+      });
+    }, VISIBLE_PROGRESS_HEARTBEAT_MS);
+  };
+  const initialTimer = setTimeout(() => {
+    scheduleHeartbeat();
+    void sendNotice(TELEGRAM_VISIBLE_PROGRESS_TEXT);
+  }, VISIBLE_PROGRESS_INITIAL_DELAY_MS);
+  return () => {
+    stopped = true;
+    clearTimeout(initialTimer);
+    if (heartbeatTimer) {
+      clearTimeout(heartbeatTimer);
+    }
+  };
+}
 
 export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDeps) => {
   const {
@@ -176,6 +240,7 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
         mediaType: allMedia[0]?.contentType,
       }),
     );
+    const stopVisibleProgressNotices = startTelegramVisibleProgressNotices({ bot, context });
     await lifecycle?.onDispatchStart?.();
     try {
       await dispatchTelegramMessage({
@@ -205,6 +270,8 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
           buildTelegramThreadParams(context.threadSpec),
         );
       } catch {}
+    } finally {
+      stopVisibleProgressNotices();
     }
     return true;
   };
