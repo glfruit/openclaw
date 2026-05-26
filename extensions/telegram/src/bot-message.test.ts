@@ -46,6 +46,7 @@ describe("telegram bot message processor", () => {
     telegramInboundInfo.mockClear();
     upsertChannelPairingRequest.mockClear();
     telegramMessageTesting.setTelegramGatewayShutdownPendingForTest(false);
+    telegramMessageTesting.resetTelegramVisibleProgressLanesForTest();
   });
 
   afterEach(() => {
@@ -204,7 +205,7 @@ describe("telegram bot message processor", () => {
 
     expect(sendMessage).toHaveBeenCalledWith(
       123,
-      "收到，正在准备上下文并排队处理；如果任务较重，我会继续在这里报进度。",
+      "收到，已进入处理队列；如果任务较重，我会继续在这里报进度。",
       {
         message_thread_id: 99,
         reply_parameters: {
@@ -216,6 +217,117 @@ describe("telegram bot message processor", () => {
 
     finishDispatch?.();
     await processing;
+  });
+
+  it("deduplicates visible progress notices while a lane is already processing", async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const finishDispatches: Array<() => void> = [];
+    dispatchTelegramMessage.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDispatches.push(resolve);
+        }),
+    );
+    buildTelegramMessageContext.mockImplementation(() =>
+      Promise.resolve(
+        createMessageContext({
+          chatId: 123,
+          msg: { message_id: 456 },
+          route: { sessionKey: "agent:edu-tl:telegram:group:-1003802090799" },
+          threadSpec: { id: 99, scope: "forum" },
+        }),
+      ),
+    );
+
+    const processMessage = createTelegramMessageProcessor({
+      ...baseDeps,
+      bot: { api: { sendMessage } },
+    } as unknown as Parameters<typeof createTelegramMessageProcessor>[0]);
+    const first = processSampleMessage(processMessage);
+    await vi.advanceTimersByTimeAsync(1);
+    const second = processSampleMessage(processMessage);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      1,
+      123,
+      "上一轮还在处理，这条消息已排队；我会等前一轮收尾后继续处理，不会重复开工。",
+      {
+        message_thread_id: 99,
+        reply_parameters: {
+          message_id: 456,
+          allow_sending_without_reply: true,
+        },
+      },
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(
+      2,
+      123,
+      "收到，已进入处理队列；如果任务较重，我会继续在这里报进度。",
+      {
+        message_thread_id: 99,
+        reply_parameters: {
+          message_id: 456,
+          allow_sending_without_reply: true,
+        },
+      },
+    );
+
+    finishDispatches.forEach((finish) => finish());
+    await first;
+    await second;
+  });
+
+  it("suppresses repeated queued notices for the same active lane during cooldown", async () => {
+    vi.useFakeTimers();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const finishDispatches: Array<() => void> = [];
+    let messageId = 456;
+    dispatchTelegramMessage.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDispatches.push(resolve);
+        }),
+    );
+    buildTelegramMessageContext.mockImplementation(() =>
+      Promise.resolve(
+        createMessageContext({
+          chatId: 123,
+          msg: { message_id: messageId++ },
+          route: { sessionKey: "agent:edu-tl:telegram:group:-1003802090799" },
+        }),
+      ),
+    );
+
+    const processMessage = createTelegramMessageProcessor({
+      ...baseDeps,
+      bot: { api: { sendMessage } },
+    } as unknown as Parameters<typeof createTelegramMessageProcessor>[0]);
+    const first = processSampleMessage(processMessage);
+    await vi.advanceTimersByTimeAsync(1);
+    const second = processSampleMessage(processMessage);
+    await vi.advanceTimersByTimeAsync(1);
+    const third = processSampleMessage(processMessage);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(
+      sendMessage.mock.calls.filter(
+        (call) =>
+          call[1] === "上一轮还在处理，这条消息已排队；我会等前一轮收尾后继续处理，不会重复开工。",
+      ),
+    ).toHaveLength(1);
+    expect(
+      sendMessage.mock.calls.filter(
+        (call) => call[1] === "收到，已进入处理队列；如果任务较重，我会继续在这里报进度。",
+      ),
+    ).toHaveLength(1);
+
+    finishDispatches.forEach((finish) => finish());
+    await first;
+    await second;
+    await third;
   });
 
   it("keeps long silent dispatches alive with visible heartbeat notices", async () => {

@@ -24,15 +24,24 @@ import type { TelegramReplyChainEntry } from "./message-cache.js";
 const telegramInboundLog = createSubsystemLogger("gateway/channels/telegram").child("inbound");
 const VISIBLE_PROGRESS_INITIAL_DELAY_MS = 5_000;
 const VISIBLE_PROGRESS_HEARTBEAT_MS = 20 * 60_000;
+const VISIBLE_PROGRESS_QUEUED_NOTICE_COOLDOWN_MS = 2 * 60_000;
 
-const TELEGRAM_VISIBLE_PROGRESS_TEXT =
-  "收到，正在准备上下文并排队处理；如果任务较重，我会继续在这里报进度。";
+const TELEGRAM_VISIBLE_PROGRESS_TEXT = "收到，已进入处理队列；如果任务较重，我会继续在这里报进度。";
+const TELEGRAM_VISIBLE_PROGRESS_QUEUED_TEXT =
+  "上一轮还在处理，这条消息已排队；我会等前一轮收尾后继续处理，不会重复开工。";
 const TELEGRAM_VISIBLE_PROGRESS_HEARTBEAT_TEXT =
   "仍在处理，没有卡死；我会继续推进，并在阶段完成后同步结果。";
 const TELEGRAM_GATEWAY_RESTARTING_TEXT =
   "系统正在重启，我已收到这条消息；当前进程不会继续处理，重启完成后会自动重试。";
 
 let telegramGatewayShutdownPending = false;
+const telegramActiveLanes = new Map<
+  string,
+  {
+    activeCount: number;
+    lastQueuedNoticeAt: number;
+  }
+>();
 
 function markTelegramGatewayShutdownPending(): void {
   telegramGatewayShutdownPending = true;
@@ -46,6 +55,58 @@ class TelegramGatewayRestartInProgressError extends Error {
     super("Telegram message deferred because gateway shutdown is already in progress.");
     this.name = "TelegramGatewayRestartInProgressError";
   }
+}
+
+function resolveTelegramVisibleProgressLane(
+  context: NonNullable<Awaited<ReturnType<typeof buildTelegramMessageContext>>>,
+): string {
+  const routeSessionKey = context.route?.sessionKey;
+  if (typeof routeSessionKey === "string" && routeSessionKey.length > 0) {
+    return routeSessionKey;
+  }
+  const threadId =
+    context.threadSpec && "id" in context.threadSpec && context.threadSpec.id !== undefined
+      ? String(context.threadSpec.id)
+      : "main";
+  return `${context.chatId}:${threadId}`;
+}
+
+function claimTelegramVisibleProgressLane(
+  context: NonNullable<Awaited<ReturnType<typeof buildTelegramMessageContext>>>,
+  now = Date.now(),
+): {
+  alreadyActive: boolean;
+  shouldSendQueuedNotice: boolean;
+  release: () => void;
+} {
+  const lane = resolveTelegramVisibleProgressLane(context);
+  const current = telegramActiveLanes.get(lane) ?? {
+    activeCount: 0,
+    lastQueuedNoticeAt: 0,
+  };
+  const alreadyActive = current.activeCount > 0;
+  const shouldSendQueuedNotice =
+    alreadyActive && now - current.lastQueuedNoticeAt >= VISIBLE_PROGRESS_QUEUED_NOTICE_COOLDOWN_MS;
+  telegramActiveLanes.set(lane, {
+    activeCount: current.activeCount + 1,
+    lastQueuedNoticeAt: shouldSendQueuedNotice ? now : current.lastQueuedNoticeAt,
+  });
+  return {
+    alreadyActive,
+    shouldSendQueuedNotice,
+    release: () => {
+      const latest = telegramActiveLanes.get(lane);
+      if (!latest) {
+        return;
+      }
+      const activeCount = latest.activeCount - 1;
+      if (activeCount <= 0) {
+        telegramActiveLanes.delete(lane);
+        return;
+      }
+      telegramActiveLanes.set(lane, { ...latest, activeCount });
+    },
+  };
 }
 
 export function formatTelegramInboundLogLine(params: {
@@ -79,6 +140,7 @@ export type TelegramMessageProcessorLifecycle = {
 function startTelegramVisibleProgressNotices(params: {
   bot: TelegramMessageProcessorDeps["bot"];
   context: Awaited<ReturnType<typeof buildTelegramMessageContext>>;
+  suppressInitialNotice?: boolean;
 }): () => void {
   const context = params.context;
   if (!context || context.ctxPayload.InboundEventKind === "room_event") {
@@ -108,7 +170,9 @@ function startTelegramVisibleProgressNotices(params: {
   };
   const initialTimer = setTimeout(() => {
     scheduleHeartbeat();
-    void sendNotice(TELEGRAM_VISIBLE_PROGRESS_TEXT);
+    if (!params.suppressInitialNotice) {
+      void sendNotice(TELEGRAM_VISIBLE_PROGRESS_TEXT);
+    }
   }, VISIBLE_PROGRESS_INITIAL_DELAY_MS);
   return () => {
     stopped = true;
@@ -289,7 +353,20 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
       });
       throw new TelegramGatewayRestartInProgressError();
     }
-    const stopVisibleProgressNotices = startTelegramVisibleProgressNotices({ bot, context });
+    const visibleProgressLane = claimTelegramVisibleProgressLane(context);
+    if (visibleProgressLane.shouldSendQueuedNotice) {
+      await sendTelegramVisibleNotice({
+        bot,
+        context,
+        text: TELEGRAM_VISIBLE_PROGRESS_QUEUED_TEXT,
+        logLabel: "telegram queued progress notice",
+      });
+    }
+    const stopVisibleProgressNotices = startTelegramVisibleProgressNotices({
+      bot,
+      context,
+      suppressInitialNotice: visibleProgressLane.alreadyActive,
+    });
     await lifecycle?.onDispatchStart?.();
     try {
       await dispatchTelegramMessage({
@@ -321,6 +398,7 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
       } catch {}
     } finally {
       stopVisibleProgressNotices();
+      visibleProgressLane.release();
     }
     return true;
   };
@@ -329,5 +407,8 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
 export const __testing = {
   setTelegramGatewayShutdownPendingForTest(value: boolean): void {
     telegramGatewayShutdownPending = value;
+  },
+  resetTelegramVisibleProgressLanesForTest(): void {
+    telegramActiveLanes.clear();
   },
 };
