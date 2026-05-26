@@ -133,4 +133,43 @@ describe("createFeishuMessageReceiveHandler visible progress notices", () => {
     gate.resolve();
     await pending;
   });
+
+  it("uses status-check progress text for short follow-up status questions", async () => {
+    vi.useFakeTimers();
+    sendMessageFeishuMock.mockResolvedValue(undefined);
+    const gate = createDeferred();
+    const handleMessage = vi.fn(async () => {
+      await gate.promise;
+    });
+    const handler = createFeishuMessageReceiveHandler({
+      cfg: { channels: { feishu: {} } } as ClawdbotConfig,
+      core: createCore(),
+      accountId: "main",
+      runtime: { log: vi.fn(), error: vi.fn() } as never,
+      chatHistories: new Map(),
+      handleMessage,
+      resolveDebounceText: () => "处理完没有？",
+      hasProcessedMessage: vi.fn(async () => false),
+      recordProcessedMessage: vi.fn(async () => true),
+    });
+
+    const pending = handler(
+      createEvent({
+        message_id: "om_msg_status",
+        content: JSON.stringify({ text: "处理完没有？" }),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sendMessageFeishuMock).toHaveBeenCalledWith({
+      cfg: { channels: { feishu: {} } },
+      to: "oc_chat",
+      text: "我在查当前任务状态，不会重复开工；查到结果后会直接回 RUNNING / PASS / FAILED / BLOCKED。",
+      replyToMessageId: "om_msg_status",
+      accountId: "main",
+    });
+
+    gate.resolve();
+    await pending;
+  });
 });

@@ -15,6 +15,8 @@ const VISIBLE_PROGRESS_HEARTBEAT_MS = 20 * 60_000;
 
 const FEISHU_VISIBLE_PROGRESS_TEXT =
   "收到，正在准备上下文并排队处理；如果任务较重，我会继续在这里报进度。";
+const FEISHU_VISIBLE_PROGRESS_STATUS_TEXT =
+  "我在查当前任务状态，不会重复开工；查到结果后会直接回 RUNNING / PASS / FAILED / BLOCKED。";
 const FEISHU_VISIBLE_PROGRESS_HEARTBEAT_TEXT =
   "仍在处理，没有卡死；我会继续推进，并在阶段完成后同步结果。";
 
@@ -168,6 +170,37 @@ function resolveFeishuDebounceMentions(params: {
   return botMentions.length > 0 ? botMentions : undefined;
 }
 
+function extractFeishuPlainText(event: FeishuMessageEvent): string {
+  const content = event.message.content;
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (isRecord(parsed) && typeof parsed.text === "string") {
+      return parsed.text;
+    }
+  } catch {
+    // Fall through to raw content for non-JSON text-like payloads.
+  }
+  return content;
+}
+
+function isFeishuStatusCheckMessage(event: FeishuMessageEvent): boolean {
+  const normalized = extractFeishuPlainText(event)
+    .replace(/\s+/g, "")
+    .replace(/[？?。.!！~～]+$/g, "")
+    .toLowerCase();
+  if (!normalized || normalized.length > 80) {
+    return false;
+  }
+  if (/^v\d+[a-z0-9_-]*$/.test(normalized)) {
+    return true;
+  }
+  return [
+    /^(怎么样了?|现在怎么样了?|搞好了吗|好了没|完成了吗|做完了吗|处理完没有|处理完了吗)$/,
+    /^(进度|当前进度|什么进度|状态|当前状态)$/,
+    /^(为什么没回复|怎么不回复|为什么没有反馈|怎么没有反馈)$/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function startFeishuVisibleProgressNotices(params: {
   cfg: ClawdbotConfig;
   accountId: string;
@@ -207,7 +240,11 @@ function startFeishuVisibleProgressNotices(params: {
   };
   const initialTimer = setTimeout(() => {
     scheduleHeartbeat();
-    void sendNotice(FEISHU_VISIBLE_PROGRESS_TEXT);
+    void sendNotice(
+      isFeishuStatusCheckMessage(params.event)
+        ? FEISHU_VISIBLE_PROGRESS_STATUS_TEXT
+        : FEISHU_VISIBLE_PROGRESS_TEXT,
+    );
   }, VISIBLE_PROGRESS_INITIAL_DELAY_MS);
   return () => {
     stopped = true;
