@@ -244,7 +244,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
     expect(result.itemLifecycle.completedCount).toBe(1);
     expect(result.promptTimeoutOutcome).toEqual({
       message:
-        "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.",
+        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
       replayInvalid: true,
       livenessState: "abandoned",
     });
@@ -340,7 +340,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
       }),
     ).toEqual({
       message:
-        "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.",
+        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
       replayInvalid: true,
       livenessState: "abandoned",
     });
