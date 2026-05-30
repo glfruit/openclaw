@@ -4128,6 +4128,48 @@ describe("runCodexAppServerAttempt", () => {
     });
   });
 
+  it("keeps bookkeeping-only completion-idle timeouts replay-safe", async () => {
+    const harness = createStartedThreadHarness();
+    const params = createParams(
+      path.join(tempDir, "session.jsonl"),
+      path.join(tempDir, "workspace"),
+    );
+    params.timeoutMs = 200;
+
+    const run = runCodexAppServerAttempt(params, {
+      pluginConfig: { appServer: { turnCompletionIdleTimeoutMs: 5 } },
+      turnAssistantCompletionIdleTimeoutMs: 1_000,
+    });
+    await harness.waitForMethod("turn/start");
+    await harness.notify({
+      method: "item/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          id: "prompt-1",
+          type: "userMessage",
+          status: "completed",
+        },
+      },
+    });
+
+    const result = await run;
+
+    expect(result.timedOut).toBe(true);
+    expect(result.itemLifecycle.completedCount).toBe(1);
+    expect(result.assistantTexts).toEqual([]);
+    expect(result.toolMetas).toEqual([]);
+    expect(result.codexAppServerFailure).toEqual({
+      kind: "turn_completion_idle_timeout",
+      transport: "stdio",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      replaySafe: true,
+    });
+    expect(result.promptTimeoutOutcome).toBeUndefined();
+  });
+
   it("marks executed dynamic-tool completion-idle timeouts as replay-invalid", async () => {
     const params = createParams(
       path.join(tempDir, "session.jsonl"),

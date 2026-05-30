@@ -416,6 +416,22 @@ function hasCodexAppServerPotentialSideEffectEvidence(result: EmbeddedRunAttempt
   return result.replayMetadata.hadPotentialSideEffects;
 }
 
+function hasCodexAppServerPromptTimeoutOutcomeEvidence(result: EmbeddedRunAttemptResult): boolean {
+  return (
+    hasCodexAppServerPotentialSideEffectEvidence(result) ||
+    collectTerminalAssistantText(result).length > 0 ||
+    result.toolMetas.length > 0 ||
+    Boolean(result.clientToolCalls) ||
+    Boolean(result.lastToolError) ||
+    Boolean(result.didSendViaMessagingTool) ||
+    Boolean(result.didSendDeterministicApprovalPrompt) ||
+    result.messagingToolSentTexts.length > 0 ||
+    result.messagingToolSentMediaUrls.length > 0 ||
+    result.messagingToolSentTargets.length > 0 ||
+    (result.acceptedSessionSpawns?.length ?? 0) > 0
+  );
+}
+
 function buildCodexAppServerPromptTimeoutOutcome(params: {
   result: EmbeddedRunAttemptResult;
   turnCompletionIdleTimedOut: boolean;
@@ -425,8 +441,7 @@ function buildCodexAppServerPromptTimeoutOutcome(params: {
   );
   if (
     !params.turnCompletionIdleTimedOut ||
-    (params.result.itemLifecycle.completedCount === 0 &&
-      !completionIdleTimeoutHadPotentialSideEffects)
+    !hasCodexAppServerPromptTimeoutOutcomeEvidence(params.result)
   ) {
     return undefined;
   }
@@ -462,7 +477,7 @@ function resolveCodexAppServerReplayBlockedReason(
   ) {
     return "tool_activity";
   }
-  if (result.itemLifecycle.startedCount > 0 || result.itemLifecycle.activeCount > 0) {
+  if (result.itemLifecycle.activeCount > 0) {
     return "active_item";
   }
   return undefined;

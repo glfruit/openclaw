@@ -165,7 +165,7 @@ describe("runEmbeddedPiAgent Codex app-server recovery", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
   });
 
-  it("does not hand Codex app-server idle timeouts to model fallback", async () => {
+  it("hands replay-safe Codex app-server idle timeouts to model fallback", async () => {
     mockedClassifyFailoverReason.mockReturnValue("timeout");
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
@@ -182,11 +182,50 @@ describe("runEmbeddedPiAgent Codex app-server recovery", () => {
       }),
     );
 
+    await expect(
+      runEmbeddedPiAgent({
+        ...overflowBaseRunParams,
+        provider: "codex",
+        model: "gpt-5.5",
+        runId: "run-codex-turn-completion-idle-timeout-fallback",
+        config: makeModelFallbackCfg({
+          agents: {
+            defaults: {
+              model: {
+                primary: "openai-codex/gpt-5.5",
+                fallbacks: ["anthropic/claude-opus-4-6"],
+              },
+            },
+          },
+        }),
+      }),
+    ).rejects.toBeInstanceOf(MockedFailoverError);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not hand replay-blocked Codex app-server idle timeouts to model fallback", async () => {
+    mockedClassifyFailoverReason.mockReturnValue("timeout");
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["partial answer"],
+        promptError: new Error("codex app-server turn idle timed out waiting for turn/completed"),
+        promptErrorSource: "prompt",
+        codexAppServerFailure: {
+          kind: "turn_completion_idle_timeout",
+          transport: "stdio",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          replaySafe: false,
+          replayBlockedReason: "assistant_output",
+        },
+      }),
+    );
+
     const promise = runEmbeddedPiAgent({
       ...overflowBaseRunParams,
       provider: "codex",
       model: "gpt-5.5",
-      runId: "run-codex-turn-completion-idle-timeout-fallback",
+      runId: "run-codex-turn-completion-idle-timeout-replay-blocked",
       config: makeModelFallbackCfg({
         agents: {
           defaults: {

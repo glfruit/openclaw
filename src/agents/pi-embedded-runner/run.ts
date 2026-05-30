@@ -2309,12 +2309,14 @@ export async function runEmbeddedPiAgent(
               );
               continue;
             }
-            if (attempt.codexAppServerFailure) {
+            if (attempt.codexAppServerFailure && !attempt.codexAppServerFailure.replaySafe) {
               throw promptError;
             }
           }
 
           if (promptError && !aborted && promptErrorSource !== "compaction") {
+            const replaySafeCodexAppServerPromptFailure =
+              attempt.codexAppServerFailure?.replaySafe === true;
             // Normalize wrapped errors (e.g. abort-wrapped RESOURCE_EXHAUSTED) into
             // FailoverError so rate-limit classification works even for nested shapes.
             //
@@ -2464,7 +2466,8 @@ export async function runEmbeddedPiAgent(
               fallbackConfigured,
               failoverFailure: promptFailoverFailure,
               failoverReason: promptFailoverReason,
-              harnessOwnsTransport: pluginHarnessOwnsTransport,
+              harnessOwnsTransport:
+                pluginHarnessOwnsTransport && !replaySafeCodexAppServerPromptFailure,
               profileRotated: false,
             });
             if (
@@ -2503,7 +2506,8 @@ export async function runEmbeddedPiAgent(
                 fallbackConfigured,
                 failoverFailure: promptFailoverFailure,
                 failoverReason: promptFailoverReason,
-                harnessOwnsTransport: pluginHarnessOwnsTransport,
+                harnessOwnsTransport:
+                  pluginHarnessOwnsTransport && !replaySafeCodexAppServerPromptFailure,
                 profileRotated: true,
               });
             }
