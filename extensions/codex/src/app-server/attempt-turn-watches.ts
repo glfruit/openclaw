@@ -46,6 +46,7 @@ export function createCodexAttemptTurnWatchController(params: {
   let completionIdleTimeoutOverrideMs: number | undefined;
   let assistantCompletionIdleTimer: Timer | undefined;
   let assistantCompletionIdleWatchArmed = false;
+  let assistantCompletionIdleTimeoutOverrideMs: number | undefined;
   let assistantCompletionLastActivityAt = Date.now();
   let assistantCompletionLastActivityDetails: Record<string, unknown> | undefined;
   let attemptIdleTimer: Timer | undefined;
@@ -127,7 +128,9 @@ export function createCodexAttemptTurnWatchController(params: {
       return;
     }
     const elapsedMs = Math.max(0, Date.now() - assistantCompletionLastActivityAt);
-    const delayMs = Math.max(1, turnAssistantCompletionIdleTimeoutMs - elapsedMs);
+    const timeoutMs =
+      assistantCompletionIdleTimeoutOverrideMs ?? turnAssistantCompletionIdleTimeoutMs;
+    const delayMs = Math.max(1, timeoutMs - elapsedMs);
     assistantCompletionIdleTimer = setTimeout(fireAssistantCompletionIdleRelease, delayMs);
     assistantCompletionIdleTimer.unref?.();
   }
@@ -207,11 +210,14 @@ export function createCodexAttemptTurnWatchController(params: {
       return;
     }
     const idleMs = Math.max(0, Date.now() - assistantCompletionLastActivityAt);
-    if (idleMs < turnAssistantCompletionIdleTimeoutMs) {
+    const timeoutMs =
+      assistantCompletionIdleTimeoutOverrideMs ?? turnAssistantCompletionIdleTimeoutMs;
+    if (idleMs < timeoutMs) {
       scheduleAssistantCompletionIdleWatch();
       return;
     }
     assistantCompletionIdleWatchArmed = false;
+    assistantCompletionIdleTimeoutOverrideMs = undefined;
     clearCompletionIdleTimer();
     clearTerminalIdleTimer();
     const turnId = params.getTurnId();
@@ -219,7 +225,7 @@ export function createCodexAttemptTurnWatchController(params: {
       threadId: params.threadId,
       turnId,
       idleMs,
-      timeoutMs: turnAssistantCompletionIdleTimeoutMs,
+      timeoutMs,
       ...assistantCompletionLastActivityDetails,
     });
     embeddedAgentLog.warn(
@@ -228,7 +234,7 @@ export function createCodexAttemptTurnWatchController(params: {
         threadId: params.threadId,
         turnId,
         idleMs,
-        timeoutMs: turnAssistantCompletionIdleTimeoutMs,
+        timeoutMs,
         ...assistantCompletionLastActivityDetails,
       },
     );
@@ -397,14 +403,24 @@ export function createCodexAttemptTurnWatchController(params: {
       completionIdleTimeoutOverrideMs = undefined;
       clearCompletionIdleTimer();
     },
-    armAssistantCompletionIdleWatch: (details?: Record<string, unknown>) => {
+    armAssistantCompletionIdleWatch: (
+      details?: Record<string, unknown>,
+      options?: { timeoutMs?: number },
+    ) => {
+      completionIdleWatchArmed = false;
+      completionIdleWatchPinnedByTerminalError = false;
+      completionIdleTimeoutOverrideMs = undefined;
+      clearCompletionIdleTimer();
       assistantCompletionIdleWatchArmed = true;
       assistantCompletionLastActivityAt = Date.now();
+      assistantCompletionIdleTimeoutOverrideMs =
+        options?.timeoutMs !== undefined ? Math.max(1, Math.floor(options.timeoutMs)) : undefined;
       assistantCompletionLastActivityDetails = details;
       scheduleAssistantCompletionIdleWatch();
     },
     disarmAssistantCompletionIdleWatch: () => {
       assistantCompletionIdleWatchArmed = false;
+      assistantCompletionIdleTimeoutOverrideMs = undefined;
       assistantCompletionLastActivityDetails = undefined;
       clearAssistantCompletionIdleTimer();
     },
