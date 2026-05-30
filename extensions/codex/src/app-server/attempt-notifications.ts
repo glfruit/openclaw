@@ -262,8 +262,7 @@ export function isRawAssistantProgressNotification(notification: CodexServerNoti
   );
 }
 
-/** Returns true for raw assistant completion outside commentary phase. */
-export function isRawAssistantCompletionNotification(
+export function isRawVisibleAssistantCompletionNotification(
   notification: CodexServerNotification,
 ): boolean {
   if (!isRawAssistantProgressNotification(notification) || !isJsonObject(notification.params)) {
@@ -271,6 +270,12 @@ export function isRawAssistantCompletionNotification(
   }
   const item = isJsonObject(notification.params.item) ? notification.params.item : undefined;
   return Boolean(item && readString(item, "phase") !== "commentary");
+}
+
+export function isRawAssistantCompletionNotification(
+  notification: CodexServerNotification,
+): boolean {
+  return isRawVisibleAssistantCompletionNotification(notification);
 }
 
 function readRawAssistantTextPreview(item: JsonObject): string | undefined {
