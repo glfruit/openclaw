@@ -6,6 +6,7 @@ import {
   isNativeToolProgressNotification,
   isPendingOpenClawDynamicToolCompletionNotification,
   isRawAssistantCompletionNotification,
+  isRawVisibleAssistantCompletionNotification,
   isRawReasoningCompletionNotification,
   isRawToolOutputCompletionNotification,
   isReasoningItemCompletionNotification,
@@ -136,7 +137,7 @@ export function applyCodexTurnNotificationState(params: {
   const postToolRawAssistantCompletionNeedsTerminalGuard =
     isCurrentTurnNotification &&
     turnCrossedToolHandoff &&
-    isRawAssistantCompletionNotification(notification) &&
+    isRawVisibleAssistantCompletionNotification(notification) &&
     params.activeTurnItemIds.size === 0;
   const rawResponseItemCompletedWithNoActiveItems =
     isCurrentTurnNotification &&
@@ -174,7 +175,12 @@ export function applyCodexTurnNotificationState(params: {
   } else if (isCurrentTurnNotification && assistantCompletionCanRelease) {
     turnWatches.armAssistantCompletionIdleWatch(describeNotificationActivity(notification));
   } else if (postToolRawAssistantCompletionNeedsTerminalGuard) {
-    turnWatches.armCompletionIdleWatch({
+    // Codex 0.134+ can emit the final visible assistant/raw commentary item
+    // after a tool handoff but then miss the terminal turn/completed event.
+    // Treat the visible assistant item as a recoverable missing-terminal
+    // completion instead of surfacing the internal lifecycle fallback to
+    // source channels.
+    turnWatches.armAssistantCompletionIdleWatch(describeNotificationActivity(notification), {
       timeoutMs: params.postToolRawAssistantCompletionIdleTimeoutMs,
     });
   } else if (shouldArmPostReasoningSourceReplyWatch || shouldArmPostRawReasoningSourceReplyWatch) {

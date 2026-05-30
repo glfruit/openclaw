@@ -182,6 +182,16 @@ export function isNativeToolProgressNotification(notification: CodexServerNotifi
 export function isRawAssistantCompletionNotification(
   notification: CodexServerNotification,
 ): boolean {
+  if (!isRawVisibleAssistantCompletionNotification(notification)) {
+    return false;
+  }
+  const item = isJsonObject(notification.params) ? notification.params.item : undefined;
+  return isJsonObject(item) && readString(item, "phase") !== "commentary";
+}
+
+export function isRawVisibleAssistantCompletionNotification(
+  notification: CodexServerNotification,
+): boolean {
   if (notification.method !== "rawResponseItem/completed" || !isJsonObject(notification.params)) {
     return false;
   }
@@ -190,7 +200,6 @@ export function isRawAssistantCompletionNotification(
     item &&
     readString(item, "type") === "message" &&
     readString(item, "role") === "assistant" &&
-    readString(item, "phase") !== "commentary" &&
     readRawAssistantTextPreview(item),
   );
 }

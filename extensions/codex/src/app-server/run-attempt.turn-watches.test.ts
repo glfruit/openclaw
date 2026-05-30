@@ -1124,7 +1124,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
     expect(request.mock.calls.some(([method]) => method === "turn/interrupt")).toBe(false);
   });
 
-  it("times out post-tool raw assistant progress after the assistant idle timeout", async () => {
+  it("releases post-tool raw assistant output when turn/completed is missing", async () => {
     let notify: (notification: CodexServerNotification) => Promise<void> = async () => undefined;
     let handleRequest:
       | ((request: { id: string; method: string; params?: unknown }) => Promise<unknown>)
@@ -1199,11 +1199,10 @@ describe("runCodexAppServerAttempt turn watches", () => {
     });
 
     const result = await run;
-    expect(result.aborted).toBe(true);
-    expect(result.timedOut).toBe(true);
-    expect(result.promptError).toBe(
-      "codex app-server turn idle timed out waiting for turn/completed",
-    );
+    expect(result.aborted).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.promptError).toBeNull();
+    expect(result.assistantTexts).toEqual(["I'm writing the report now."]);
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith(
@@ -1301,11 +1300,10 @@ describe("runCodexAppServerAttempt turn watches", () => {
     expect(settled).toBe(false);
 
     const result = await run;
-    expect(result.aborted).toBe(true);
-    expect(result.timedOut).toBe(true);
-    expect(result.promptError).toBe(
-      "codex app-server turn idle timed out waiting for turn/completed",
-    );
+    expect(result.aborted).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.promptError).toBeNull();
+    expect(result.assistantTexts).toEqual(["I'm writing the report now."]);
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith(
@@ -1319,19 +1317,20 @@ describe("runCodexAppServerAttempt turn watches", () => {
       { interval: 1 },
     );
     const completionWarnCall = warn.mock.calls.find(
-      ([message]) => message === "codex app-server turn idle timed out waiting for completion",
+      ([message]) =>
+        message === "codex app-server turn released after completed assistant item without terminal event",
     );
     const completionWarnData = completionWarnCall?.[1] as
       | {
-          lastActivityReason?: string;
+          lastNotificationMethod?: string;
           timeoutMs?: number;
         }
       | undefined;
     expect(completionWarnData?.timeoutMs).toBe(100);
-    expect(completionWarnData?.lastActivityReason).toBe("notification:rawResponseItem/completed");
+    expect(completionWarnData?.lastNotificationMethod).toBe("rawResponseItem/completed");
   });
 
-  it("times out post-native-tool raw assistant progress after the assistant idle timeout", async () => {
+  it("releases post-native-tool raw assistant output when turn/completed is missing", async () => {
     let notify: (notification: CodexServerNotification) => Promise<void> = async () => undefined;
     const request = vi.fn(async (method: string) => {
       if (method === "thread/start") {
@@ -1400,11 +1399,10 @@ describe("runCodexAppServerAttempt turn watches", () => {
     });
 
     const result = await run;
-    expect(result.aborted).toBe(true);
-    expect(result.timedOut).toBe(true);
-    expect(result.promptError).toBe(
-      "codex app-server turn idle timed out waiting for turn/completed",
-    );
+    expect(result.aborted).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.promptError).toBeNull();
+    expect(result.assistantTexts).toEqual(["I'm summarizing command output."]);
     await vi.waitFor(
       () =>
         expect(request).toHaveBeenCalledWith(
@@ -1419,7 +1417,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
     );
   });
 
-  it("logs raw assistant item context when the terminal watchdog fires", async () => {
+  it("logs raw assistant item context when missing-terminal release fires", async () => {
     let notify: (notification: CodexServerNotification) => Promise<void> = async () => undefined;
     let handleRequest:
       | ((request: { id: string; method: string; params?: unknown }) => Promise<unknown>)
@@ -1463,7 +1461,8 @@ describe("runCodexAppServerAttempt turn watches", () => {
     const run = runCodexAppServerAttempt(params, {
       turnCompletionIdleTimeoutMs: 5,
       turnAssistantCompletionIdleTimeoutMs: 500,
-      turnTerminalIdleTimeoutMs: 5,
+      postToolRawAssistantCompletionIdleTimeoutMs: 5,
+      turnTerminalIdleTimeoutMs: 500,
     });
     await vi.waitFor(() => expect(handleRequest).toBeTypeOf("function"), fastWait);
 
@@ -1495,17 +1494,17 @@ describe("runCodexAppServerAttempt turn watches", () => {
     });
 
     const result = await run;
-    expect(result.aborted).toBe(true);
-    expect(result.timedOut).toBe(true);
-    expect(result.promptError).toBe(
-      "codex app-server turn idle timed out waiting for turn/completed",
+    expect(result.aborted).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.promptError).toBeNull();
+    expect(result.assistantTexts).toEqual(["I'm writing the report now."]);
+    const releaseWarnCall = warn.mock.calls.find(
+      ([message]) =>
+        message ===
+        "codex app-server turn released after completed assistant item without terminal event",
     );
-    const terminalWarnCall = warn.mock.calls.find(
-      ([message]) => message === "codex app-server turn idle timed out waiting for terminal event",
-    );
-    const terminalWarnData = terminalWarnCall?.[1] as
+    const releaseWarnData = releaseWarnCall?.[1] as
       | {
-          lastActivityReason?: string;
           lastAssistantTextPreview?: string;
           lastNotificationItemId?: string;
           lastNotificationItemRole?: string;
@@ -1516,15 +1515,14 @@ describe("runCodexAppServerAttempt turn watches", () => {
           turnId?: string;
         }
       | undefined;
-    expect(terminalWarnData?.threadId).toBe("thread-1");
-    expect(terminalWarnData?.turnId).toBe("turn-1");
-    expect(terminalWarnData?.timeoutMs).toBe(5);
-    expect(terminalWarnData?.lastActivityReason).toBe("notification:rawResponseItem/completed");
-    expect(terminalWarnData?.lastNotificationMethod).toBe("rawResponseItem/completed");
-    expect(terminalWarnData?.lastNotificationItemId).toBe("raw-status-1");
-    expect(terminalWarnData?.lastNotificationItemType).toBe("message");
-    expect(terminalWarnData?.lastNotificationItemRole).toBe("assistant");
-    expect(terminalWarnData?.lastAssistantTextPreview).toBe("I'm writing the report now.");
+    expect(releaseWarnData?.threadId).toBe("thread-1");
+    expect(releaseWarnData?.turnId).toBe("turn-1");
+    expect(releaseWarnData?.timeoutMs).toBe(5);
+    expect(releaseWarnData?.lastNotificationMethod).toBe("rawResponseItem/completed");
+    expect(releaseWarnData?.lastNotificationItemId).toBe("raw-status-1");
+    expect(releaseWarnData?.lastNotificationItemType).toBe("message");
+    expect(releaseWarnData?.lastNotificationItemRole).toBe("assistant");
+    expect(releaseWarnData?.lastAssistantTextPreview).toBe("I'm writing the report now.");
     expect(
       warn.mock.calls.some(
         ([message]) => message === "codex app-server turn idle timed out waiting for completion",
