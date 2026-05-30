@@ -1690,11 +1690,22 @@ export async function runCodexAppServerAttempt(
       pendingNotifications.push(notification);
       return;
     }
+    const correlation = describeCodexNotificationCorrelation(notification, {
+      threadId: thread.threadId,
+      turnId,
+    });
+    const isNativeResponseStreamDelta = isNativeResponseStreamDeltaNotification(notification);
+    const nativeResponseStreamDeltaMatchesActiveTurn =
+      isNativeResponseStreamDelta &&
+      (correlation.matchesActiveTurn === true ||
+        (isUnscopedCodexNotification(correlation) &&
+          canAttributeUnscopedNativeResponseDeltaToThisTurn(client)));
     const notificationState = applyCodexTurnNotificationState({
       notification,
       threadId: thread.threadId,
       turnId,
       currentPromptTexts: [codexTurnPromptText],
+      nativeResponseStreamDeltaMatchesActiveTurn,
       turnWatches,
       activeTurnItemIds,
       activeAppServerTurnRequests,
