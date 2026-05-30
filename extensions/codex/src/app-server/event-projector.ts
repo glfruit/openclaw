@@ -263,9 +263,11 @@ export class CodexAppServerEventProjector {
 
   buildResult(
     toolTelemetry: CodexAppServerToolTelemetry,
-    options?: { yieldDetected?: boolean },
+    options?: { yieldDetected?: boolean; allowCommentaryAssistantFallback?: boolean },
   ): EmbeddedRunAttemptResult {
-    const assistantTexts = this.collectAssistantTexts();
+    const assistantTexts = this.collectAssistantTexts({
+      allowCommentaryFallback: options?.allowCommentaryAssistantFallback === true,
+    });
     const reasoningText = collectTextValues(this.reasoningTextByItem).join("\n\n");
     const planText = collectTextValues(this.planTextByItem).join("\n\n");
     const lastAssistant =
@@ -1399,12 +1401,15 @@ export class CodexAppServerEventProjector {
     }
   }
 
-  private collectAssistantTexts(): string[] {
-    const finalText = this.resolveFinalAssistantText();
+  private collectAssistantTexts(options?: { allowCommentaryFallback?: boolean }): string[] {
+    const finalText = this.resolveFinalAssistantText(options);
     return finalText ? [finalText] : [];
   }
 
-  private resolveFinalAssistantText(): string | undefined {
+  private resolveFinalAssistantText(options?: {
+    allowCommentaryFallback?: boolean;
+  }): string | undefined {
+    let commentaryFallback: string | undefined;
     for (let i = this.assistantItemOrder.length - 1; i >= 0; i -= 1) {
       const itemId = this.assistantItemOrder[i];
       if (!itemId) {
@@ -1412,13 +1417,16 @@ export class CodexAppServerEventProjector {
       }
       const text = this.assistantTextByItem.get(itemId)?.trim();
       if (this.assistantPhaseByItem.get(itemId) === "commentary") {
+        if (!commentaryFallback && text && !this.toolProgressTexts.has(text)) {
+          commentaryFallback = text;
+        }
         continue;
       }
       if (text && !this.toolProgressTexts.has(text)) {
         return text;
       }
     }
-    return undefined;
+    return options?.allowCommentaryFallback === true ? commentaryFallback : undefined;
   }
 
   private rememberAssistantItem(itemId: string): void {

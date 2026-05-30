@@ -1930,6 +1930,7 @@ export async function runCodexAppServerAttempt(
   let turnAssistantCompletionIdleTimeoutOverrideMs: number | undefined;
   let turnAssistantCompletionLastActivityAt = Date.now();
   let turnAssistantCompletionLastActivityDetails: Record<string, unknown> | undefined;
+  let turnAssistantCompletionIdleReleaseFired = false;
   const turnAttemptIdleTimeoutMs = Math.max(100, Math.floor(params.timeoutMs));
   let turnAttemptIdleTimer: ReturnType<typeof setTimeout> | undefined;
   let turnAttemptIdleWatchArmed = false;
@@ -2001,6 +2002,7 @@ export async function runCodexAppServerAttempt(
     }
     turnAssistantCompletionIdleWatchArmed = false;
     turnAssistantCompletionIdleTimeoutOverrideMs = undefined;
+    turnAssistantCompletionIdleReleaseFired = true;
     clearTurnCompletionIdleTimer();
     clearTurnTerminalIdleTimer();
     trajectoryRecorder?.recordEvent("turn.assistant_completion_idle_release", {
@@ -3381,7 +3383,10 @@ export async function runCodexAppServerAttempt(
 
   try {
     await completion;
-    const result = activeProjector.buildResult(toolBridge.telemetry, { yieldDetected });
+    const result = activeProjector.buildResult(toolBridge.telemetry, {
+      yieldDetected,
+      allowCommentaryAssistantFallback: turnAssistantCompletionIdleReleaseFired,
+    });
     const finalAborted =
       result.aborted || (runAbortController.signal.aborted && !clientClosedAbort);
     let finalPromptError =

@@ -5503,6 +5503,7 @@ describe("runCodexAppServerAttempt", () => {
           type: "message",
           id: "raw-status-1",
           role: "assistant",
+          phase: "commentary",
           content: [{ type: "output_text", text: "I'm summarizing command output." }],
         },
       },
