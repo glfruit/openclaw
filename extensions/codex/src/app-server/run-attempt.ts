@@ -5552,9 +5552,9 @@ const CODEX_INTERRUPTED_USER_GUIDANCE =
 const CODEX_INTERRUPTED_DEVELOPER_GUIDANCE =
   "The previous turn was interrupted on purpose. Any running unified exec processes may still be running in the background. If any tools/commands were aborted, they may have partially executed.";
 const CODEX_APP_SERVER_MISSING_TERMINAL_EVENT_USER_MESSAGE =
-  "Codex stopped before confirming the turn was complete. The response may be incomplete; retry if needed.";
+  "OpenClaw detected an incomplete Codex turn before a final answer was available. Please retry if needed.";
 const CODEX_APP_SERVER_MISSING_TERMINAL_EVENT_SIDE_EFFECT_USER_MESSAGE =
-  "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.";
+  "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.";
 
 function isCodexTurnAbortMarkerNotification(
   notification: CodexServerNotification,
