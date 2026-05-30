@@ -83,7 +83,7 @@ describe("Codex app-server attempt results", () => {
       }),
     ).toEqual({
       message:
-        "Codex stopped before confirming the turn was complete. The response may be incomplete; retry if needed.",
+        "OpenClaw detected an incomplete Codex turn before a final answer was available. Please retry if needed.",
     });
     expect(
       buildCodexAppServerPromptTimeoutOutcome({
@@ -98,7 +98,7 @@ describe("Codex app-server attempt results", () => {
       }),
     ).toEqual({
       message:
-        "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.",
+        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
       replayInvalid: true,
       livenessState: "abandoned",
     });
