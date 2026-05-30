@@ -2295,7 +2295,15 @@ export async function runEmbeddedPiAgent(
             };
           }
 
-          if (promptError && !aborted && promptErrorSource !== "compaction") {
+          const replaySafeCodexAppServerPromptFailure =
+            promptErrorSource !== "compaction" &&
+            attempt.codexAppServerFailure?.replaySafe === true;
+          const promptErrorEligibleForRecovery =
+            promptError &&
+            promptErrorSource !== "compaction" &&
+            (!aborted || (replaySafeCodexAppServerPromptFailure && !externalAbort));
+
+          if (promptErrorEligibleForRecovery) {
             const codexClientCloseRetry = resolveCodexAppServerClientCloseRetry({
               attempt,
               alreadyRetried: codexAppServerClientCloseRetries > 0,
@@ -2314,9 +2322,7 @@ export async function runEmbeddedPiAgent(
             }
           }
 
-          if (promptError && !aborted && promptErrorSource !== "compaction") {
-            const replaySafeCodexAppServerPromptFailure =
-              attempt.codexAppServerFailure?.replaySafe === true;
+          if (promptErrorEligibleForRecovery) {
             // Normalize wrapped errors (e.g. abort-wrapped RESOURCE_EXHAUSTED) into
             // FailoverError so rate-limit classification works even for nested shapes.
             //

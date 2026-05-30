@@ -142,6 +142,9 @@ describe("runEmbeddedPiAgent Codex app-server recovery", () => {
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
         assistantTexts: [],
+        aborted: true,
+        timedOut: true,
+        idleTimedOut: true,
         promptError: new Error("codex app-server turn idle timed out waiting for turn/completed"),
         promptErrorSource: "prompt",
         codexAppServerFailure: {
@@ -200,6 +203,51 @@ describe("runEmbeddedPiAgent Codex app-server recovery", () => {
         }),
       }),
     ).rejects.toBeInstanceOf(MockedFailoverError);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not hand externally aborted Codex app-server idle timeouts to model fallback", async () => {
+    mockedClassifyFailoverReason.mockReturnValue("timeout");
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        aborted: true,
+        externalAbort: true,
+        timedOut: true,
+        idleTimedOut: true,
+        promptError: new Error("codex app-server turn idle timed out waiting for turn/completed"),
+        promptErrorSource: "prompt",
+        codexAppServerFailure: {
+          kind: "turn_completion_idle_timeout",
+          transport: "stdio",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          replaySafe: true,
+        },
+      }),
+    );
+
+    const promise = runEmbeddedPiAgent({
+      ...overflowBaseRunParams,
+      provider: "codex",
+      model: "gpt-5.5",
+      runId: "run-codex-turn-completion-idle-timeout-external-abort",
+      config: makeModelFallbackCfg({
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai-codex/gpt-5.5",
+              fallbacks: ["anthropic/claude-opus-4-6"],
+            },
+          },
+        },
+      }),
+    });
+
+    await expect(promise).resolves.toMatchObject({
+      payloads: [expect.objectContaining({ isError: true })],
+      meta: expect.objectContaining({ aborted: true }),
+    });
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
   });
 
