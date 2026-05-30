@@ -6,9 +6,9 @@ import type {
 import type { CodexSystemPromptReport } from "./attempt-context.js";
 
 const CODEX_APP_SERVER_MISSING_TERMINAL_EVENT_USER_MESSAGE =
-  "Codex stopped before confirming the turn was complete. The response may be incomplete; retry if needed.";
+  "OpenClaw detected an incomplete Codex turn before a final answer was available. Please retry if needed.";
 const CODEX_APP_SERVER_MISSING_TERMINAL_EVENT_SIDE_EFFECT_USER_MESSAGE =
-  "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.";
+  "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.";
 
 export function collectTerminalAssistantText(result: EmbeddedRunAttemptResult): string {
   return result.assistantTexts.join("\n\n").trim();
