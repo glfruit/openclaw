@@ -1912,6 +1912,7 @@ export async function runCodexAppServerAttempt(
   let turnCompletionIdleTimeoutOverrideMs: number | undefined;
   let turnAssistantCompletionIdleTimer: ReturnType<typeof setTimeout> | undefined;
   let turnAssistantCompletionIdleWatchArmed = false;
+  let turnAssistantCompletionIdleTimeoutOverrideMs: number | undefined;
   let turnAssistantCompletionLastActivityAt = Date.now();
   let turnAssistantCompletionLastActivityDetails: Record<string, unknown> | undefined;
   const turnAttemptIdleTimeoutMs = Math.max(100, Math.floor(params.timeoutMs));
@@ -1977,18 +1978,21 @@ export async function runCodexAppServerAttempt(
       return;
     }
     const idleMs = Math.max(0, Date.now() - turnAssistantCompletionLastActivityAt);
-    if (idleMs < turnAssistantCompletionIdleTimeoutMs) {
+    const timeoutMs =
+      turnAssistantCompletionIdleTimeoutOverrideMs ?? turnAssistantCompletionIdleTimeoutMs;
+    if (idleMs < timeoutMs) {
       scheduleTurnAssistantCompletionIdleWatch();
       return;
     }
     turnAssistantCompletionIdleWatchArmed = false;
+    turnAssistantCompletionIdleTimeoutOverrideMs = undefined;
     clearTurnCompletionIdleTimer();
     clearTurnTerminalIdleTimer();
     trajectoryRecorder?.recordEvent("turn.assistant_completion_idle_release", {
       threadId: thread.threadId,
       turnId,
       idleMs,
-      timeoutMs: turnAssistantCompletionIdleTimeoutMs,
+      timeoutMs,
       ...turnAssistantCompletionLastActivityDetails,
     });
     embeddedAgentLog.warn(
@@ -1997,7 +2001,7 @@ export async function runCodexAppServerAttempt(
         threadId: thread.threadId,
         turnId,
         idleMs,
-        timeoutMs: turnAssistantCompletionIdleTimeoutMs,
+        timeoutMs,
         ...turnAssistantCompletionLastActivityDetails,
       },
     );
@@ -2149,7 +2153,9 @@ export async function runCodexAppServerAttempt(
       return;
     }
     const elapsedMs = Math.max(0, Date.now() - turnAssistantCompletionLastActivityAt);
-    const delayMs = Math.max(1, turnAssistantCompletionIdleTimeoutMs - elapsedMs);
+    const timeoutMs =
+      turnAssistantCompletionIdleTimeoutOverrideMs ?? turnAssistantCompletionIdleTimeoutMs;
+    const delayMs = Math.max(1, timeoutMs - elapsedMs);
     turnAssistantCompletionIdleTimer = setTimeout(fireTurnAssistantCompletionIdleRelease, delayMs);
     turnAssistantCompletionIdleTimer.unref?.();
   }
@@ -2252,13 +2258,20 @@ export async function runCodexAppServerAttempt(
 
   const disarmTurnAssistantCompletionIdleWatch = () => {
     turnAssistantCompletionIdleWatchArmed = false;
+    turnAssistantCompletionIdleTimeoutOverrideMs = undefined;
     turnAssistantCompletionLastActivityDetails = undefined;
     clearTurnAssistantCompletionIdleTimer();
   };
 
-  const armTurnAssistantCompletionIdleWatch = (details?: Record<string, unknown>) => {
+  const armTurnAssistantCompletionIdleWatch = (
+    details?: Record<string, unknown>,
+    options?: { timeoutMs?: number },
+  ) => {
+    disarmTurnCompletionIdleWatch();
     turnAssistantCompletionIdleWatchArmed = true;
     turnAssistantCompletionLastActivityAt = Date.now();
+    turnAssistantCompletionIdleTimeoutOverrideMs =
+      options?.timeoutMs !== undefined ? Math.max(1, Math.floor(options.timeoutMs)) : undefined;
     turnAssistantCompletionLastActivityDetails = details;
     scheduleTurnAssistantCompletionIdleWatch();
   };
@@ -2482,7 +2495,7 @@ export async function runCodexAppServerAttempt(
     const postToolRawAssistantCompletionNeedsTerminalGuard =
       isCurrentTurnNotification &&
       turnCrossedToolHandoff &&
-      isRawAssistantCompletionNotification(notification) &&
+      isRawVisibleAssistantCompletionNotification(notification) &&
       activeTurnItemIds.size === 0;
     const rawResponseItemCompletedWithNoActiveItems =
       isCurrentTurnNotification &&
@@ -2519,7 +2532,14 @@ export async function runCodexAppServerAttempt(
     } else if (isCurrentTurnNotification && assistantCompletionCanRelease) {
       armTurnAssistantCompletionIdleWatch(describeNotificationActivity(notification));
     } else if (postToolRawAssistantCompletionNeedsTerminalGuard) {
-      armTurnCompletionIdleWatch({ timeoutMs: postToolRawAssistantCompletionIdleTimeoutMs });
+      // Codex 0.134 can emit the final visible assistant/raw commentary item
+      // after a tool handoff but then miss the terminal turn/completed event.
+      // Treat the visible assistant item as a recoverable missing-terminal
+      // completion instead of surfacing the internal lifecycle fallback to
+      // source channels.
+      armTurnAssistantCompletionIdleWatch(describeNotificationActivity(notification), {
+        timeoutMs: postToolRawAssistantCompletionIdleTimeoutMs,
+      });
     } else if (
       shouldArmPostReasoningSourceReplyWatch ||
       shouldArmPostRawReasoningSourceReplyWatch
@@ -5415,6 +5435,16 @@ function isNativeToolProgressNotification(notification: CodexServerNotification)
 }
 
 function isRawAssistantCompletionNotification(notification: CodexServerNotification): boolean {
+  if (!isRawVisibleAssistantCompletionNotification(notification)) {
+    return false;
+  }
+  const item = isJsonObject(notification.params) ? notification.params.item : undefined;
+  return isJsonObject(item) && readString(item, "phase") !== "commentary";
+}
+
+function isRawVisibleAssistantCompletionNotification(
+  notification: CodexServerNotification,
+): boolean {
   if (notification.method !== "rawResponseItem/completed" || !isJsonObject(notification.params)) {
     return false;
   }
@@ -5423,7 +5453,6 @@ function isRawAssistantCompletionNotification(notification: CodexServerNotificat
     item &&
     readString(item, "type") === "message" &&
     readString(item, "role") === "assistant" &&
-    readString(item, "phase") !== "commentary" &&
     readRawAssistantTextPreview(item),
   );
 }
