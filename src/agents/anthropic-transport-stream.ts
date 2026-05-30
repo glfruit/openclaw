@@ -218,7 +218,10 @@ function isKimiAnthropicProvider(provider: string | undefined): boolean {
 function supportsReasoningContentReplay(
   model: Pick<AnthropicTransportModel, "provider" | "baseUrl">,
 ): boolean {
-  return resolveProviderEndpoint(model.baseUrl).endpointClass === "xiaomi-native";
+  return (
+    isKimiAnthropicProvider(model.provider) ||
+    resolveProviderEndpoint(model.baseUrl).endpointClass === "xiaomi-native"
+  );
 }
 
 function buildAnthropicBetaHeader(

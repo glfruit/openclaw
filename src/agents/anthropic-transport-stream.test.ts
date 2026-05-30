@@ -1255,6 +1255,56 @@ describe("anthropic transport stream", () => {
     ]);
   });
 
+  it("backfills empty reasoning_content thinking blocks for Kimi Anthropic tool-use replays", async () => {
+    await runTransportStream(
+      makeAnthropicTransportModel({
+        id: "kimi-k2.6",
+        name: "Kimi K2.6",
+        provider: "kimi",
+        baseUrl: "https://api.moonshot.cn/anthropic",
+      }),
+      {
+        messages: [
+          { role: "user", content: "look this up" },
+          {
+            role: "assistant",
+            provider: "kimi",
+            api: "anthropic-messages",
+            model: "kimi-k2.6",
+            stopReason: "toolUse",
+            timestamp: 0,
+            content: [{ type: "toolCall", id: "call_1", name: "lookup", arguments: {} }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            content: [{ type: "text", text: "found" }],
+            isError: false,
+          },
+          { role: "user", content: "continue" },
+        ],
+      } as AnthropicStreamContext,
+      {
+        apiKey: "sk-kimi-test",
+        reasoning: "high",
+      } as AnthropicStreamOptions,
+    );
+
+    const assistantMessage = findRecord(
+      latestAnthropicRequest().payload.messages,
+      (record) => record.role === "assistant",
+    );
+    expect(assistantMessage).not.toHaveProperty("reasoning_content");
+    expect(assistantMessage.content).toEqual([
+      {
+        type: "thinking",
+        thinking: "",
+        signature: "reasoning_content",
+      },
+      { type: "tool_use", id: "call_1", name: "lookup", input: {} },
+    ]);
+  });
+
   it("backfills empty reasoning_content thinking blocks for compatible Anthropic text replays", async () => {
     await runTransportStream(
       makeAnthropicTransportModel({

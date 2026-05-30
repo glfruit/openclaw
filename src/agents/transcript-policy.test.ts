@@ -144,7 +144,13 @@ vi.mock("../plugins/provider-hook-runtime.js", async () => {
             case "kimi":
             case "kimi-code":
               return {
+                sanitizeMode: "full",
+                sanitizeToolCallIds: true,
+                toolCallIdMode: "strict",
                 preserveSignatures: false,
+                repairToolUseResultPairing: true,
+                validateAnthropicTurns: true,
+                allowSyntheticToolResults: true,
               };
             case "openrouter":
             case "opencode":
@@ -504,6 +510,22 @@ describe("resolveTranscriptPolicy", () => {
     expect(policy.sanitizeToolCallIds).toBe(true);
     expect(policy.preserveSignatures).toBe(true);
     expect(policy.validateAnthropicTurns).toBe(true);
+  });
+
+  it("uses strict Anthropic-compatible replay policy for Kimi transports", () => {
+    const policy = resolveTranscriptPolicy({
+      provider: "kimi",
+      modelId: "kimi-k2.6",
+      modelApi: "anthropic-messages",
+    });
+
+    expect(policy.sanitizeMode).toBe("full");
+    expect(policy.sanitizeToolCallIds).toBe(true);
+    expect(policy.toolCallIdMode).toBe("strict");
+    expect(policy.preserveSignatures).toBe(false);
+    expect(policy.repairToolUseResultPairing).toBe(true);
+    expect(policy.validateAnthropicTurns).toBe(true);
+    expect(policy.allowSyntheticToolResults).toBe(true);
   });
 
   it("uses provider-owned OpenAI-compatible replay policy for MiniMax portal completions", () => {
