@@ -53,7 +53,7 @@ export function getInvalidPersistedCronJobReason(
   }
   const payloadRecord = payload as Record<string, unknown>;
   const payloadKind = payloadRecord.kind;
-  if (payloadKind !== "systemEvent" && payloadKind !== "agentTurn") {
+  if (payloadKind !== "systemEvent" && payloadKind !== "agentTurn" && payloadKind !== "command") {
     return "invalid-payload";
   }
   if (payloadKind === "systemEvent") {
@@ -65,6 +65,56 @@ export function getInvalidPersistedCronJobReason(
   if (payloadKind === "agentTurn") {
     const message = payloadRecord.message;
     if (typeof message !== "string" || message.trim().length === 0) {
+      return "invalid-payload";
+    }
+  }
+  if (payloadKind === "command") {
+    const command = payloadRecord.command;
+    if (typeof command !== "string" || command.trim().length === 0) {
+      return "invalid-payload";
+    }
+    const args = payloadRecord.args;
+    if (
+      args !== undefined &&
+      (!Array.isArray(args) || !args.every((entry) => typeof entry === "string"))
+    ) {
+      return "invalid-payload";
+    }
+    const cwd = payloadRecord.cwd;
+    if (cwd !== undefined && typeof cwd !== "string") {
+      return "invalid-payload";
+    }
+    const env = payloadRecord.env;
+    if (
+      env !== undefined &&
+      (!env ||
+        typeof env !== "object" ||
+        Array.isArray(env) ||
+        !Object.values(env as Record<string, unknown>).every((value) => typeof value === "string"))
+    ) {
+      return "invalid-payload";
+    }
+    const timeoutSeconds = payloadRecord.timeoutSeconds;
+    if (
+      timeoutSeconds !== undefined &&
+      (typeof timeoutSeconds !== "number" || !Number.isFinite(timeoutSeconds) || timeoutSeconds < 0)
+    ) {
+      return "invalid-payload";
+    }
+    for (const field of ["successRegex", "failureRegex", "summaryRegex"] as const) {
+      const value = payloadRecord[field];
+      if (value !== undefined && typeof value !== "string") {
+        return "invalid-payload";
+      }
+    }
+    const outputMode = payloadRecord.outputMode;
+    if (
+      outputMode !== undefined &&
+      outputMode !== "lastLine" &&
+      outputMode !== "stdout" &&
+      outputMode !== "json" &&
+      outputMode !== "summary"
+    ) {
       return "invalid-payload";
     }
   }

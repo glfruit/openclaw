@@ -134,6 +134,45 @@ describe("cron service store seam coverage", () => {
     expect((state.storeFileMtimeMs ?? 0) >= (firstMtime ?? 0)).toBe(true);
   });
 
+  it("loads persisted command jobs instead of treating them as invalid payloads", async () => {
+    const { storePath } = await makeStorePath();
+
+    await writeSingleJobStore(storePath, {
+      id: "command-job",
+      name: "command job",
+      enabled: true,
+      createdAtMs: STORE_TEST_NOW - 60_000,
+      updatedAtMs: STORE_TEST_NOW - 60_000,
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "command",
+        command: "/bin/echo",
+        args: ["ok"],
+        cwd: "/tmp",
+        timeoutSeconds: 30,
+        successRegex: "ok",
+      },
+      state: {},
+    });
+
+    const state = createStoreTestState(storePath);
+
+    await ensureLoaded(state);
+
+    const job = findJobOrThrow(state, "command-job");
+    expect(job.payload.kind).toBe("command");
+    if (job.payload.kind === "command") {
+      expect(job.payload.command).toBe("/bin/echo");
+      expect(job.payload.args).toEqual(["ok"]);
+    }
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: "command-job", reason: "invalid-payload" }),
+      expect.stringContaining("skipped invalid persisted job"),
+    );
+  });
+
   it("preserves unsupported payload-kind rows across full persistence without loading them", async () => {
     const { storePath } = await makeStorePath();
 
@@ -151,15 +190,15 @@ describe("cron service store seam coverage", () => {
         state: {},
       },
       {
-        id: "legacy-command",
-        name: "legacy command",
+        id: "legacy-shell-command",
+        name: "legacy shell command",
         enabled: true,
         createdAtMs: STORE_TEST_NOW - 60_000,
         updatedAtMs: STORE_TEST_NOW - 60_000,
         schedule: { kind: "cron", expr: "0 8 * * *", tz: "UTC" },
         sessionTarget: "main",
         wakeMode: "now",
-        payload: { kind: "command", command: "echo daily" },
+        payload: { kind: "shellCommand", command: "echo daily" },
         state: { lastRunAtMs: STORE_TEST_NOW - 3_600_000 },
       },
       {
@@ -179,7 +218,7 @@ describe("cron service store seam coverage", () => {
     await ensureLoaded(state, { skipRecompute: true });
 
     expect(state.store?.jobs.map((job) => job.id)).toEqual(["valid-job"]);
-    expect(() => findJobOrThrow(state, "legacy-command")).toThrow(/unknown cron job id/);
+    expect(() => findJobOrThrow(state, "legacy-shell-command")).toThrow(/unknown cron job id/);
     expect(() => findJobOrThrow(state, "legacy-agentmessage")).toThrow(/unknown cron job id/);
 
     const valid = findJobOrThrow(state, "valid-job");
@@ -191,13 +230,13 @@ describe("cron service store seam coverage", () => {
     };
     expect(config.jobs.map((job) => job.id)).toEqual([
       "valid-job",
-      "legacy-command",
+      "legacy-shell-command",
       "legacy-agentmessage",
     ]);
     expect(config.jobs[0]?.name).toBe("valid job renamed");
     expect(config.jobs[1]).toMatchObject({
-      id: "legacy-command",
-      payload: { kind: "command", command: "echo daily" },
+      id: "legacy-shell-command",
+      payload: { kind: "shellCommand", command: "echo daily" },
       state: { lastRunAtMs: STORE_TEST_NOW - 3_600_000 },
     });
     expect(config.jobs[2]).toMatchObject({
@@ -218,7 +257,7 @@ describe("cron service store seam coverage", () => {
       return msg.includes("skipped invalid persisted job");
     });
     expect(invalidPayloadWarns.map((call) => (call[0] as { jobId?: string }).jobId)).toEqual([
-      "legacy-command",
+      "legacy-shell-command",
       "legacy-agentmessage",
     ]);
   });
@@ -247,7 +286,7 @@ describe("cron service store seam coverage", () => {
         schedule: { kind: "cron", expr: "0 8 * * *", tz: "UTC" },
         sessionTarget: "main",
         wakeMode: "now",
-        payload: { kind: "command", command: "echo stale" },
+        payload: { kind: "shellCommand", command: "echo stale" },
       },
       {
         id: "legacy-jobid-collision",

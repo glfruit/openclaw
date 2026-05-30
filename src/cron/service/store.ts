@@ -59,7 +59,11 @@ function hasUnsupportedStringPayloadKind(candidate: Record<string, unknown>): bo
   }
   const kind = payload.kind;
   return (
-    typeof kind === "string" && kind.trim() !== "" && kind !== "systemEvent" && kind !== "agentTurn"
+    typeof kind === "string" &&
+    kind.trim() !== "" &&
+    kind !== "systemEvent" &&
+    kind !== "agentTurn" &&
+    kind !== "command"
   );
 }
 

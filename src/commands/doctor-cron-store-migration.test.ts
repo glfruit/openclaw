@@ -173,9 +173,9 @@ describe("normalizeStoredCronJobs", () => {
   it("does not normalize unsupported payload kinds into runnable cron jobs", () => {
     const jobs = [
       makeLegacyJob({
-        id: "legacy-command-kind",
+        id: "legacy-shell-command-kind",
         schedule: { kind: "every", everyMs: 60_000, anchorMs: 1 },
-        payload: { kind: "command", command: "echo daily" },
+        payload: { kind: "shellCommand", command: "echo daily" },
       }),
       makeLegacyJob({
         id: "legacy-agentmessage-kind",
