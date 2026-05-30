@@ -1695,10 +1695,6 @@ function extractRawAssistantText(item: JsonObject): string | undefined {
       if (!isJsonObject(entry)) {
         return [];
       }
-      const type = readString(entry, "type");
-      if (type !== "output_text" && type !== "text") {
-        return [];
-      }
       const value = readString(entry, "text");
       return value ? [value] : [];
     })

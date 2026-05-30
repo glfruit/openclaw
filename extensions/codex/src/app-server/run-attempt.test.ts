@@ -5115,7 +5115,7 @@ describe("runCodexAppServerAttempt", () => {
           type: "message",
           id: "raw-status-1",
           role: "assistant",
-          content: [{ type: "output_text", text: "I'm writing the report now." }],
+          content: [{ type: "provider_output_text", text: "I'm writing the report now." }],
         },
       },
     });

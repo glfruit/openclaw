@@ -495,6 +495,34 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.lastAssistant?.content).toEqual([{ type: "text", text: "OK from raw" }]);
   });
 
+  it("uses text-bearing raw assistant response items with provider-specific content types", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("rawResponseItem/completed", {
+        item: {
+          type: "message",
+          id: "raw-provider-text-1",
+          role: "assistant",
+          content: [
+            {
+              type: "provider_output_text",
+              text: "Visible reply from provider-specific raw content.",
+            },
+          ],
+        },
+      }),
+    );
+    await projector.handleNotification(turnCompleted());
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.assistantTexts).toEqual(["Visible reply from provider-specific raw content."]);
+    expect(result.lastAssistant?.content).toEqual([
+      { type: "text", text: "Visible reply from provider-specific raw content." },
+    ]);
+  });
+
   it("attaches native Codex image-generation saved paths as reply media", async () => {
     const projector = await createProjector();
     const savedPath = "/tmp/codex-home/generated_images/session-1/ig_123.png";
