@@ -191,12 +191,73 @@ describe("telegram channel message adapter", () => {
         silent: proveReplyThreadSilent,
         replyTo: proveReplyThreadSilent,
         thread: proveReplyThreadSilent,
+        reconcileUnknownSend: () => {
+          expect(adapter.durableFinal?.reconcileUnknownSend).toBeTypeOf("function");
+        },
         messageSendingHooks: () => {
           expect(adapter.send!.text).toBeTypeOf("function");
         },
         batch: proveBatch,
       },
     });
+  });
+
+  it("allows one bounded text replay for Telegram sendMessage network failures", async () => {
+    const adapter = requireTelegramMessageAdapter();
+
+    expect(
+      adapter.durableFinal?.reconcileUnknownSend?.({
+        cfg: {} as never,
+        queueId: "queue-1",
+        channel: "telegram",
+        to: "-100123",
+        enqueuedAt: Date.now() - 1000,
+        retryCount: 1,
+        lastError: "Network request for 'sendMessage' failed!",
+        platformSendStartedAt: Date.now() - 500,
+        payloads: [{ text: "real answer" }],
+        renderedBatchPlan: {
+          payloadCount: 1,
+          textCount: 1,
+          mediaCount: 0,
+          voiceCount: 0,
+          presentationCount: 0,
+          interactiveCount: 0,
+          channelDataCount: 0,
+          items: [{ index: 0, kinds: ["text"], text: "real answer", mediaUrls: [] }],
+        },
+      }),
+    ).toEqual({ status: "not_sent" });
+  });
+
+  it("does not replay media or repeatedly failed unknown Telegram sends", async () => {
+    const adapter = requireTelegramMessageAdapter();
+
+    expect(
+      adapter.durableFinal?.reconcileUnknownSend?.({
+        cfg: {} as never,
+        queueId: "queue-1",
+        channel: "telegram",
+        to: "-100123",
+        enqueuedAt: Date.now() - 1000,
+        retryCount: 2,
+        lastError: "Network request for 'sendMessage' failed!",
+        payloads: [{ text: "real answer" }],
+      }),
+    ).toMatchObject({ status: "unresolved", retryable: false });
+
+    expect(
+      adapter.durableFinal?.reconcileUnknownSend?.({
+        cfg: {} as never,
+        queueId: "queue-2",
+        channel: "telegram",
+        to: "-100123",
+        enqueuedAt: Date.now() - 1000,
+        retryCount: 1,
+        lastError: "Network request for 'sendMessage' failed!",
+        payloads: [{ text: "caption", mediaUrl: "file:///tmp/a.png" }],
+      }),
+    ).toMatchObject({ status: "unresolved", retryable: false });
   });
 
   it("backs declared live capabilities with adapter proofs", async () => {
