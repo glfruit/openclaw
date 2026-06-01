@@ -11,9 +11,12 @@ import {
   clearAccountEntryFields,
   createChatChannelPlugin,
 } from "openclaw/plugin-sdk/channel-core";
-import { createAccountStatusSink } from "openclaw/plugin-sdk/channel-outbound";
-import { createChannelMessageAdapterFromOutbound } from "openclaw/plugin-sdk/channel-outbound";
 import {
+  type ChannelMessageAdapterShape,
+  type ChannelMessageUnknownSendContext,
+  type ChannelMessageUnknownSendReconciliationResult,
+  createAccountStatusSink,
+  createChannelMessageAdapterFromOutbound,
   resolveOutboundSendDep,
   type OutboundSendDeps,
 } from "openclaw/plugin-sdk/channel-outbound";
@@ -249,7 +252,60 @@ const telegramChannelOutbound = createTelegramOutboundAdapter({
   preferFinalAssistantVisibleText: true,
 });
 
-const telegramMessageAdapter = createChannelMessageAdapterFromOutbound<OpenClawConfig>({
+function isTextOnlyTelegramFinalPayload(ctx: ChannelMessageUnknownSendContext): boolean {
+  if (ctx.payloads.length !== 1) {
+    return false;
+  }
+  const payload = ctx.payloads[0];
+  if (!payload?.text?.trim()) {
+    return false;
+  }
+  if (
+    payload.mediaUrl ||
+    payload.mediaUrls?.some((url) => typeof url === "string" && url.trim()) ||
+    payload.presentation ||
+    payload.interactive ||
+    (payload.channelData && Object.keys(payload.channelData).length > 0)
+  ) {
+    return false;
+  }
+  if (
+    ctx.renderedBatchPlan &&
+    (ctx.renderedBatchPlan.mediaCount > 0 ||
+      ctx.renderedBatchPlan.voiceCount > 0 ||
+      ctx.renderedBatchPlan.presentationCount > 0 ||
+      ctx.renderedBatchPlan.interactiveCount > 0 ||
+      ctx.renderedBatchPlan.channelDataCount > 0)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function reconcileTelegramUnknownSend(
+  ctx: ChannelMessageUnknownSendContext,
+): ChannelMessageUnknownSendReconciliationResult {
+  const lastError = ctx.lastError ?? "";
+  const sendMessageNetworkFailure =
+    /Network request for ['"]sendMessage['"] failed/i.test(lastError) ||
+    /telegram message failed:\s*Network request for ['"]sendMessage['"] failed/i.test(lastError);
+
+  // Telegram Bot API has no reliable post-hoc lookup for a specific outbound
+  // text by queue id. For a single text final reply that failed with grammY's
+  // generic sendMessage network error, one bounded replay is preferable to
+  // surfacing "No response generated" and permanently dropping the real answer.
+  if (sendMessageNetworkFailure && ctx.retryCount <= 1 && isTextOnlyTelegramFinalPayload(ctx)) {
+    return { status: "not_sent" };
+  }
+
+  return {
+    status: "unresolved",
+    error: lastError || "telegram unknown send state cannot be reconciled",
+    retryable: false,
+  };
+}
+
+const telegramMessageAdapterBase = createChannelMessageAdapterFromOutbound<OpenClawConfig>({
   id: "telegram",
   live: {
     capabilities: {
@@ -272,6 +328,17 @@ const telegramMessageAdapter = createChannelMessageAdapterFromOutbound<OpenClawC
   },
   outbound: telegramChannelOutbound,
 });
+
+const telegramMessageAdapter: ChannelMessageAdapterShape<OpenClawConfig> = {
+  ...telegramMessageAdapterBase,
+  durableFinal: {
+    capabilities: {
+      ...telegramMessageAdapterBase.durableFinal?.capabilities,
+      reconcileUnknownSend: true,
+    },
+    reconcileUnknownSend: reconcileTelegramUnknownSend,
+  },
+};
 
 const telegramMessageActions: ChannelMessageActionAdapter = {
   resolveExecutionMode: (ctx) =>
