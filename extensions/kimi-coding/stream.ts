@@ -51,6 +51,7 @@ const KIMI_ANTHROPIC_THINKING_BUDGETS: Record<Exclude<KimiThinkingLevel, "off">,
 };
 const KIMI_ANTHROPIC_VISIBLE_OUTPUT_RESERVE_TOKENS = 1024;
 const KIMI_ANTHROPIC_MIN_OUTPUT_TOKENS = 16000;
+const KIMI_PLACEHOLDER_REASONING_CONTENT = " ";
 
 function normalizeKimiThinkingBudgetTokens(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -83,7 +84,7 @@ function ensureKimiAnthropicMaxTokens(
   payloadObj.max_tokens = current === undefined ? required : Math.max(current, required);
 }
 
-function ensureKimiOpenAIReasoningContent(payloadObj: Record<string, unknown>): void {
+function ensureKimiReasoningContent(payloadObj: Record<string, unknown>): void {
   if (!Array.isArray(payloadObj.messages)) {
     return;
   }
@@ -96,7 +97,7 @@ function ensureKimiOpenAIReasoningContent(payloadObj: Record<string, unknown>): 
       continue;
     }
     if (!("reasoning_content" in record)) {
-      record.reasoning_content = "";
+      record.reasoning_content = KIMI_PLACEHOLDER_REASONING_CONTENT;
     }
   }
 }
@@ -381,12 +382,13 @@ export function createKimiThinkingWrapper(
         typeof thinkingConfig === "string" ? { type: thinkingConfig } : thinkingConfig;
       payloadObj.thinking =
         model.api === "anthropic-messages" ? { ...normalized } : { type: normalized.type };
-      if (model.api === "anthropic-messages") {
-        ensureKimiAnthropicMaxTokens(payloadObj, normalized);
-      } else if (normalized.type === "enabled") {
-        ensureKimiOpenAIReasoningContent(payloadObj);
+      if (normalized.type === "enabled") {
+        ensureKimiReasoningContent(payloadObj);
       } else {
         stripKimiOpenAIReasoningContent(payloadObj);
+      }
+      if (model.api === "anthropic-messages") {
+        ensureKimiAnthropicMaxTokens(payloadObj, normalized);
       }
       delete payloadObj.reasoning;
       delete payloadObj.reasoning_effort;
