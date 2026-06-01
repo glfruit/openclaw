@@ -108,6 +108,55 @@ describe("cron service store seam coverage", () => {
     await persist(state);
   });
 
+  it("preserves isolated command payload jobs when loading persisted stores", async () => {
+    const { storePath } = await makeStorePath();
+
+    await writeSingleJobStore(storePath, {
+      id: "valid-command-job",
+      name: "valid command job",
+      enabled: true,
+      createdAtMs: STORE_TEST_NOW - 60_000,
+      updatedAtMs: STORE_TEST_NOW - 60_000,
+      schedule: { kind: "every", everyMs: 300_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "command",
+        command: "/usr/bin/true",
+        args: ["--version"],
+        cwd: "/tmp",
+        env: { OPENCLAW_TEST: "1" },
+        timeoutSeconds: 30,
+        successRegex: "ok",
+        failureRegex: "fail",
+        summaryRegex: "summary:(.*)",
+        outputMode: "summary",
+      },
+      state: {},
+    });
+
+    const state = createStoreTestState(storePath);
+
+    await ensureLoaded(state);
+
+    const job = findJobOrThrow(state, "valid-command-job");
+    expect(job.sessionTarget).toBe("isolated");
+    expect(job.payload.kind).toBe("command");
+    if (job.payload.kind === "command") {
+      expect(job.payload.command).toBe("/usr/bin/true");
+      expect(job.payload.args).toEqual(["--version"]);
+      expect(job.payload.cwd).toBe("/tmp");
+      expect(job.payload.env).toEqual({ OPENCLAW_TEST: "1" });
+      expect(job.payload.timeoutSeconds).toBe(30);
+      expect(job.payload.successRegex).toBe("ok");
+      expect(job.payload.failureRegex).toBe("fail");
+      expect(job.payload.summaryRegex).toBe("summary:(.*)");
+      expect(job.payload.outputMode).toBe("summary");
+    }
+
+    await expectPathMissing(storePath);
+  });
+
   it("loads normalized jobId-only jobs from SQLite so scheduler lookups resolve by stable id", async () => {
     const { storePath } = await makeStorePath();
 

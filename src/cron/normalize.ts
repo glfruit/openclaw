@@ -325,7 +325,7 @@ function coercePayload(payload: UnknownRecord) {
     }
     if (
       typeof next.outputMode !== "string" ||
-      !["lastLine", "stdout", "json"].includes(next.outputMode)
+      !["lastLine", "stdout", "json", "summary"].includes(next.outputMode)
     ) {
       delete next.outputMode;
     }
