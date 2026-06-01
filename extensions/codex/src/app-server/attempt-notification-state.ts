@@ -5,7 +5,6 @@ import {
   isCodexTurnAbortMarkerNotification,
   isNativeToolProgressNotification,
   isPendingOpenClawDynamicToolCompletionNotification,
-  isRawAssistantCompletionNotification,
   isRawVisibleAssistantCompletionNotification,
   isRawReasoningCompletionNotification,
   isRawToolOutputCompletionNotification,

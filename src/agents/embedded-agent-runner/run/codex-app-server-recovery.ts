@@ -39,3 +39,14 @@ export function resolveCodexAppServerClientCloseRetry(params: {
   }
   return { retry: true };
 }
+
+export function isReplaySafeCodexAppServerTurnCompletionIdleTimeout(
+  attempt: EmbeddedRunAttemptResult,
+): boolean {
+  const failure = attempt.codexAppServerFailure;
+  return Boolean(
+    failure?.kind === "turn_completion_idle_timeout" &&
+    failure.replaySafe &&
+    attempt.replayMetadata.replaySafe,
+  );
+}

@@ -165,7 +165,7 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
   });
 
-  it("does not hand Codex app-server idle timeouts to model fallback", async () => {
+  it("hands replay-safe Codex app-server idle timeouts to model fallback", async () => {
     mockedClassifyFailoverReason.mockReturnValue("timeout");
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
@@ -199,12 +199,51 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
       }),
     });
 
+    await expect(promise).rejects.toBeInstanceOf(MockedFailoverError);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+    expect(mockedMarkAuthProfileFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not hand replay-unsafe Codex app-server idle timeouts to model fallback", async () => {
+    mockedClassifyFailoverReason.mockReturnValue("timeout");
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        promptError: new Error("codex app-server turn idle timed out waiting for turn/completed"),
+        promptErrorSource: "prompt",
+        codexAppServerFailure: {
+          kind: "turn_completion_idle_timeout",
+          transport: "stdio",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          replaySafe: false,
+          replayBlockedReason: "tool_activity",
+        },
+      }),
+    );
+
+    const promise = runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "codex",
+      model: "gpt-5.5",
+      runId: "run-codex-turn-completion-idle-timeout-unsafe-fallback",
+      config: makeModelFallbackCfg({
+        agents: {
+          defaults: {
+            model: {
+              primary: "openai-codex/gpt-5.5",
+              fallbacks: ["anthropic/claude-opus-4-6"],
+            },
+          },
+        },
+      }),
+    });
+
     await expect(promise).rejects.not.toBeInstanceOf(MockedFailoverError);
     await expect(promise).rejects.toThrow(
       "codex app-server turn idle timed out waiting for turn/completed",
     );
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
-    expect(mockedMarkAuthProfileFailure).not.toHaveBeenCalled();
   });
 
   it("does not retry after visible assistant output", async () => {

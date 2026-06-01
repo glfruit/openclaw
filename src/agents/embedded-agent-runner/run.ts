@@ -134,7 +134,10 @@ import { forgetPromptBuildDrainCacheForRun } from "./run/attempt.prompt-helpers.
 import { createEmbeddedRunAuthController } from "./run/auth-controller.js";
 import { resolveAuthProfileFailureReason } from "./run/auth-profile-failure-policy.js";
 import { runEmbeddedAttemptWithBackend } from "./run/backend.js";
-import { resolveCodexAppServerClientCloseRetry } from "./run/codex-app-server-recovery.js";
+import {
+  isReplaySafeCodexAppServerTurnCompletionIdleTimeout,
+  resolveCodexAppServerClientCloseRetry,
+} from "./run/codex-app-server-recovery.js";
 import { createFailoverDecisionLogger } from "./run/failover-observation.js";
 import { mergeRetryFailoverReason, resolveRunFailoverDecision } from "./run/failover-policy.js";
 import { hasEmbeddedRunConfiguredModelFallbacks } from "./run/fallbacks.js";
@@ -2389,7 +2392,10 @@ export async function runEmbeddedAgent(
               );
               continue;
             }
-            if (attempt.codexAppServerFailure) {
+            if (
+              attempt.codexAppServerFailure &&
+              !isReplaySafeCodexAppServerTurnCompletionIdleTimeout(attempt)
+            ) {
               throw promptError;
             }
           }
@@ -2504,8 +2510,13 @@ export async function runEmbeddedAgent(
                 },
               };
             }
+            const replaySafeCodexAppServerIdleTimeout =
+              isReplaySafeCodexAppServerTurnCompletionIdleTimeout(attempt);
             const promptFailoverReason =
-              promptErrorDetails.reason ?? classifyFailoverReason(errorText, { provider });
+              promptErrorDetails.reason ??
+              (replaySafeCodexAppServerIdleTimeout
+                ? "timeout"
+                : classifyFailoverReason(errorText, { provider }));
             const promptProfileFailureReason = resolveRunAuthProfileFailureReason(
               promptFailoverReason,
               {
@@ -2544,7 +2555,8 @@ export async function runEmbeddedAgent(
               fallbackConfigured,
               failoverFailure: promptFailoverFailure,
               failoverReason: promptFailoverReason,
-              harnessOwnsTransport: pluginHarnessOwnsTransport,
+              harnessOwnsTransport:
+                pluginHarnessOwnsTransport && !replaySafeCodexAppServerIdleTimeout,
               profileRotated: false,
             });
             if (
@@ -2583,7 +2595,8 @@ export async function runEmbeddedAgent(
                 fallbackConfigured,
                 failoverFailure: promptFailoverFailure,
                 failoverReason: promptFailoverReason,
-                harnessOwnsTransport: pluginHarnessOwnsTransport,
+                harnessOwnsTransport:
+                  pluginHarnessOwnsTransport && !replaySafeCodexAppServerIdleTimeout,
                 profileRotated: true,
               });
             }
