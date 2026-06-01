@@ -1,5 +1,4 @@
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
-import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import {
   createAgentToolResultMiddlewareRunner,
   createCodexAppServerToolResultExtensionRunner,
@@ -21,6 +20,7 @@ import {
   type MessagingToolSourceReplyPayload,
   wrapToolWithBeforeToolCallHook,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { emitTrustedDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 import type { ImageContent, TextContent } from "openclaw/plugin-sdk/llm";
 import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
@@ -37,6 +37,7 @@ import {
   type CodexDynamicToolSpec,
   type JsonValue,
 } from "./protocol.js";
+import { isLikelySideEffectingDynamicToolCall } from "./side-effect-classifier.js";
 
 type CodexDynamicToolHookContext = {
   agentId?: string;
@@ -233,18 +234,25 @@ export function createCodexDynamicToolBridge(params: {
           },
           terminalType,
         );
-        withDynamicToolTermination(
-          response,
+        const terminate =
           rawResult.terminate === true ||
-            result.terminate === true ||
-            isToolResultYield(rawResult) ||
-            isToolResultYield(result),
-        );
-        withDynamicToolAsyncStarted(
+          result.terminate === true ||
+          isToolResultYield(rawResult) ||
+          isToolResultYield(result);
+        const asyncStarted =
+          isAsyncStartedToolResult(rawResult) || isAsyncStartedToolResult(result);
+        withDynamicToolTermination(response, terminate);
+        withDynamicToolAsyncStarted(response, asyncStarted);
+        return withSideEffectEvidence(
           response,
-          isAsyncStartedToolResult(rawResult) || isAsyncStartedToolResult(result),
+          isLikelySideEffectingDynamicToolCall({
+            toolName: tool.name,
+            args,
+            terminalType,
+            asyncStarted,
+            terminate,
+          }),
         );
-        return withSideEffectEvidence(response, terminalType !== "blocked");
       } catch (error) {
         collectToolTelemetry({
           toolName: tool.name,
@@ -278,7 +286,14 @@ export function createCodexDynamicToolBridge(params: {
             },
             "error",
           ),
-          didStartExecution,
+          didStartExecution &&
+            isLikelySideEffectingDynamicToolCall({
+              toolName: tool.name,
+              args,
+              terminalType: "error",
+              asyncStarted: false,
+              terminate: false,
+            }),
         );
       }
     },

@@ -2371,6 +2371,63 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.replayMetadata).toEqual({ hadPotentialSideEffects: false, replaySafe: true });
   });
 
+  it("treats read-only native command completions as replay-safe", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          id: "cmd-readonly",
+          type: "commandExecution",
+          command: 'rg -n "turn_completion_idle_timeout" extensions/codex/src/app-server',
+          status: "completed",
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.replayMetadata).toEqual({ hadPotentialSideEffects: false, replaySafe: true });
+  });
+
+  it("treats mutating native command completions as side-effect evidence", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          id: "cmd-mutating",
+          type: "commandExecution",
+          command: "touch done.txt",
+          status: "completed",
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.replayMetadata).toEqual({ hadPotentialSideEffects: true, replaySafe: false });
+  });
+
+  it("treats native command write redirection as side-effect evidence", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          id: "cmd-redirect",
+          type: "commandExecution",
+          command: "cat package.json > out.json",
+          status: "completed",
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.replayMetadata).toEqual({ hadPotentialSideEffects: true, replaySafe: false });
+  });
+
   it("treats completed native MCP tool calls as side-effect evidence", async () => {
     const projector = await createProjector();
 
