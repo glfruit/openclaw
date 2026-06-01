@@ -406,10 +406,11 @@ describe("kimi tool-call markup wrapper", () => {
     });
   });
 
-  it("backfills Kimi OpenAI-compatible tool-call reasoning_content when thinking is enabled", () => {
+  it("backfills Kimi OpenAI-compatible assistant reasoning_content when thinking is enabled", () => {
     const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
       messages: [
         { role: "user", content: "run pwd" },
+        { role: "assistant", content: "plain replay" },
         {
           role: "assistant",
           content: null,
@@ -450,6 +451,7 @@ describe("kimi tool-call markup wrapper", () => {
     expect(getCapturedPayload()).toEqual({
       messages: [
         { role: "user", content: "run pwd" },
+        { role: "assistant", content: "plain replay", reasoning_content: "" },
         {
           role: "assistant",
           content: null,

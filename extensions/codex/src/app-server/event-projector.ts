@@ -42,6 +42,7 @@ import {
 import { readRecentCodexRateLimits, rememberCodexRateLimits } from "./rate-limit-cache.js";
 import { formatCodexUsageLimitErrorMessage } from "./rate-limits.js";
 import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
+import { isLikelyMutatingShellCommand } from "./side-effect-classifier.js";
 import {
   resolveCodexToolProgressDetailMode,
   sanitizeCodexAgentEventRecord,
@@ -2079,7 +2080,13 @@ function shouldRecordNativeToolTranscript(item: CodexThreadItem): boolean {
 }
 
 function isMutatingNativeToolItem(item: CodexThreadItem): boolean {
-  return item.type === "commandExecution" || item.type === "fileChange";
+  if (item.type === "fileChange") {
+    return true;
+  }
+  if (item.type === "commandExecution") {
+    return typeof item.command !== "string" || isLikelyMutatingShellCommand(item.command);
+  }
+  return false;
 }
 
 function nativeToolActionFingerprint(item: CodexThreadItem): string | undefined {
