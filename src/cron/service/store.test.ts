@@ -163,6 +163,22 @@ describe("cron service store seam coverage", () => {
         state: { lastRunAtMs: STORE_TEST_NOW - 3_600_000 },
       },
       {
+        id: "valid-command",
+        name: "valid command",
+        enabled: true,
+        createdAtMs: STORE_TEST_NOW - 60_000,
+        updatedAtMs: STORE_TEST_NOW - 60_000,
+        schedule: { kind: "every", everyMs: 300_000 },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: {
+          kind: "command",
+          command: "/usr/bin/true",
+          timeoutSeconds: 30,
+        },
+        state: {},
+      },
+      {
         id: "legacy-agentmessage",
         name: "legacy agentmessage",
         enabled: true,
@@ -178,7 +194,7 @@ describe("cron service store seam coverage", () => {
     const state = createStoreTestState(storePath);
     await ensureLoaded(state, { skipRecompute: true });
 
-    expect(state.store?.jobs.map((job) => job.id)).toEqual(["valid-job"]);
+    expect(state.store?.jobs.map((job) => job.id)).toEqual(["valid-job", "valid-command"]);
     expect(() => findJobOrThrow(state, "legacy-command")).toThrow(/unknown cron job id/);
     expect(() => findJobOrThrow(state, "legacy-agentmessage")).toThrow(/unknown cron job id/);
 
@@ -189,7 +205,7 @@ describe("cron service store seam coverage", () => {
     const config = JSON.parse(await fs.readFile(storePath, "utf8")) as {
       jobs: Array<Record<string, unknown>>;
     };
-    expect(config.jobs.map((job) => job.id)).toEqual(["valid-job"]);
+    expect(config.jobs.map((job) => job.id)).toEqual(["valid-job", "valid-command"]);
     expect(config.jobs[0]?.name).toBe("valid job renamed");
 
     const quarantine = JSON.parse(
@@ -216,7 +232,7 @@ describe("cron service store seam coverage", () => {
     const stateFile = JSON.parse(
       await fs.readFile(storePath.replace(/\.json$/, "-state.json"), "utf8"),
     ) as { jobs: Record<string, unknown> };
-    expect(Object.keys(stateFile.jobs)).toEqual(["valid-job"]);
+    expect(Object.keys(stateFile.jobs)).toEqual(["valid-job", "valid-command"]);
 
     const invalidPayloadWarns = logger.warn.mock.calls.filter((call) => {
       const msg = typeof call[1] === "string" ? call[1] : "";
