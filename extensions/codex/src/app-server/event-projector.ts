@@ -43,6 +43,7 @@ import {
 import { readRecentCodexRateLimits, rememberCodexRateLimits } from "./rate-limit-cache.js";
 import { formatCodexUsageLimitErrorMessage } from "./rate-limits.js";
 import { readCodexMirroredSessionHistoryMessages } from "./session-history.js";
+import { isLikelyMutatingShellCommand } from "./side-effect-classifier.js";
 import {
   resolveCodexToolProgressDetailMode,
   sanitizeCodexAgentEventRecord,
@@ -2248,9 +2249,7 @@ function shouldRecordNativeToolTranscript(item: CodexThreadItem): boolean {
 
 function isMutatingNativeToolItem(item: CodexThreadItem): boolean {
   if (item.type === "commandExecution") {
-    // Codex commandActions describe presentation, not safety. Upstream may
-    // classify mutating commands as read/search, so native commands fail closed.
-    return true;
+    return typeof item.command !== "string" || isLikelyMutatingShellCommand(item.command);
   }
   return (
     item.type === "fileChange" ||

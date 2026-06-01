@@ -52,6 +52,7 @@ import type {
   CodexDynamicToolSpec,
   JsonValue,
 } from "./protocol.js";
+import { isLikelySideEffectingDynamicToolCall } from "./side-effect-classifier.js";
 
 type CodexDynamicToolHookContext = {
   agentId?: string;
@@ -358,22 +359,31 @@ export function createCodexDynamicToolBridge(params: {
           },
           terminalType,
         );
-        withDynamicToolTermination(
-          response,
+        const terminate =
           rawResult.terminate === true ||
-            result.terminate === true ||
-            isToolResultYield(rawResult) ||
-            isToolResultYield(result),
-        );
+          result.terminate === true ||
+          isToolResultYield(rawResult) ||
+          isToolResultYield(result);
         const asyncStarted =
           isAsyncStartedToolResult(rawResult) || isAsyncStartedToolResult(result);
+        withDynamicToolTermination(response, terminate);
         withDynamicToolAsyncStarted(response, asyncStarted);
         const replaySafe =
           executionPrevented ||
           (!asyncStarted &&
             isReplaySafeToolInstance(toolEntry.tool) &&
             isReplaySafeToolCall(toolName, executedArgs));
-        return withSideEffectEvidence(response, !replaySafe);
+        return withSideEffectEvidence(
+          response,
+          !replaySafe &&
+            isLikelySideEffectingDynamicToolCall({
+              toolName: tool.name,
+              args: executedArgs,
+              terminalType,
+              asyncStarted,
+              terminate,
+            }),
+        );
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         const adjustedExecutedArgs = consumeAdjustedParamsForToolCall(
@@ -434,7 +444,15 @@ export function createCodexDynamicToolBridge(params: {
             },
             "error",
           ),
-          didStartExecution && !replaySafe,
+          didStartExecution &&
+            !replaySafe &&
+            isLikelySideEffectingDynamicToolCall({
+              toolName: tool.name,
+              args: executedArgs,
+              terminalType: "error",
+              asyncStarted: false,
+              terminate: false,
+            }),
         );
       }
     },
