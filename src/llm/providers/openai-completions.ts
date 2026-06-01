@@ -1218,6 +1218,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
     baseUrl.includes("api.together.xyz");
   const isMoonshot =
     provider === "moonshotai" || provider === "moonshotai-cn" || baseUrl.includes("api.moonshot.");
+  const isKimi = provider === "kimi" || baseUrl.includes("api.kimi.com");
   const isCloudflareWorkersAI =
     provider === "cloudflare-workers-ai" || baseUrl.includes("api.cloudflare.com");
   const isCloudflareAiGateway =
@@ -1233,6 +1234,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
     baseUrl.includes("deepseek.com") ||
     isZai ||
     isMoonshot ||
+    isKimi ||
     provider === "opencode" ||
     baseUrl.includes("opencode.ai") ||
     isCloudflareWorkersAI ||
@@ -1256,7 +1258,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
     requiresToolResultName: false,
     requiresAssistantAfterToolResult: false,
     requiresThinkingAsText: false,
-    requiresReasoningContentOnAssistantMessages: isDeepSeek,
+    requiresReasoningContentOnAssistantMessages: isDeepSeek || isMoonshot || isKimi,
     thinkingFormat: isDeepSeek
       ? "deepseek"
       : isZai

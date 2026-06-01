@@ -451,11 +451,11 @@ describe("kimi tool-call markup wrapper", () => {
     expect(getCapturedPayload()).toEqual({
       messages: [
         { role: "user", content: "run pwd" },
-        { role: "assistant", content: "plain replay", reasoning_content: "" },
+        { role: "assistant", content: "plain replay", reasoning_content: " " },
         {
           role: "assistant",
           content: null,
-          reasoning_content: "",
+          reasoning_content: " ",
           tool_calls: [
             {
               id: "call_1",
@@ -475,6 +475,65 @@ describe("kimi tool-call markup wrapper", () => {
               function: { name: "read", arguments: "{}" },
             },
           ],
+        },
+      ],
+      thinking: { type: "enabled" },
+    });
+  });
+
+  it("backfills Kimi Anthropic-compatible assistant reasoning_content when thinking is enabled", () => {
+    const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
+      messages: [
+        { role: "user", content: "run pwd" },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "exec",
+              input: { command: "pwd" },
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "kept" }],
+          reasoning_content: "native reasoning",
+        },
+      ],
+    });
+
+    const wrapped = createKimiThinkingWrapper(baseStreamFn, "enabled");
+    void wrapped(
+      {
+        api: "anthropic-messages",
+        provider: "kimi",
+        id: "k2.6",
+      } as Model<"anthropic-messages">,
+      { messages: [] } as Context,
+      {},
+    );
+
+    expect(getCapturedPayload()).toEqual({
+      messages: [
+        { role: "user", content: "run pwd" },
+        {
+          role: "assistant",
+          reasoning_content: " ",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "exec",
+              input: { command: "pwd" },
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "kept" }],
+          reasoning_content: "native reasoning",
         },
       ],
       thinking: { type: "enabled" },
