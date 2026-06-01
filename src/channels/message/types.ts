@@ -231,6 +231,7 @@ export type ChannelMessageUnknownSendContext<TConfig = OpenClawConfig> = {
   accountId?: string | null;
   enqueuedAt: number;
   retryCount: number;
+  lastError?: string;
   platformSendStartedAt?: number;
   payloads: readonly ReplyPayload[];
   renderedBatchPlan?: RenderedMessageBatchPlan;

@@ -177,6 +177,7 @@ async function reconcileUnknownQueuedDelivery(opts: {
       ...(entry.accountId !== undefined ? { accountId: entry.accountId } : {}),
       enqueuedAt: entry.enqueuedAt,
       retryCount: entry.retryCount,
+      ...(entry.lastError !== undefined ? { lastError: entry.lastError } : {}),
       ...(entry.platformSendStartedAt !== undefined
         ? { platformSendStartedAt: entry.platformSendStartedAt }
         : {}),
