@@ -83,10 +83,6 @@ function ensureKimiAnthropicMaxTokens(
   payloadObj.max_tokens = current === undefined ? required : Math.max(current, required);
 }
 
-function messageHasOpenAIToolCalls(message: Record<string, unknown>): boolean {
-  return Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
-}
-
 function ensureKimiOpenAIReasoningContent(payloadObj: Record<string, unknown>): void {
   if (!Array.isArray(payloadObj.messages)) {
     return;
@@ -96,7 +92,7 @@ function ensureKimiOpenAIReasoningContent(payloadObj: Record<string, unknown>): 
       continue;
     }
     const record = message as Record<string, unknown>;
-    if (record.role !== "assistant" || !messageHasOpenAIToolCalls(record)) {
+    if (record.role !== "assistant") {
       continue;
     }
     if (!("reasoning_content" in record)) {

@@ -1051,7 +1051,7 @@ describe("createCodexDynamicToolBridge", () => {
     expect(Object.keys(result)).not.toContain("terminate");
   });
 
-  it("marks executed dynamic tool results as side-effect evidence", async () => {
+  it("does not mark read-only dynamic exec results as side-effect evidence", async () => {
     const bridge = createBridgeWithToolResult("exec", textToolResult("done"));
 
     const result = await bridge.handleToolCall({
@@ -1061,6 +1061,22 @@ describe("createCodexDynamicToolBridge", () => {
       namespace: null,
       tool: "exec",
       arguments: { command: "pwd" },
+    });
+
+    expect(result).toEqual(expectInputText("done"));
+    expect(result.sideEffectEvidence).toBeUndefined();
+  });
+
+  it("marks mutating dynamic exec results as side-effect evidence", async () => {
+    const bridge = createBridgeWithToolResult("exec", textToolResult("done"));
+
+    const result = await bridge.handleToolCall({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId: "call-1",
+      namespace: null,
+      tool: "exec",
+      arguments: { command: "touch done.txt" },
     });
 
     expect(result).toEqual(expectInputText("done"));

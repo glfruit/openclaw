@@ -41,6 +41,7 @@ import type {
   CodexDynamicToolSpec,
   JsonValue,
 } from "./protocol.js";
+import { isLikelySideEffectingDynamicToolCall } from "./side-effect-classifier.js";
 
 type CodexDynamicToolHookContext = {
   agentId?: string;
@@ -249,18 +250,25 @@ export function createCodexDynamicToolBridge(params: {
           },
           terminalType,
         );
-        withDynamicToolTermination(
-          response,
+        const terminate =
           rawResult.terminate === true ||
-            result.terminate === true ||
-            isToolResultYield(rawResult) ||
-            isToolResultYield(result),
-        );
-        withDynamicToolAsyncStarted(
+          result.terminate === true ||
+          isToolResultYield(rawResult) ||
+          isToolResultYield(result);
+        const asyncStarted =
+          isAsyncStartedToolResult(rawResult) || isAsyncStartedToolResult(result);
+        withDynamicToolTermination(response, terminate);
+        withDynamicToolAsyncStarted(response, asyncStarted);
+        return withSideEffectEvidence(
           response,
-          isAsyncStartedToolResult(rawResult) || isAsyncStartedToolResult(result),
+          isLikelySideEffectingDynamicToolCall({
+            toolName: tool.name,
+            args,
+            terminalType,
+            asyncStarted,
+            terminate,
+          }),
         );
-        return withSideEffectEvidence(response, terminalType !== "blocked");
       } catch (error) {
         collectToolTelemetry({
           toolName,
@@ -294,7 +302,14 @@ export function createCodexDynamicToolBridge(params: {
             },
             "error",
           ),
-          didStartExecution,
+          didStartExecution &&
+            isLikelySideEffectingDynamicToolCall({
+              toolName: tool.name,
+              args,
+              terminalType: "error",
+              asyncStarted: false,
+              terminate: false,
+            }),
         );
       }
     },
