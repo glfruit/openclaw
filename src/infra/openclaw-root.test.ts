@@ -171,6 +171,17 @@ describe("resolveOpenClawPackageRoot", () => {
       },
     },
     {
+      name: "resolves owned scoped package roots",
+      setup: () => {
+        const pkgRoot = fx("owned-scoped-package");
+        setPackageRoot(pkgRoot, "@glfruit/openclaw");
+        return {
+          opts: { moduleUrl: pathToFileURL(path.join(pkgRoot, "dist", "index.js")).toString() },
+          expected: pkgRoot,
+        };
+      },
+    },
+    {
       name: "falls through from a non-openclaw moduleUrl candidate to cwd",
       setup: () => {
         const wrongPkgRoot = fx("moduleurl-fallthrough", "wrong");
