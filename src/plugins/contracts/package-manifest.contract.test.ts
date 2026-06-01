@@ -10,7 +10,10 @@ const packageManifestContractTests: PackageManifestContractParams[] = [
   },
   {
     pluginId: "feishu",
-    pluginLocalRuntimeDeps: ["@larksuiteoapi/node-sdk"],
+    // Owned package note: Feishu is enabled in the local production gateway and
+    // its bundled entrypoint is emitted through the unified dist graph. Keep the
+    // SDK available from the root runtime dependency tree until bundled plugin
+    // local deps are installed before gateway startup in upstream packaging.
     minHostVersionBaseline: "2026.3.22",
   },
   { pluginId: "google" },
