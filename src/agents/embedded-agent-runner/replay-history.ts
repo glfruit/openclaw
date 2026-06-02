@@ -22,6 +22,7 @@ import { isTranscriptOnlyOpenClawAssistantMessage } from "../../shared/transcrip
 import {
   downgradeOpenAIFunctionCallReasoningPairs,
   downgradeOpenAIReasoningBlocks,
+  mergeConsecutiveAssistantTurnsForReplay,
   normalizeOpenAIResponsesToolCallIds,
   sanitizeGoogleTurnOrdering,
   sanitizeSessionMessagesImages,
@@ -743,19 +744,22 @@ export async function sanitizeSessionHistory(params: {
     allowedToolNames: params.allowedToolNames,
     allowProviderOwnedThinkingReplay,
   });
+  const openAISequencedToolCalls = isOpenAIResponsesApi
+    ? mergeConsecutiveAssistantTurnsForReplay(sanitizedToolCalls)
+    : sanitizedToolCalls;
   // OpenAI Responses rejects orphan/missing function_call_output items. Upstream
   // Codex repairs those gaps with "aborted"; keep that before the fc_* downgrade
   // so both call and result ids are rewritten together. Covered by unit replay
   // tests plus live OpenAI/Codex and generic replay-repair model tests.
   const openAIRepairedToolCalls =
     isOpenAIResponsesApi && policy.repairToolUseResultPairing
-      ? sanitizeToolUseResultPairing(sanitizedToolCalls, {
+      ? sanitizeToolUseResultPairing(openAISequencedToolCalls, {
           erroredAssistantResultPolicy: "drop",
           // Match upstream Codex history normalization for OpenAI Responses:
           // missing function_call_output entries are model-visible "aborted".
           missingToolResultText: "aborted",
         })
-      : sanitizedToolCalls;
+      : openAISequencedToolCalls;
   const openAISafeToolCalls = isOpenAIResponsesApi
     ? downgradeOpenAIFunctionCallReasoningPairs(
         normalizeOpenAIResponsesToolCallIds(
