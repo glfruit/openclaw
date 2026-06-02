@@ -336,17 +336,21 @@ function mergeConsecutiveAssistantTurns(
   };
 }
 
+export function mergeConsecutiveAssistantTurnsForReplay(messages: AgentMessage[]): AgentMessage[] {
+  return validateTurnsWithConsecutiveMerge({
+    messages,
+    role: "assistant",
+    merge: mergeConsecutiveAssistantTurns,
+  });
+}
+
 /**
  * Validates and fixes conversation turn sequences for Gemini API.
  * Gemini requires strict alternating user→assistant→tool→user pattern.
  * Merges consecutive assistant messages together.
  */
 export function validateGeminiTurns(messages: AgentMessage[]): AgentMessage[] {
-  return validateTurnsWithConsecutiveMerge({
-    messages,
-    role: "assistant",
-    merge: mergeConsecutiveAssistantTurns,
-  });
+  return mergeConsecutiveAssistantTurnsForReplay(messages);
 }
 
 export function mergeConsecutiveUserTurns(

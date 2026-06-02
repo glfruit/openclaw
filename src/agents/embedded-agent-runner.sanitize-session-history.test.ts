@@ -771,6 +771,140 @@ describe("sanitizeSessionHistory", () => {
     expect(JSON.stringify(result)).not.toContain("missing tool result");
   });
 
+  it("merges consecutive Codex assistant tool-call turns before pairing OpenAI results", async () => {
+    const messages: AgentMessage[] = [
+      makeAssistantMessage([{ type: "toolCall", id: "call_a", name: "bash", arguments: {} }], {
+        stopReason: "toolUse",
+      }),
+      makeAssistantMessage([{ type: "toolCall", id: "call_b", name: "bash", arguments: {} }], {
+        stopReason: "toolUse",
+      }),
+      makeAssistantMessage([{ type: "toolCall", id: "call_c", name: "bash", arguments: {} }], {
+        stopReason: "toolUse",
+      }),
+      castAgentMessage({
+        role: "toolResult",
+        toolCallId: "call_c",
+        toolName: "bash",
+        content: [{ type: "text", text: "c result" }],
+        isError: false,
+      }),
+      castAgentMessage({
+        role: "toolResult",
+        toolCallId: "call_a",
+        toolName: "bash",
+        content: [{ type: "text", text: "a result" }],
+        isError: false,
+      }),
+      castAgentMessage({
+        role: "toolResult",
+        toolCallId: "call_b",
+        toolName: "bash",
+        content: [{ type: "text", text: "b result" }],
+        isError: false,
+      }),
+      makeUserMessage("status?"),
+    ];
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-codex-responses",
+      provider: "openai-codex",
+      sessionManager: mockSessionManager,
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(result.map((message) => message.role)).toEqual([
+      "assistant",
+      "toolResult",
+      "toolResult",
+      "toolResult",
+      "user",
+    ]);
+    expect(
+      extractToolCallsFromAssistant(result[0] as Extract<AgentMessage, { role: "assistant" }>).map(
+        (call) => call.id,
+      ),
+    ).toEqual(["calla", "callb", "callc"]);
+    expect(
+      result.slice(1, 4).map((message) => (message as { toolCallId?: string }).toolCallId),
+    ).toEqual(["calla", "callb", "callc"]);
+    expect((result[1] as Extract<AgentMessage, { role: "toolResult" }>).content).toEqual([
+      { type: "text", text: "a result" },
+    ]);
+    expect((result[2] as Extract<AgentMessage, { role: "toolResult" }>).content).toEqual([
+      { type: "text", text: "b result" },
+    ]);
+    expect((result[3] as Extract<AgentMessage, { role: "toolResult" }>).content).toEqual([
+      { type: "text", text: "c result" },
+    ]);
+  });
+
+  it("synthesizes aborted output when a late result crosses another Codex assistant tool turn", async () => {
+    const messages: AgentMessage[] = [
+      makeAssistantMessage([{ type: "toolCall", id: "call_1", name: "bash", arguments: {} }], {
+        stopReason: "toolUse",
+      }),
+      makeAssistantMessage([{ type: "toolCall", id: "call_2", name: "bash", arguments: {} }], {
+        stopReason: "toolUse",
+      }),
+      castAgentMessage({
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "bash",
+        content: [{ type: "text", text: "first result" }],
+        isError: false,
+      }),
+      makeAssistantMessage([{ type: "toolCall", id: "call_3", name: "bash", arguments: {} }], {
+        stopReason: "toolUse",
+      }),
+      castAgentMessage({
+        role: "toolResult",
+        toolCallId: "call_2",
+        toolName: "bash",
+        content: [{ type: "text", text: "late second result" }],
+        isError: false,
+      }),
+      castAgentMessage({
+        role: "toolResult",
+        toolCallId: "call_3",
+        toolName: "bash",
+        content: [{ type: "text", text: "third result" }],
+        isError: false,
+      }),
+      makeUserMessage("continue"),
+    ];
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-codex-responses",
+      provider: "openai-codex",
+      sessionManager: mockSessionManager,
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(result.map((message) => message.role)).toEqual([
+      "assistant",
+      "toolResult",
+      "toolResult",
+      "assistant",
+      "toolResult",
+      "user",
+    ]);
+    expect((result[1] as Extract<AgentMessage, { role: "toolResult" }>).content).toEqual([
+      { type: "text", text: "first result" },
+    ]);
+    expect((result[2] as { toolCallId?: string }).toolCallId).toBe("call2");
+    expect((result[2] as Extract<AgentMessage, { role: "toolResult" }>).content).toEqual([
+      { type: "text", text: "aborted" },
+    ]);
+    expect((result[4] as { toolCallId?: string }).toolCallId).toBe("call3");
+    expect((result[4] as Extract<AgentMessage, { role: "toolResult" }>).content).toEqual([
+      { type: "text", text: "third result" },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("late second result");
+  });
+
   it("keeps real parallel tool results for openai-responses and aborts missing siblings", async () => {
     const messages: AgentMessage[] = [
       makeAssistantMessage(

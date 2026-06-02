@@ -69,6 +69,7 @@ export {
 export { pickFallbackThinkingLevel } from "./embedded-agent-helpers/thinking.js";
 
 export {
+  mergeConsecutiveAssistantTurnsForReplay,
   mergeConsecutiveUserTurns,
   validateAnthropicTurns,
   validateGeminiTurns,
