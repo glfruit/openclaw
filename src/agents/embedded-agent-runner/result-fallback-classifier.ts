@@ -89,6 +89,44 @@ function classifyBusinessDenialErrorPayloadReason(
   }
 }
 
+function collectTerminalErrorText(result: EmbeddedAgentRunResult): string {
+  const payloadErrorText = (result.payloads ?? [])
+    .filter((payload) => payload?.isError === true)
+    .map((payload) => (typeof payload.text === "string" ? payload.text : ""))
+    .join("\n");
+  return [
+    payloadErrorText,
+    typeof result.meta.finalAssistantRawText === "string" ? result.meta.finalAssistantRawText : "",
+    typeof result.meta.finalAssistantVisibleText === "string"
+      ? result.meta.finalAssistantVisibleText
+      : "",
+  ]
+    .filter((text) => text.trim().length > 0)
+    .join("\n");
+}
+
+function classifyCodexAppServerIncompleteResult(params: {
+  provider: string;
+  model: string;
+  errorText: string;
+}): ModelFallbackResultClassification {
+  if (CODEX_APP_SERVER_INCOMPLETE_SIDE_EFFECT_RE.test(params.errorText)) {
+    return {
+      message: `${params.provider}/${params.model} stopped after tool activity before a final reply`,
+      reason: "format",
+      code: "codex_app_server_incomplete_side_effect",
+    };
+  }
+  if (CODEX_APP_SERVER_INCOMPLETE_RE.test(params.errorText)) {
+    return {
+      message: `${params.provider}/${params.model} stopped before a final reply`,
+      reason: "format",
+      code: "codex_app_server_incomplete_result",
+    };
+  }
+  return null;
+}
+
 /** Returns a fallback classification when an embedded run failed without user-visible output. */
 export function classifyEmbeddedAgentRunResultForModelFallback(params: {
   provider: string;
@@ -101,7 +139,6 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
     return null;
   }
   if (
-    params.result.meta.aborted ||
     params.hasDirectlySentBlockReply === true ||
     params.hasBlockReplyPipelineOutput === true ||
     hasVisibleAgentPayload(params.result, {
@@ -120,6 +157,20 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
     return null;
   }
 
+  const payloads = params.result.payloads ?? [];
+  const errorText = collectTerminalErrorText(params.result);
+  const codexAppServerIncompleteClassification = classifyCodexAppServerIncompleteResult({
+    provider: params.provider,
+    model: params.model,
+    errorText,
+  });
+  if (params.result.meta.aborted && !codexAppServerIncompleteClassification) {
+    return null;
+  }
+  if (codexAppServerIncompleteClassification) {
+    return codexAppServerIncompleteClassification;
+  }
+
   const harnessClassification = classifyHarnessResult({
     provider: params.provider,
     model: params.model,
@@ -129,25 +180,6 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
     return harnessClassification;
   }
 
-  const payloads = params.result.payloads ?? [];
-  const errorText = payloads
-    .filter((payload) => payload?.isError === true)
-    .map((payload) => (typeof payload.text === "string" ? payload.text : ""))
-    .join("\n");
-  if (CODEX_APP_SERVER_INCOMPLETE_SIDE_EFFECT_RE.test(errorText)) {
-    return {
-      message: `${params.provider}/${params.model} stopped after tool activity before a final reply`,
-      reason: "format",
-      code: "codex_app_server_incomplete_side_effect",
-    };
-  }
-  if (CODEX_APP_SERVER_INCOMPLETE_RE.test(errorText)) {
-    return {
-      message: `${params.provider}/${params.model} stopped before a final reply`,
-      reason: "format",
-      code: "codex_app_server_incomplete_result",
-    };
-  }
   if (EMPTY_TERMINAL_REPLY_RE.test(errorText)) {
     return {
       message: `${params.provider}/${params.model} ended with an incomplete terminal response`,
