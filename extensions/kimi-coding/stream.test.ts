@@ -465,6 +465,13 @@ describe("kimi tool-call markup wrapper", () => {
           ],
         },
         {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "exec",
+          content:
+            "[openclaw] missing tool result in session history; inserted synthetic error result for Kimi transcript preflight.",
+        },
+        {
           role: "assistant",
           content: "kept",
           reasoning_content: "native reasoning",
@@ -475,6 +482,13 @@ describe("kimi tool-call markup wrapper", () => {
               function: { name: "read", arguments: "{}" },
             },
           ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_2",
+          name: "read",
+          content:
+            "[openclaw] missing tool result in session history; inserted synthetic error result for Kimi transcript preflight.",
         },
       ],
       thinking: { type: "enabled" },
@@ -531,6 +545,22 @@ describe("kimi tool-call markup wrapper", () => {
           ],
         },
         {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: [
+                {
+                  type: "text",
+                  text: "[openclaw] missing tool result in session history; inserted synthetic error result for Kimi transcript preflight.",
+                },
+              ],
+              is_error: true,
+            },
+          ],
+        },
+        {
           role: "assistant",
           content: [{ type: "text", text: "kept" }],
           reasoning_content: "native reasoning",
@@ -582,8 +612,153 @@ describe("kimi tool-call markup wrapper", () => {
             },
           ],
         },
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "exec",
+          content:
+            "[openclaw] missing tool result in session history; inserted synthetic error result for Kimi transcript preflight.",
+        },
       ],
       thinking: { type: "disabled" },
+    });
+  });
+
+  it("repairs Kimi OpenAI-compatible missing tool results before sending the request", () => {
+    const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
+      messages: [
+        { role: "user", content: "check the file" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "read", arguments: '{"path":"a.md"}' },
+            },
+            {
+              id: "call_2",
+              type: "function",
+              function: { name: "status", arguments: "{}" },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call_2", name: "status", content: "ok" },
+        { role: "tool", tool_call_id: "orphan", name: "status", content: "old orphan" },
+        { role: "user", content: "continue" },
+      ],
+    });
+
+    const wrapped = createKimiThinkingWrapper(baseStreamFn, "enabled");
+    void wrapped(
+      {
+        api: "openai-completions",
+        provider: "kimi",
+        id: "kimi-for-coding",
+      } as Model<"openai-completions">,
+      { messages: [] } as Context,
+      {},
+    );
+
+    expect(getCapturedPayload()).toEqual({
+      messages: [
+        { role: "user", content: "check the file" },
+        {
+          role: "assistant",
+          content: null,
+          reasoning_content: " ",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "read", arguments: '{"path":"a.md"}' },
+            },
+            {
+              id: "call_2",
+              type: "function",
+              function: { name: "status", arguments: "{}" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "read",
+          content:
+            "[openclaw] missing tool result in session history; inserted synthetic error result for Kimi transcript preflight.",
+        },
+        { role: "tool", tool_call_id: "call_2", name: "status", content: "ok" },
+        { role: "user", content: "continue" },
+      ],
+      thinking: { type: "enabled" },
+    });
+  });
+
+  it("repairs Kimi Anthropic-compatible missing tool results before sending the request", () => {
+    const { streamFn: baseStreamFn, getCapturedPayload } = createPayloadCapturingStream({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "check the file" }] },
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_1", name: "read", input: { path: "a.md" } },
+            { type: "tool_use", id: "toolu_2", name: "status", input: {} },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_2", content: "ok" },
+            { type: "tool_result", tool_use_id: "orphan", content: "old orphan" },
+            { type: "text", text: "continue" },
+          ],
+        },
+      ],
+    });
+
+    const wrapped = createKimiThinkingWrapper(baseStreamFn, "enabled");
+    void wrapped(
+      {
+        api: "anthropic-messages",
+        provider: "kimi",
+        id: "k2.6",
+      } as Model<"anthropic-messages">,
+      { messages: [] } as Context,
+      {},
+    );
+
+    expect(getCapturedPayload()).toEqual({
+      messages: [
+        { role: "user", content: [{ type: "text", text: "check the file" }] },
+        {
+          role: "assistant",
+          reasoning_content: " ",
+          content: [
+            { type: "tool_use", id: "toolu_1", name: "read", input: { path: "a.md" } },
+            { type: "tool_use", id: "toolu_2", name: "status", input: {} },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: [
+                {
+                  type: "text",
+                  text: "[openclaw] missing tool result in session history; inserted synthetic error result for Kimi transcript preflight.",
+                },
+              ],
+              is_error: true,
+            },
+            { type: "tool_result", tool_use_id: "toolu_2", content: "ok" },
+          ],
+        },
+        { role: "user", content: [{ type: "text", text: "continue" }] },
+      ],
+      thinking: { type: "enabled" },
     });
   });
 
