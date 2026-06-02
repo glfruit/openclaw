@@ -158,6 +158,7 @@ export function isFallbackSummaryError(err: unknown): err is FallbackSummaryErro
 
 export type ModelFallbackRunOptions = {
   allowTransientCooldownProbe?: boolean;
+  recoveryMode?: "side_effect";
 };
 
 type ModelFallbackRuntimeContext = {
@@ -1244,6 +1245,7 @@ export async function runWithModelFallback<T>(
     : null;
   const attempts: FallbackAttempt[] = [];
   let lastError: unknown;
+  let nextRecoveryMode: ModelFallbackRunOptions["recoveryMode"];
   const cooldownProbeUsedProviders = new Set<string>();
   const observeDecision = async (decision: ModelFallbackDecisionParams) => {
     if (!params.onFallbackStep && !isModelFallbackDecisionLogEnabled()) {
@@ -1336,7 +1338,10 @@ export async function runWithModelFallback<T>(
       }
     }
 
-    let runOptions: ModelFallbackRunOptions | undefined;
+    let runOptions: ModelFallbackRunOptions | undefined = nextRecoveryMode
+      ? { recoveryMode: nextRecoveryMode }
+      : undefined;
+    nextRecoveryMode = undefined;
     let attemptedDuringCooldown = false;
     let transientProbeProviderForAttempt: string | null = null;
     if (authRuntime && authStore && !candidateHarnessAuth.skipsProviderAuthCooldown) {
@@ -1479,7 +1484,7 @@ export async function runWithModelFallback<T>(
             });
             continue;
           }
-          runOptions = { allowTransientCooldownProbe: true };
+          runOptions = { ...runOptions, allowTransientCooldownProbe: true };
           if (isTransientCooldownReason) {
             transientProbeProviderForAttempt = candidate.provider;
           }
@@ -1626,6 +1631,10 @@ export async function runWithModelFallback<T>(
       // Even unrecognized errors should not abort the fallback loop when
       // there are remaining candidates.  Only abort/context-overflow errors
       // (handled above) are truly non-retryable.
+      const describedFailure = describeFailoverError(normalized);
+      if (describedFailure.code === "codex_app_server_incomplete_side_effect") {
+        nextRecoveryMode = "side_effect";
+      }
       const isKnownFailover = isFailoverError(normalized);
       if (!isKnownFailover && i === candidates.length - 1) {
         throw err;

@@ -1420,6 +1420,54 @@ describe("runWithModelFallback", () => {
     });
   });
 
+  it("passes side-effect recovery mode to the next candidate after Codex incomplete tool activity", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai-codex/gpt-5.5",
+            fallbacks: ["zai/glm-5.1"],
+          },
+        },
+      },
+    });
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        payloads: [
+          {
+            text:
+              "OpenClaw detected an incomplete Codex turn after tool activity. " +
+              "I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
+            isError: true,
+          },
+        ],
+        meta: { durationMs: 1 },
+      })
+      .mockResolvedValueOnce({ payloads: [{ text: "recovered" }], meta: { durationMs: 1 } });
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      run,
+      classifyResult: ({ provider, model, result }) =>
+        classifyEmbeddedAgentRunResultForModelFallback({
+          provider,
+          model,
+          result,
+        }),
+    });
+
+    expect(result.result).toEqual({ payloads: [{ text: "recovered" }], meta: { durationMs: 1 } });
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(requireMockCall(run, 1, "recovery fallback")).toEqual([
+      "zai",
+      "glm-5.1",
+      { recoveryMode: "side_effect" },
+    ]);
+  });
+
   it("surfaces classified terminal results when no fallback remains", async () => {
     const cfg = makeCfg({
       agents: {

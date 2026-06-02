@@ -37,6 +37,22 @@ describe("resolveFallbackRetryPrompt", () => {
     ).toBe(`[Retry after the previous model attempt failed or timed out]\n\n${originalBody}`);
   });
 
+  it("uses side-effect recovery instructions instead of a normal retry prompt", () => {
+    const result = resolveFallbackRetryPrompt({
+      body: originalBody,
+      isFallbackRetry: true,
+      sessionHasHistory: true,
+      recoveryMode: "side_effect",
+    });
+    expect(result).toContain(
+      "[Recovery after the previous model attempt stopped after tool or file activity]",
+    );
+    expect(result).toContain("Do not repeat the original task from scratch.");
+    expect(result).toContain("First inspect the current workspace/session state");
+    expect(result).toContain(`Original user request for context:\n${originalBody}`);
+    expect(result).not.toContain("[Retry after the previous model attempt failed or timed out]");
+  });
+
   it("preserves original body for fallback retry when session has no history (subagent spawn)", () => {
     expect(
       resolveFallbackRetryPrompt({
