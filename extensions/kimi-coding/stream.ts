@@ -424,8 +424,21 @@ function stripContentArrayCacheControl(value: unknown): void {
   }
 }
 
+function stripToolDefinitionCacheControl(value: unknown): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+
+  for (const tool of value) {
+    if (tool && typeof tool === "object") {
+      delete (tool as Record<string, unknown>).cache_control;
+    }
+  }
+}
+
 function stripAnthropicCacheControlMarkers(payloadObj: Record<string, unknown>): void {
   stripContentArrayCacheControl(payloadObj.system);
+  stripToolDefinitionCacheControl(payloadObj.tools);
 
   if (!Array.isArray(payloadObj.messages)) {
     return;
