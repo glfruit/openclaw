@@ -316,6 +316,18 @@ describe("kimi tool-call markup wrapper", () => {
           ],
         },
       ],
+      tools: [
+        {
+          name: "read",
+          input_schema: {
+            type: "object",
+            properties: {
+              cache_control: { type: "string" },
+            },
+          },
+          cache_control: { type: "ephemeral" },
+        },
+      ],
     });
 
     const wrapped = createKimiThinkingWrapper(baseStreamFn, "enabled");
@@ -352,6 +364,17 @@ describe("kimi tool-call markup wrapper", () => {
             },
             { type: "text", text: "bye" },
           ],
+        },
+      ],
+      tools: [
+        {
+          name: "read",
+          input_schema: {
+            type: "object",
+            properties: {
+              cache_control: { type: "string" },
+            },
+          },
         },
       ],
       thinking: { type: "enabled" },
