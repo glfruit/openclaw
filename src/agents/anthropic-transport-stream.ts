@@ -220,7 +220,16 @@ function isKimiAnthropicProvider(provider: string | undefined): boolean {
 function supportsReasoningContentReplay(
   model: Pick<AnthropicTransportModel, "provider" | "baseUrl">,
 ): boolean {
-  return resolveProviderEndpoint(model.baseUrl).endpointClass === "xiaomi-native";
+  return (
+    isKimiAnthropicProvider(model.provider) ||
+    resolveProviderEndpoint(model.baseUrl).endpointClass === "xiaomi-native"
+  );
+}
+
+function requiresTopLevelReasoningContentReplay(
+  model: Pick<AnthropicTransportModel, "provider">,
+): boolean {
+  return isKimiAnthropicProvider(model.provider);
 }
 
 function buildAnthropicBetaHeader(
@@ -429,6 +438,9 @@ function convertAnthropicMessages(
             thinking: "",
             signature: "reasoning_content",
           });
+          if (requiresTopLevelReasoningContentReplay(model)) {
+            assistantMsg.reasoning_content = "";
+          }
         }
         params.push(assistantMsg);
       }
