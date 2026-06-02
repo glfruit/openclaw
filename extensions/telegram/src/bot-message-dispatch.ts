@@ -2621,7 +2621,8 @@ export const dispatchTelegramMessage = async ({
     !suppressFailureFallback &&
     (dispatchError ||
       (!deliverySummary.delivered &&
-        (deliverySummary.skippedNonSilent > 0 || deliverySummary.failedNonSilent > 0)));
+        deliverySummary.skippedNonSilent > 0 &&
+        deliverySummary.failedNonSilent === 0));
   if (shouldSendFailureFallback) {
     const fallbackText = dispatchError
       ? "Something went wrong while processing your request. Please try again."
