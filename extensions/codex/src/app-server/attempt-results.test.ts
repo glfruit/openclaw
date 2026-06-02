@@ -151,7 +151,15 @@ describe("Codex app-server attempt results", () => {
     expect(
       resolveCodexAppServerReplayBlockedReason(
         createResult({
-          toolMetas: [{ name: "exec" }] as never,
+          toolMetas: [{ toolName: "bash" }],
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      resolveCodexAppServerReplayBlockedReason(
+        createResult({
+          replayMetadata: { hadPotentialSideEffects: false, replaySafe: false },
+          toolMetas: [{ toolName: "bash" }],
         }),
       ),
     ).toBe("tool_activity");
