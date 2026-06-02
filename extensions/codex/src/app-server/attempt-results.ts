@@ -58,12 +58,10 @@ export function resolveCodexAppServerReplayBlockedReason(
   if (result.assistantTexts.some((text) => text.trim().length > 0)) {
     return "assistant_output";
   }
-  if (
-    result.toolMetas.length > 0 ||
-    result.clientToolCalls ||
-    result.lastToolError ||
-    result.didSendDeterministicApprovalPrompt
-  ) {
+  if (result.toolMetas.length > 0 && !result.replayMetadata.replaySafe) {
+    return "tool_activity";
+  }
+  if (result.clientToolCalls || result.lastToolError || result.didSendDeterministicApprovalPrompt) {
     return "tool_activity";
   }
   if (result.itemLifecycle.startedCount > 0 || result.itemLifecycle.activeCount > 0) {
