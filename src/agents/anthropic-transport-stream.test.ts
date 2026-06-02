@@ -1471,6 +1471,56 @@ describe("anthropic transport stream", () => {
     ]);
   });
 
+  it("backfills top-level reasoning_content for Kimi tool-use replays", async () => {
+    await runTransportStream(
+      makeAnthropicTransportModel({
+        id: "k2.6",
+        name: "Kimi K2.6",
+        provider: "kimi-coding",
+        baseUrl: "https://api.kimi.com/coding/",
+      }),
+      {
+        messages: [
+          { role: "user", content: "render the figure" },
+          {
+            role: "assistant",
+            provider: "kimi-coding",
+            api: "anthropic-messages",
+            model: "k2.6",
+            stopReason: "toolUse",
+            timestamp: 0,
+            content: [{ type: "toolCall", id: "call_1", name: "render", arguments: {} }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_1",
+            content: [{ type: "text", text: "rendered" }],
+            isError: false,
+          },
+          { role: "user", content: "continue" },
+        ],
+      } as AnthropicStreamContext,
+      {
+        apiKey: "sk-kimi-test",
+        reasoning: "high",
+      } as AnthropicStreamOptions,
+    );
+
+    const assistantMessage = findRecord(
+      latestAnthropicRequest().payload.messages,
+      (record) => record.role === "assistant",
+    );
+    expect(assistantMessage.reasoning_content).toBe("");
+    expect(assistantMessage.content).toEqual([
+      {
+        type: "thinking",
+        thinking: "",
+        signature: "reasoning_content",
+      },
+      { type: "tool_use", id: "call_1", name: "render", input: {} },
+    ]);
+  });
+
   it("backfills MiMo v2-flash tool-use replay when OpenClaw thinking is off", async () => {
     await runTransportStream(
       makeAnthropicTransportModel({
