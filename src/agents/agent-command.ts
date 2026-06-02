@@ -1403,6 +1403,7 @@ async function agentCommandInternal(
               sessionStore: suppressVisibleSessionEffects ? undefined : sessionStore,
               storePath: suppressVisibleSessionEffects ? undefined : storePath,
               allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
+              fallbackRecoveryMode: runOptions?.recoveryMode,
               sessionHasHistory:
                 !isNewSession ||
                 (await attemptExecutionRuntime.sessionFileHasContent(attemptSessionFile)),

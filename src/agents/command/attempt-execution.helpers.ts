@@ -263,9 +263,22 @@ export function resolveFallbackRetryPrompt(params: {
   isFallbackRetry: boolean;
   sessionHasHistory?: boolean;
   priorContextPrelude?: string;
+  recoveryMode?: "side_effect";
 }): string {
   if (!params.isFallbackRetry) {
     return params.body;
+  }
+  if (params.recoveryMode === "side_effect") {
+    const prelude = params.priorContextPrelude?.trim();
+    const recoveryMarked =
+      "[Recovery after the previous model attempt stopped after tool or file activity]\n\n" +
+      "The previous attempt may already have changed files, sent messages, spawned tasks, or produced artifacts. " +
+      "Do not repeat the original task from scratch. First inspect the current workspace/session state, " +
+      "logs, artifacts, and progress files. Then report RUNNING, PASS, FAILED, or BLOCKED. " +
+      "If work is incomplete, continue only the missing next step; avoid overwriting completed artifacts " +
+      "or sending duplicate external messages.\n\n" +
+      `Original user request for context:\n${params.body}`;
+    return prelude ? `${prelude}\n\n${recoveryMarked}` : recoveryMarked;
   }
   const prelude = params.priorContextPrelude?.trim();
   if (!params.sessionHasHistory && !prelude) {
