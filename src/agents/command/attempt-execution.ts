@@ -464,6 +464,7 @@ export function runAgentAttempt(params: {
   pluginsEnabled?: boolean;
   metadataSnapshot?: PluginMetadataSnapshot;
   allowTransientCooldownProbe?: boolean;
+  fallbackRecoveryMode?: "side_effect";
   modelFallbacksOverride?: string[];
   sessionHasHistory?: boolean;
   suppressPromptPersistenceOnRetry?: boolean;
@@ -484,6 +485,7 @@ export function runAgentAttempt(params: {
     isFallbackRetry: params.isFallbackRetry,
     sessionHasHistory: params.sessionHasHistory,
     priorContextPrelude: claudeCliFallbackPrelude,
+    recoveryMode: params.fallbackRecoveryMode,
   });
   const effectivePrompt = isRawModelRun
     ? resolvedPrompt
