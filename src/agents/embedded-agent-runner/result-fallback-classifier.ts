@@ -18,6 +18,13 @@ import type { EmbeddedAgentRunResult } from "./types.js";
  * The classifier only flags failed invisible outcomes; delivered messages, deliberate silent
  * replies, hook blocks, and aborts must not trigger another model attempt.
  */
+const EMPTY_TERMINAL_REPLY_RE = /Agent couldn't generate a response/i;
+const CODEX_APP_SERVER_INCOMPLETE_SIDE_EFFECT_RE =
+  /OpenClaw detected an incomplete Codex turn after tool activity/i;
+const CODEX_APP_SERVER_INCOMPLETE_RE =
+  /OpenClaw detected an incomplete Codex turn before a final answer/i;
+const PLAN_ONLY_TERMINAL_REPLY_RE = /Agent stopped after repeated plan-only turns/i;
+
 function isEmbeddedAgentRunResult(value: unknown): value is EmbeddedAgentRunResult {
   return Boolean(
     value &&
@@ -189,6 +196,27 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
     .filter((payload) => payload?.isError === true)
     .map((payload) => (typeof payload.text === "string" ? payload.text : ""))
     .join("\n");
+  if (CODEX_APP_SERVER_INCOMPLETE_SIDE_EFFECT_RE.test(errorText)) {
+    return {
+      message: `${params.provider}/${params.model} stopped after tool activity before a final reply`,
+      reason: "format",
+      code: "codex_app_server_incomplete_side_effect",
+    };
+  }
+  if (CODEX_APP_SERVER_INCOMPLETE_RE.test(errorText)) {
+    return {
+      message: `${params.provider}/${params.model} stopped before a final reply`,
+      reason: "format",
+      code: "codex_app_server_incomplete_result",
+    };
+  }
+  if (EMPTY_TERMINAL_REPLY_RE.test(errorText)) {
+    return {
+      message: `${params.provider}/${params.model} ended with an incomplete terminal response`,
+      reason: "format",
+      code: "incomplete_result",
+    };
+  }
   const failoverReason = classifyBusinessDenialErrorPayloadReason(errorText, params.provider);
   if (failoverReason) {
     return {
