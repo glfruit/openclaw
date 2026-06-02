@@ -3193,6 +3193,74 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.replayMetadata).toEqual({ hadPotentialSideEffects: false, replaySafe: true });
   });
 
+  it("treats shell-wrapped read-only native command completions as replay-safe", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          id: "cmd-shell-wrapped-readonly",
+          type: "commandExecution",
+          command: `/bin/zsh -lc "ls -l artifacts/natural_template_fill artifacts | sed -n '1,200p'"`,
+          status: "completed",
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.replayMetadata).toEqual({ hadPotentialSideEffects: false, replaySafe: true });
+  });
+
+  it("treats read-only inline Python native command completions as replay-safe", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          id: "cmd-inline-python-readonly",
+          type: "commandExecution",
+          command: `/bin/zsh -lc "python3 - <<'PY'
+from docx import Document
+p='/tmp/template.docx'
+doc=Document(p)
+print('tables', len(doc.tables))
+for t in doc.tables:
+    print(len(t.rows))
+PY"`,
+          status: "completed",
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.replayMetadata).toEqual({ hadPotentialSideEffects: false, replaySafe: true });
+  });
+
+  it("treats mutating inline Python native command completions as side-effect evidence", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          id: "cmd-inline-python-mutating",
+          type: "commandExecution",
+          command: `/bin/zsh -lc "python3 - <<'PY'
+from docx import Document
+doc=Document()
+doc.save('/tmp/out.docx')
+PY"`,
+          status: "completed",
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.replayMetadata).toEqual({ hadPotentialSideEffects: true, replaySafe: false });
+  });
+
   it("treats mutating native command completions as side-effect evidence", async () => {
     const projector = await createProjector();
 

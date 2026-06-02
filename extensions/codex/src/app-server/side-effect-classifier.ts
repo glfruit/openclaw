@@ -184,7 +184,8 @@ function hasWriteRedirection(command: string): boolean {
 }
 
 function isReadOnlyShellCommand(command: string): boolean {
-  return command
+  const normalizedCommand = stripReadOnlyWrappers(command);
+  return normalizedCommand
     .split(/\s*(?:&&|\|\||;|\|)\s*/)
     .filter((segment) => segment.trim().length > 0)
     .every((segment) => isReadOnlyShellSegment(segment.trim()));
@@ -192,6 +193,9 @@ function isReadOnlyShellCommand(command: string): boolean {
 
 function isReadOnlyShellSegment(segment: string): boolean {
   const normalized = stripReadOnlyWrappers(segment);
+  if (isReadOnlyInlinePythonCommand(normalized)) {
+    return true;
+  }
   return [
     /^(?:pwd|ls|cat|sed|awk|grep|rg|head|tail|stat|file|wc|jq|ps|pgrep|lsof|df|du)\b/,
     /^find\b(?!.*\s-(?:delete|exec|execdir|ok)\b)/,
@@ -211,9 +215,60 @@ function isReadOnlyShellSegment(segment: string): boolean {
 
 function stripReadOnlyWrappers(segment: string): string {
   let value = segment.trim();
-  value = value.replace(/^(?:env\s+)?(?:[A-Z_][A-Z0-9_]*=\S+\s+)*/i, "");
-  value = value.replace(/^(?:g?timeout|command)\s+(?:-\S+\s+)*\d+(?:\.\d+)?\s+/, "");
+  for (let pass = 0; pass < 4; pass += 1) {
+    const previous = value;
+    value = value.replace(/^(?:env\s+)?(?:[A-Z_][A-Z0-9_]*=\S+\s+)*/i, "");
+    value = value.replace(/^(?:g?timeout|command)\s+(?:-\S+\s+)*\d+(?:\.\d+)?\s+/, "");
+    value = stripShellCommandWrapper(value);
+    if (value === previous) {
+      break;
+    }
+  }
   return value.trim();
+}
+
+function stripShellCommandWrapper(segment: string): string {
+  const match = segment.match(
+    /^(?:(?:\/(?:usr\/)?bin\/)?(?:bash|zsh|sh))\s+-[a-z]*c\s+([\s\S]+)$/i,
+  );
+  if (!match) {
+    return segment;
+  }
+  return unquoteShellCommandArgument(match[1] ?? "").trim() || segment;
+}
+
+function unquoteShellCommandArgument(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) {
+    return trimmed;
+  }
+  const quote = trimmed[0];
+  if ((quote !== "'" && quote !== '"') || trimmed[trimmed.length - 1] !== quote) {
+    return trimmed;
+  }
+  const body = trimmed.slice(1, -1);
+  return quote === '"' ? body.replace(/\\(["\\$`])/g, "$1").replace(/\\n/g, "\n") : body;
+}
+
+function isReadOnlyInlinePythonCommand(command: string): boolean {
+  const match = command.match(/^python3?\s+-\s*<<\s*['"]?([a-z0-9_]+)['"]?\s*\n([\s\S]*)\n\1\s*$/i);
+  if (!match) {
+    return false;
+  }
+  const script = match[2] ?? "";
+  return !hasLikelyMutatingPythonCode(script);
+}
+
+function hasLikelyMutatingPythonCode(script: string): boolean {
+  return [
+    /\b(?:subprocess|shutil)\./,
+    /\bos\.(?:system|popen|remove|unlink|rename|replace|rmdir|mkdir|makedirs|chmod|chown|kill|spawn|fork|exec)\b/,
+    /\.(?:save|write|write_text|write_bytes|unlink|remove|rename|replace|mkdir|rmdir|touch|chmod|chown)\s*\(/,
+    /\bopen\s*\([^)]*,\s*['"][^'"]*[wax+]/,
+    /\b(?:json|pickle)\.dump\s*\(/,
+    /\b(?:requests|httpx)\.(?:post|put|patch|delete)\s*\(/,
+    /\burllib\.request\.request\s*\([^)]*method\s*=\s*['"](?:post|put|patch|delete)['"]/,
+  ].some((pattern) => pattern.test(script));
 }
 
 function normalizeToken(value: string): string {
