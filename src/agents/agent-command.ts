@@ -1794,6 +1794,7 @@ async function agentCommandInternal(
               pluginsEnabled,
               ...(manifestMetadataSnapshot ? { metadataSnapshot: manifestMetadataSnapshot } : {}),
               allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
+              fallbackRecoveryMode: runOptions?.recoveryMode,
               sessionHasHistory:
                 !isNewSession ||
                 (await attemptExecutionRuntime.sessionFileHasContent(attemptSessionFile)),
