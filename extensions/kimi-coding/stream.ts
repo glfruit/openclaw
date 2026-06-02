@@ -52,6 +52,215 @@ const KIMI_ANTHROPIC_THINKING_BUDGETS: Record<Exclude<KimiThinkingLevel, "off">,
 const KIMI_ANTHROPIC_VISIBLE_OUTPUT_RESERVE_TOKENS = 1024;
 const KIMI_ANTHROPIC_MIN_OUTPUT_TOKENS = 16000;
 const KIMI_PLACEHOLDER_REASONING_CONTENT = " ";
+const KIMI_SYNTHETIC_TOOL_RESULT_TEXT =
+  "[openclaw] missing tool result in session history; inserted synthetic error result for Kimi transcript preflight.";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function normalizeNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readOpenAIToolCallId(toolCall: unknown): string | undefined {
+  if (!isRecord(toolCall)) {
+    return undefined;
+  }
+  return normalizeNonEmptyString(toolCall.id);
+}
+
+function readOpenAIToolCallName(toolCall: unknown): string | undefined {
+  if (!isRecord(toolCall)) {
+    return undefined;
+  }
+  const fn = toolCall.function;
+  return isRecord(fn) ? normalizeNonEmptyString(fn.name) : undefined;
+}
+
+function makeKimiOpenAISyntheticToolResult(toolCall: unknown): Record<string, unknown> {
+  const id = readOpenAIToolCallId(toolCall) ?? "missing_tool_call_id";
+  const name = readOpenAIToolCallName(toolCall);
+  return {
+    role: "tool",
+    tool_call_id: id,
+    ...(name ? { name } : {}),
+    content: KIMI_SYNTHETIC_TOOL_RESULT_TEXT,
+  };
+}
+
+function ensureKimiOpenAIToolCallPairing(payloadObj: Record<string, unknown>): void {
+  const messages = payloadObj.messages;
+  if (!Array.isArray(messages)) {
+    return;
+  }
+
+  let changed = false;
+  const nextMessages: unknown[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!isRecord(message)) {
+      nextMessages.push(message);
+      continue;
+    }
+
+    if (message.role === "tool") {
+      changed = true;
+      continue;
+    }
+
+    const toolCalls = Array.isArray(message.tool_calls)
+      ? message.tool_calls.filter((toolCall) => readOpenAIToolCallId(toolCall))
+      : [];
+    if (message.role !== "assistant" || toolCalls.length === 0) {
+      nextMessages.push(message);
+      continue;
+    }
+
+    nextMessages.push(message);
+    const expectedIds = new Set(toolCalls.map((toolCall) => readOpenAIToolCallId(toolCall)!));
+    const existingById = new Map<string, Record<string, unknown>>();
+    let scan = index + 1;
+    while (scan < messages.length) {
+      const candidate = messages[scan];
+      if (!isRecord(candidate) || candidate.role !== "tool") {
+        break;
+      }
+      const toolCallId = normalizeNonEmptyString(candidate.tool_call_id);
+      if (toolCallId && expectedIds.has(toolCallId) && !existingById.has(toolCallId)) {
+        existingById.set(toolCallId, candidate);
+      } else {
+        changed = true;
+      }
+      scan += 1;
+    }
+
+    for (const toolCall of toolCalls) {
+      const id = readOpenAIToolCallId(toolCall)!;
+      const existing = existingById.get(id);
+      if (existing) {
+        nextMessages.push(existing);
+      } else {
+        nextMessages.push(makeKimiOpenAISyntheticToolResult(toolCall));
+        changed = true;
+      }
+    }
+
+    if (scan !== index + 1) {
+      index = scan - 1;
+    }
+  }
+
+  if (changed) {
+    payloadObj.messages = nextMessages;
+  }
+}
+
+function readAnthropicToolUseId(block: unknown): string | undefined {
+  if (!isRecord(block) || block.type !== "tool_use") {
+    return undefined;
+  }
+  return normalizeNonEmptyString(block.id);
+}
+
+function readAnthropicToolResultId(block: unknown): string | undefined {
+  if (!isRecord(block) || block.type !== "tool_result") {
+    return undefined;
+  }
+  return normalizeNonEmptyString(block.tool_use_id);
+}
+
+function makeKimiAnthropicSyntheticToolResult(toolUse: unknown): Record<string, unknown> {
+  return {
+    type: "tool_result",
+    tool_use_id: readAnthropicToolUseId(toolUse) ?? "missing_tool_use_id",
+    content: [{ type: "text", text: KIMI_SYNTHETIC_TOOL_RESULT_TEXT }],
+    is_error: true,
+  };
+}
+
+function ensureKimiAnthropicToolUsePairing(payloadObj: Record<string, unknown>): void {
+  const messages = payloadObj.messages;
+  if (!Array.isArray(messages)) {
+    return;
+  }
+
+  let changed = false;
+  const nextMessages: unknown[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!isRecord(message)) {
+      nextMessages.push(message);
+      continue;
+    }
+
+    const content = Array.isArray(message.content) ? message.content : [];
+    const toolUses =
+      message.role === "assistant" ? content.filter((block) => readAnthropicToolUseId(block)) : [];
+    if (toolUses.length === 0) {
+      if (message.role === "user" && content.some((block) => readAnthropicToolResultId(block))) {
+        const nonToolResults = content.filter((block) => !readAnthropicToolResultId(block));
+        if (nonToolResults.length > 0) {
+          nextMessages.push({ ...message, content: nonToolResults });
+        }
+        changed = true;
+        continue;
+      }
+      nextMessages.push(message);
+      continue;
+    }
+
+    nextMessages.push(message);
+    const expectedIds = new Set(toolUses.map((toolUse) => readAnthropicToolUseId(toolUse)!));
+    const existingById = new Map<string, unknown>();
+    let leftoverUserContent: unknown[] = [];
+    const next = messages[index + 1];
+    if (isRecord(next) && next.role === "user" && Array.isArray(next.content)) {
+      for (const block of next.content) {
+        const toolResultId = readAnthropicToolResultId(block);
+        if (toolResultId && expectedIds.has(toolResultId) && !existingById.has(toolResultId)) {
+          existingById.set(toolResultId, block);
+          continue;
+        }
+        if (toolResultId) {
+          changed = true;
+          continue;
+        }
+        leftoverUserContent.push(block);
+      }
+      index += 1;
+    }
+
+    const toolResultContent: unknown[] = [];
+    for (const toolUse of toolUses) {
+      const id = readAnthropicToolUseId(toolUse)!;
+      const existing = existingById.get(id);
+      if (existing) {
+        toolResultContent.push(existing);
+      } else {
+        toolResultContent.push(makeKimiAnthropicSyntheticToolResult(toolUse));
+        changed = true;
+      }
+    }
+    nextMessages.push({ role: "user", content: toolResultContent });
+    if (leftoverUserContent.length > 0) {
+      nextMessages.push({ ...(next as Record<string, unknown>), content: leftoverUserContent });
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    payloadObj.messages = nextMessages;
+  }
+}
+
+function ensureKimiToolResultPairing(payloadObj: Record<string, unknown>, api: unknown): void {
+  if (api === "anthropic-messages") {
+    ensureKimiAnthropicToolUsePairing(payloadObj);
+  } else {
+    ensureKimiOpenAIToolCallPairing(payloadObj);
+  }
+}
 
 function normalizeKimiThinkingBudgetTokens(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -387,6 +596,7 @@ export function createKimiThinkingWrapper(
       } else {
         stripKimiOpenAIReasoningContent(payloadObj);
       }
+      ensureKimiToolResultPairing(payloadObj, model.api);
       if (model.api === "anthropic-messages") {
         ensureKimiAnthropicMaxTokens(payloadObj, normalized);
       }
