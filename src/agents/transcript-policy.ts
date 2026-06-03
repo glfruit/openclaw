@@ -91,6 +91,7 @@ function isAnthropicApi(modelApi?: string | null): boolean {
 function isOpenAiResponsesCompatibleApi(modelApi?: string | null): boolean {
   return (
     modelApi === "openai-responses" ||
+    modelApi === "openai-codex-responses" ||
     modelApi === "openai-chatgpt-responses" ||
     modelApi === "azure-openai-responses"
   );
@@ -131,6 +132,7 @@ function buildUnownedProviderTransportReplayFallback(params: {
   const requiresOpenAiCompatibleToolIdSanitization =
     params.modelApi === "openai-completions" ||
     params.modelApi === "openai-responses" ||
+    params.modelApi === "openai-codex-responses" ||
     params.modelApi === "openai-chatgpt-responses" ||
     params.modelApi === "azure-openai-responses";
 
