@@ -298,10 +298,13 @@ type ToolCallInputRepairOptions = {
 };
 
 type ErroredAssistantResultPolicy = "preserve" | "drop";
+type MissingToolResultPolicy = "synthesize" | "omitAssistantToolCall";
 
 type ToolUseResultPairingOptions = {
   erroredAssistantResultPolicy?: ErroredAssistantResultPolicy;
+  missingToolResultPolicy?: MissingToolResultPolicy;
   missingToolResultText?: string;
+  replaceSyntheticMissingToolResults?: boolean;
 };
 
 export function stripToolResultDetails(messages: AgentMessage[]): AgentMessage[] {
@@ -554,6 +557,14 @@ function shouldDropErroredAssistantResults(options?: ToolUseResultPairingOptions
   return options?.erroredAssistantResultPolicy === "drop";
 }
 
+function shouldOmitMissingAssistantToolCalls(options?: ToolUseResultPairingOptions): boolean {
+  return options?.missingToolResultPolicy === "omitAssistantToolCall";
+}
+
+function shouldReplaceSyntheticMissingToolResults(options?: ToolUseResultPairingOptions): boolean {
+  return options?.replaceSyntheticMissingToolResults !== false;
+}
+
 function assistantHasToolCalls(message: AgentMessage): boolean {
   if (!message || typeof message !== "object" || message.role !== "assistant") {
     return false;
@@ -571,7 +582,13 @@ function findLaterMatchingToolResult(params: {
 }): Extract<AgentMessage, { role: "toolResult" }> | undefined {
   for (let index = params.startIndex; index < params.messages.length; index += 1) {
     const candidate = params.messages[index];
-    if (!candidate || typeof candidate !== "object" || candidate.role !== "toolResult") {
+    if (!candidate || typeof candidate !== "object") {
+      continue;
+    }
+    if (candidate.role === "assistant" && assistantHasToolCalls(candidate)) {
+      break;
+    }
+    if (candidate.role !== "toolResult") {
       continue;
     }
     const normalizedLegacyResult = normalizeLegacyToolResultId(candidate, params.toolCalls);
@@ -582,6 +599,53 @@ function findLaterMatchingToolResult(params: {
     return normalizeToolResultName(normalizedLegacyResult, params.toolName);
   }
   return undefined;
+}
+
+function omitAssistantToolCallBlocks(
+  message: Extract<AgentMessage, { role: "assistant" }>,
+  omittedToolCallIds: ReadonlySet<string>,
+): Extract<AgentMessage, { role: "assistant" }> {
+  if (omittedToolCallIds.size === 0 || !Array.isArray(message.content)) {
+    return message;
+  }
+
+  let changed = false;
+  const nextContent: typeof message.content = [];
+  for (const block of message.content) {
+    if (!isRawToolCallBlock(block)) {
+      nextContent.push(block);
+      continue;
+    }
+    const toolCallId = normalizeOptionalString((block as RawToolCallBlock).id);
+    if (toolCallId && omittedToolCallIds.has(toolCallId)) {
+      changed = true;
+      continue;
+    }
+    nextContent.push(block);
+  }
+
+  if (!changed) {
+    return message;
+  }
+
+  if (nextContent.length > 0) {
+    const nextMessage = { ...message, content: nextContent };
+    if (
+      !nextContent.some((block) => isRawToolCallBlock(block)) &&
+      (message as { stopReason?: unknown }).stopReason === "toolUse"
+    ) {
+      return { ...nextMessage, stopReason: "stop" } as Extract<AgentMessage, { role: "assistant" }>;
+    }
+    return nextMessage;
+  }
+
+  return {
+    ...message,
+    ...((message as { stopReason?: unknown }).stopReason === "toolUse"
+      ? { stopReason: "stop" }
+      : {}),
+    content: [{ type: "text", text: "[tool calls omitted]" }],
+  } as Extract<AgentMessage, { role: "assistant" }>;
 }
 
 export function repairToolUseResultPairing(
@@ -611,6 +675,7 @@ export function repairToolUseResultPairing(
         const existing = out[existingIdx];
         if (
           existing &&
+          shouldReplaceSyntheticMissingToolResults(options) &&
           isSyntheticMissingToolResult(existing as Extract<AgentMessage, { role: "toolResult" }>) &&
           !isSyntheticMissingToolResult(msg)
         ) {
@@ -658,11 +723,12 @@ export function repairToolUseResultPairing(
 
     const assistant = msg as Extract<AgentMessage, { role: "assistant" }>;
 
-    const toolCalls = extractToolCallsFromAssistant(assistant);
+    let toolCalls = extractToolCallsFromAssistant(assistant);
     if (toolCalls.length === 0) {
       out.push(msg);
       continue;
     }
+    let assistantForOutput = assistant;
 
     const toolCallIds = new Set<string>();
     const toolCallNamesById = new Map<string, string>();
@@ -741,13 +807,36 @@ export function repairToolUseResultPairing(
       }
     }
 
+    const missingToolCallIds = new Set<string>();
+    for (const call of toolCalls) {
+      if (!spanResultsById.has(call.id)) {
+        missingToolCallIds.add(call.id);
+      }
+    }
+
+    if (missingToolCallIds.size > 0 && shouldOmitMissingAssistantToolCalls(options)) {
+      assistantForOutput = omitAssistantToolCallBlocks(assistant, missingToolCallIds);
+      if (assistantForOutput !== assistant) {
+        changed = true;
+      }
+      toolCalls = toolCalls.filter((call) => !missingToolCallIds.has(call.id));
+      if (toolCalls.length === 0) {
+        out.push(assistantForOutput);
+        for (const rem of remainder) {
+          out.push(rem);
+        }
+        i = j - 1;
+        continue;
+      }
+    }
+
     // Aborted/errored assistant turns should never synthesize missing tool results, but
     // the replay sanitizer can still legitimately retain real tool results for surviving
     // tool calls in the same turn after malformed siblings are dropped.
     const stopReason = (assistant as { stopReason?: string }).stopReason;
     if (stopReason === "error" || stopReason === "aborted") {
       if (!shouldDropErroredAssistantResults(options)) {
-        out.push(msg);
+        out.push(assistantForOutput);
         for (const toolCall of toolCalls) {
           const result = spanResultsById.get(toolCall.id);
           if (!result) {
@@ -767,7 +856,7 @@ export function repairToolUseResultPairing(
       continue;
     }
 
-    out.push(msg);
+    out.push(assistantForOutput);
 
     if (spanResultsById.size > 0 && remainder.length > 0) {
       // Preserve real late-arriving results before synthesizing missing siblings;

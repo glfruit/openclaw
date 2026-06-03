@@ -152,6 +152,61 @@ describe("sanitizeToolUseResultPairing", () => {
     expect(JSON.stringify(result.added)).not.toContain("missing tool result");
   });
 
+  it("can omit missing assistant tool calls instead of synthesizing tool results", () => {
+    const input = castAgentMessages([
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "checking" },
+          { type: "toolCall", id: "call_missing", name: "read", arguments: {} },
+          { type: "toolCall", id: "call_present", name: "exec", arguments: {} },
+        ],
+      },
+      { role: "user", content: "user message that should come after tool use" },
+      {
+        role: "toolResult",
+        toolCallId: "call_present",
+        toolName: "exec",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      },
+    ]);
+
+    const result = repairToolUseResultPairing(input, {
+      missingToolResultPolicy: "omitAssistantToolCall",
+    });
+
+    expect(result.added).toHaveLength(0);
+    expect(result.messages.map((m) => m.role)).toEqual(["assistant", "toolResult", "user"]);
+    expect(
+      getAssistantToolCallBlocks(result.messages).map(({ id, name }) => ({ id, name })),
+    ).toEqual([{ id: "call_present", name: "exec" }]);
+    expect(JSON.stringify(result.messages)).toContain("checking");
+    expect(JSON.stringify(result.messages)).not.toContain("call_missing");
+    expect((result.messages[1] as { toolCallId?: string }).toolCallId).toBe("call_present");
+  });
+
+  it("replaces a tool-only assistant turn when all missing tool calls are omitted", () => {
+    const input = castAgentMessages([
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_missing", name: "read", arguments: {} }],
+      },
+      { role: "user", content: "retry" },
+    ]);
+
+    const result = repairToolUseResultPairing(input, {
+      missingToolResultPolicy: "omitAssistantToolCall",
+    });
+
+    expect(result.added).toHaveLength(0);
+    expect(result.messages.map((m) => m.role)).toEqual(["assistant", "user"]);
+    expect(getAssistantToolCallBlocks(result.messages)).toHaveLength(0);
+    expect((result.messages[0] as Extract<AgentMessage, { role: "assistant" }>).content).toEqual([
+      { type: "text", text: "[tool calls omitted]" },
+    ]);
+  });
+
   it("keeps parallel tool results when code-mode display turns arrive first", () => {
     // Display-only assistant turns must not cause synthetic results before real results arrive.
     const input = castAgentMessages([

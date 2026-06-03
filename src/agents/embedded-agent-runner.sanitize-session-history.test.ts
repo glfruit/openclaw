@@ -2525,6 +2525,64 @@ describe("sanitizeSessionHistory", () => {
     expect((thinkingBlocks[0] as { thinking?: string }).thinking).toBe("unsigned kimi reasoning");
   });
 
+  it("omits Kimi assistant tool calls that are missing tool results before replay", async () => {
+    setNonGoogleModelApi();
+
+    const messages = castAgentMessages([
+      makeUserMessage("check files"),
+      makeAssistantMessage(
+        [
+          { type: "text", text: "I will inspect the workspace." },
+          { type: "toolCall", id: "callmissing", name: "read", arguments: {} },
+          { type: "toolCall", id: "callpresent", name: "exec", arguments: {} },
+        ],
+        { stopReason: "toolUse" },
+      ),
+      { role: "user", content: "what happened?" },
+      {
+        role: "toolResult",
+        toolCallId: "callpresent",
+        toolName: "exec",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: nextTimestamp(),
+      },
+    ]);
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "anthropic-messages",
+      provider: "kimi-coding",
+      modelId: "k2.6",
+      sessionManager: makeMockSessionManager(),
+      sessionId: TEST_SESSION_ID,
+      policy: {
+        sanitizeMode: "full",
+        sanitizeToolCallIds: true,
+        toolCallIdMode: "strict",
+        preserveNativeAnthropicToolUseIds: false,
+        repairToolUseResultPairing: true,
+        preserveSignatures: false,
+        sanitizeThinkingSignatures: false,
+        dropThinkingBlocks: false,
+        dropReasoningFromHistory: false,
+        applyGoogleTurnOrdering: false,
+        validateGeminiTurns: false,
+        validateAnthropicTurns: false,
+        allowSyntheticToolResults: false,
+      },
+    });
+
+    expect(result.map((msg) => msg.role)).toEqual(["user", "assistant", "toolResult", "user"]);
+    const assistant = getAssistantMessage(result);
+    expect(extractToolCallsFromAssistant(assistant).map((call) => call.id)).toEqual([
+      "callpresent",
+    ]);
+    expect(JSON.stringify(result)).toContain("I will inspect the workspace.");
+    expect(JSON.stringify(result)).not.toContain("callmissing");
+    expect((result[2] as { toolCallId?: string }).toolCallId).toBe("callpresent");
+  });
+
   it("preserves unsigned thinking blocks for github copilot claude with anthropic-messages transport", async () => {
     setNonGoogleModelApi();
 
