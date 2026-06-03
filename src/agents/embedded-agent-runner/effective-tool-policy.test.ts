@@ -203,15 +203,15 @@ describe("applyFinalEffectiveToolPolicy", () => {
     expect(warnings.filter((message) => message.includes("unknown entries"))).toStrictEqual([]);
   });
 
-  it("still warns on genuinely unknown entries in the bundled pass", () => {
+  it("does not emit unknown-entry warnings for plugin allowlists in the bundled pass", () => {
     const warnings: string[] = [];
     applyFinalEffectiveToolPolicy({
       bundledTools: [makeTool("mcp__bundle__read")],
-      config: { tools: { allow: ["mcp__bundle__read", "totally-made-up-tool"] } },
+      config: { tools: { allow: ["mcp__bundle__read", "search_semantic"] } },
       warn: (message) => warnings.push(message),
     });
 
-    expect(warnings.filter((message) => message.includes("totally-made-up-tool"))).toHaveLength(1);
+    expect(warnings.filter((message) => message.includes("unknown entries"))).toStrictEqual([]);
   });
 
   it("keeps bundle MCP tools in the coding profile via plugin metadata", () => {
