@@ -473,6 +473,24 @@ function isReplayDroppableTrailingAssistant(message: AgentMessage | undefined): 
   });
 }
 
+function shouldOmitMissingAssistantToolCallsForReplay(params: {
+  modelApi?: string | null;
+  provider?: string;
+  modelId?: string;
+}): boolean {
+  if (params.modelApi !== "anthropic-messages") {
+    return false;
+  }
+  const provider = params.provider?.toLowerCase() ?? "";
+  const modelId = params.modelId?.toLowerCase() ?? "";
+  const modelKey = `${provider}/${modelId}`;
+  return (
+    provider.includes("kimi") ||
+    modelId.includes("kimi") ||
+    /(^|[/_.:-])k2([/_.:-]|$)/.test(modelKey)
+  );
+}
+
 function isStreamErrorSentinelContent(content: readonly unknown[]): boolean {
   if (content.length !== 1) {
     return false;
@@ -792,6 +810,9 @@ export async function sanitizeSessionHistory(params: {
     !isOpenAIResponsesApi && policy.repairToolUseResultPairing
       ? sanitizeToolUseResultPairing(sanitizedToolIds, {
           erroredAssistantResultPolicy: "drop",
+          missingToolResultPolicy: shouldOmitMissingAssistantToolCallsForReplay(params)
+            ? "omitAssistantToolCall"
+            : "synthesize",
         })
       : sanitizedToolIds;
   const sanitizedToolResults = stripToolResultDetails(repairedTools);
