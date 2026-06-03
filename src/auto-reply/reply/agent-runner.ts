@@ -66,7 +66,7 @@ import {
 } from "../reply-payload.js";
 import type { OriginatingChannelType, TemplateContext } from "../templating.js";
 import { resolveResponseUsageMode, type VerboseLevel } from "../thinking.js";
-import { SILENT_REPLY_TOKEN } from "../tokens.js";
+import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { buildUsageContract } from "../usage-bar/contract.js";
 import { loadUsageBarTemplate } from "../usage-bar/template.js";
@@ -134,6 +134,7 @@ import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
+const INTERNAL_TASK_COMPLETION_EVENT_MARKER = "[Internal task completion event]";
 
 function scheduleFollowupDrainAfterReplyOperationClear(params: {
   operation: ReplyOperation;
@@ -295,6 +296,54 @@ function hasSuccessfulSourceReplyDelivery(params: {
     hasNonEmptyStringArray(params.messagingToolSentMediaUrls) ||
     hasCommittedMessagingTargetDeliveryEvidence(params.messagingToolSentTargets)
   );
+}
+
+function isOnlySilentReplyPayloads(payloads: readonly ReplyPayload[]): boolean {
+  return (
+    payloads.length > 0 &&
+    payloads.every((payload) => isSilentReplyText(payload.text, SILENT_REPLY_TOKEN))
+  );
+}
+
+function isInternalTaskCompletionFollowupRun(followupRun: FollowupRun): boolean {
+  if (followupRun.currentInboundEventKind !== "room_event") {
+    return false;
+  }
+  const currentInboundText =
+    typeof followupRun.currentInboundContext?.text === "string"
+      ? followupRun.currentInboundContext.text
+      : "";
+  return [followupRun.prompt, followupRun.transcriptPrompt ?? "", currentInboundText].some((text) =>
+    text.includes(INTERNAL_TASK_COMPLETION_EVENT_MARKER),
+  );
+}
+
+function buildSilentSideEffectRecoveryPayload(params: {
+  payloads: readonly ReplyPayload[];
+  followupRun: FollowupRun;
+  isHeartbeat: boolean;
+  toolSummary?: TraceToolSummaryView;
+  acceptedSessionSpawns?: unknown[];
+}): ReplyPayload | undefined {
+  if (
+    params.isHeartbeat ||
+    params.followupRun.run.silentExpected === true ||
+    !isOnlySilentReplyPayloads(params.payloads) ||
+    isInternalTaskCompletionFollowupRun(params.followupRun)
+  ) {
+    return undefined;
+  }
+  const toolCalls = params.toolSummary?.calls ?? 0;
+  const spawned = params.acceptedSessionSpawns?.length ?? 0;
+  if (toolCalls <= 0 && spawned <= 0) {
+    return undefined;
+  }
+  return {
+    text:
+      "⚠️ Agent completed internal work but ended with a silent reply token. " +
+      "I preserved the session state; check current state before retrying to avoid repeating side effects.",
+    isError: true,
+  };
 }
 
 function resolveConfiguredFallbackModel(params: {
@@ -2112,6 +2161,7 @@ export async function runReplyAgent(params: {
       return returnWithQueuedFollowupDrain(undefined);
     }
 
+    const toolSummary = runResult.meta?.toolSummary as TraceToolSummaryView | undefined;
     const currentMessageId = sessionCtx.MessageSidFull ?? sessionCtx.MessageSid;
     const payloadResult = await buildReplyPayloads({
       config: cfg,
@@ -2146,6 +2196,18 @@ export async function runReplyAgent(params: {
     });
     const { replyPayloads } = payloadResult;
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
+
+    const silentSideEffectRecoveryPayload = buildSilentSideEffectRecoveryPayload({
+      payloads: payloadArray,
+      followupRun,
+      isHeartbeat,
+      toolSummary,
+      acceptedSessionSpawns: runResult.acceptedSessionSpawns,
+    });
+    if (silentSideEffectRecoveryPayload) {
+      await signalTypingIfNeeded([silentSideEffectRecoveryPayload], typingSignals);
+      return returnWithQueuedFollowupDrain(silentSideEffectRecoveryPayload);
+    }
 
     const hasReplyPayloadBeyondFallbackNotice = replyPayloads.some(
       (payload) => !isReplyPayloadStatusNotice(payload),
@@ -2409,7 +2471,6 @@ export async function runReplyAgent(params: {
     const promptSegments =
       (runResult.meta?.promptSegments as TracePromptSegmentView[] | undefined) ??
       derivePromptSegments(rawUserText);
-    const toolSummary = runResult.meta?.toolSummary as TraceToolSummaryView | undefined;
     const completion =
       (runResult.meta?.completion as TraceCompletionView | undefined) ??
       (runResult.meta?.stopReason
