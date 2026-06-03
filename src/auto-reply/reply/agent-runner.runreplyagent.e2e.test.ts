@@ -157,6 +157,7 @@ function createMinimalRun(params?: {
   resolvedQueueMode?: string;
   sessionCtx?: Partial<TemplateContext>;
   runOverrides?: Partial<FollowupRun["run"]>;
+  followupOverrides?: Partial<Omit<FollowupRun, "run">>;
 }) {
   const typing = createMockTypingController();
   const opts = params?.opts;
@@ -173,6 +174,7 @@ function createMinimalRun(params?: {
     prompt: "hello",
     summaryLine: "hello",
     enqueuedAt: Date.now(),
+    ...params?.followupOverrides,
     run: {
       sessionId: "session",
       sessionKey,
@@ -836,6 +838,63 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(onPartialReply).not.toHaveBeenCalled();
     expect(onBlockReply).not.toHaveBeenCalled();
     expect(res).toBeUndefined();
+  });
+
+  it("suppresses NO_REPLY from internal task completion room events", async () => {
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      meta: {
+        finalAssistantRawText: "NO_REPLY",
+        toolSummary: {
+          calls: 3,
+          tools: ["apply_patch"],
+          failures: 0,
+          totalToolTimeMs: 12,
+        },
+      },
+    });
+
+    const { run } = createMinimalRun({
+      followupOverrides: {
+        currentInboundEventKind: "room_event",
+        prompt:
+          "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\n" +
+          "[Internal task completion event]\n" +
+          "task: audit\n" +
+          "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
+        currentInboundContext: {
+          text: "[Internal task completion event]\ntask: audit",
+        },
+      },
+    });
+
+    const res = await run();
+
+    expect(res).toBeUndefined();
+  });
+
+  it("surfaces a safe warning when a visible turn ends with NO_REPLY after tool work", async () => {
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      meta: {
+        finalAssistantRawText: "NO_REPLY",
+        toolSummary: {
+          calls: 2,
+          tools: ["apply_patch"],
+          failures: 0,
+          totalToolTimeMs: 8,
+        },
+      },
+    });
+
+    const { run } = createMinimalRun();
+
+    const res = await run();
+
+    expect(res).toMatchObject({
+      text: expect.stringContaining("ended with a silent reply token"),
+      isError: true,
+    });
   });
 
   it("does not start typing on assistant message start without prior text in message mode", async () => {
