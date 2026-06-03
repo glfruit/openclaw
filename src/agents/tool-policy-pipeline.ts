@@ -39,6 +39,7 @@ export type ToolPolicyPipelineStep = {
   policy: ToolPolicyLike | undefined;
   label: string;
   stripPluginOnlyAllowlist?: boolean;
+  suppressUnknownAllowlistWarning?: boolean;
   suppressUnavailableCoreToolWarning?: boolean;
   suppressUnavailableCoreToolWarningAllowlist?: string[];
   unavailableCoreToolReason?: string;
@@ -152,7 +153,7 @@ export function applyToolPolicyPipeline(params: {
     if (step.stripPluginOnlyAllowlist) {
       // Plugin-only allowlists are valid for deferred tools; warn only for entries that cannot match.
       const resolved = analyzeAllowlistByToolType(policy, pluginGroups, coreToolNames);
-      if (resolved.unknownAllowlist.length > 0) {
+      if (resolved.unknownAllowlist.length > 0 && !step.suppressUnknownAllowlistWarning) {
         const unavailableCoreWarningAllowlist = new Set(
           (step.suppressUnavailableCoreToolWarningAllowlist ?? []).map((entry) =>
             normalizeToolName(entry),
