@@ -154,9 +154,11 @@ export function applyFinalEffectiveToolPolicy(
   // would look "unknown" relative to that reduced set even though they are
   // valid core names already resolved by `createOpenClawCodingTools()` in
   // the first pass — keeping those warnings on would pollute logs and evict
-  // real diagnostics from the shared warning cache. Genuinely unknown
-  // entries (typos) still surface through the `otherEntries` path in
-  // `applyToolPolicyPipeline`.
+  // real diagnostics from the shared warning cache. This pass is not
+  // authoritative for plugin-tool availability either: it only receives the
+  // bundled MCP/LSP subset, while provider/global allowlists can legitimately
+  // mention tools contributed by enabled legacy plugins. The full tool
+  // construction pass still reports genuinely unknown entries.
   const pipelineSteps: ToolPolicyPipelineStep[] = [
     ...buildDefaultToolPolicyPipelineSteps({
       profilePolicy: profilePolicyWithAlsoAllow,
@@ -176,7 +178,12 @@ export function applyFinalEffectiveToolPolicy(
     { policy: params.sandboxToolPolicy, label: "sandbox tools.allow" },
     { policy: subagentPolicy, label: "subagent tools.allow" },
     { policy: inheritedToolPolicy, label: "inherited tools" },
-  ].map((step) => Object.assign({}, step, { suppressUnavailableCoreToolWarning: true }));
+  ].map((step) =>
+    Object.assign({}, step, {
+      suppressUnavailableCoreToolWarning: true,
+      suppressUnknownAllowlistWarning: true,
+    }),
+  );
   return applyToolPolicyPipeline({
     tools: params.bundledTools,
     toolMeta: (tool) => getPluginToolMeta(tool),
