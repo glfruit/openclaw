@@ -286,9 +286,25 @@ describe("kimi tool-call markup wrapper", () => {
       system: [{ type: "text", text: "stable", cache_control: { type: "ephemeral", ttl: "1h" } }],
       messages: [
         {
-          role: "user",
+          role: "assistant",
           content: [
             { type: "text", text: "hello", cache_control: { type: "ephemeral" } },
+            {
+              type: "tool_use",
+              id: "tool_1",
+              name: "persist",
+              input: {
+                cache_control: "tool argument",
+                nested: { cache_control: "nested argument" },
+              },
+              cache_control: { type: "ephemeral" },
+            },
+            { type: "text", text: "bye" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
             {
               type: "tool_result",
               tool_use_id: "tool_1",
@@ -301,17 +317,6 @@ describe("kimi tool-call markup wrapper", () => {
               ],
               cache_control: { type: "ephemeral" },
             },
-            {
-              type: "tool_use",
-              id: "tool_2",
-              name: "persist",
-              input: {
-                cache_control: "tool argument",
-                nested: { cache_control: "nested argument" },
-              },
-              cache_control: { type: "ephemeral" },
-            },
-            { type: "text", text: "bye" },
           ],
         },
       ],
@@ -344,17 +349,13 @@ describe("kimi tool-call markup wrapper", () => {
       system: [{ type: "text", text: "stable" }],
       messages: [
         {
-          role: "user",
+          role: "assistant",
+          reasoning_content: " ",
           content: [
             { type: "text", text: "hello" },
             {
-              type: "tool_result",
-              tool_use_id: "tool_1",
-              content: [{ type: "text", text: "done" }],
-            },
-            {
               type: "tool_use",
-              id: "tool_2",
+              id: "tool_1",
               name: "persist",
               input: {
                 cache_control: "tool argument",
@@ -362,6 +363,16 @@ describe("kimi tool-call markup wrapper", () => {
               },
             },
             { type: "text", text: "bye" },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool_1",
+              content: [{ type: "text", text: "done" }],
+            },
           ],
         },
       ],
