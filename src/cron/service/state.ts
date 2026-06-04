@@ -177,6 +177,7 @@ export type CronServiceState = {
    * until the runtime can quarantine and sanitize the active store.
    */
   warnedInvalidPersistedJobKeys: Set<string>;
+  warnedMissingSessionTargetJobIds: Set<string>;
   pendingQuarantineConfigJobs: QuarantinedCronConfigJob[];
   lastQuarantineFailureWarnKey: string | null;
   storeLoadedAtMs: number | null;
@@ -192,6 +193,7 @@ export function createCronServiceState(deps: CronServiceDeps): CronServiceState 
     op: Promise.resolve(),
     warnedDisabled: false,
     warnedInvalidPersistedJobKeys: new Set<string>(),
+    warnedMissingSessionTargetJobIds: new Set<string>(),
     pendingQuarantineConfigJobs: [],
     lastQuarantineFailureWarnKey: null,
     storeLoadedAtMs: null,
