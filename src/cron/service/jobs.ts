@@ -929,6 +929,18 @@ function mergeCronPayload(existing: CronPayload, patch: CronPayloadPatch): CronP
     if (typeof patch.outputMaxBytes === "number") {
       next.outputMaxBytes = patch.outputMaxBytes;
     }
+    if (typeof patch.successRegex === "string") {
+      next.successRegex = patch.successRegex;
+    }
+    if (typeof patch.failureRegex === "string") {
+      next.failureRegex = patch.failureRegex;
+    }
+    if (typeof patch.summaryRegex === "string") {
+      next.summaryRegex = patch.summaryRegex;
+    }
+    if (typeof patch.outputMode === "string") {
+      next.outputMode = patch.outputMode;
+    }
     return next;
   }
 
@@ -989,6 +1001,10 @@ function buildPayloadFromPatch(patch: CronPayloadPatch): CronPayload {
       timeoutSeconds: patch.timeoutSeconds,
       noOutputTimeoutSeconds: patch.noOutputTimeoutSeconds,
       outputMaxBytes: patch.outputMaxBytes,
+      successRegex: patch.successRegex,
+      failureRegex: patch.failureRegex,
+      summaryRegex: patch.summaryRegex,
+      outputMode: patch.outputMode,
     };
   }
 

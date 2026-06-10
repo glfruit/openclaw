@@ -15,6 +15,92 @@ function parseExternalContentSource(raw: string | null): "gmail" | "webhook" | u
   return parsed === "gmail" || parsed === "webhook" ? parsed : undefined;
 }
 
+function splitLegacyCommandLine(input: string): string[] | undefined {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let tokenStarted = false;
+
+  for (const ch of input.trim()) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      tokenStarted = true;
+      continue;
+    }
+    if (ch === "\\" && quote !== "'") {
+      escaped = true;
+      tokenStarted = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = undefined;
+      } else {
+        current += ch;
+      }
+      tokenStarted = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      tokenStarted = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (tokenStarted) {
+        tokens.push(current);
+        current = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+    current += ch;
+    tokenStarted = true;
+  }
+
+  if (escaped || quote) {
+    return undefined;
+  }
+  if (tokenStarted) {
+    tokens.push(current);
+  }
+  return tokens.length > 0 ? tokens : undefined;
+}
+
+function parseCommandArgv(record: Record<string, unknown>): string[] | null {
+  if (
+    Array.isArray(record.argv) &&
+    record.argv.length > 0 &&
+    record.argv.every((value) => typeof value === "string" && value.length > 0)
+  ) {
+    return record.argv.map((value) => String(value));
+  }
+  const command = typeof record.command === "string" ? record.command.trim() : "";
+  if (!command) {
+    return null;
+  }
+  if ("args" in record) {
+    if (!Array.isArray(record.args) || record.args.some((value) => typeof value !== "string")) {
+      return null;
+    }
+    if (/\s/.test(command)) {
+      return null;
+    }
+    return [command, ...record.args.map((value) => String(value))];
+  }
+  return splitLegacyCommandLine(command) ?? null;
+}
+
+function parseOptionalStringField(
+  record: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function parseCommandPayloadMessage(
   raw: string | null,
 ): Omit<Extract<CronPayload, { kind: "command" }>, "kind" | "timeoutSeconds"> | null {
@@ -23,14 +109,10 @@ function parseCommandPayloadMessage(
     return null;
   }
   const record = parsed as Record<string, unknown>;
-  if (
-    !Array.isArray(record.argv) ||
-    record.argv.length === 0 ||
-    record.argv.some((value) => typeof value !== "string" || value.length === 0)
-  ) {
+  const argv = parseCommandArgv(record);
+  if (!argv) {
     return null;
   }
-  const argv = record.argv.map((value) => String(value));
   const env =
     record.env && typeof record.env === "object" && !Array.isArray(record.env)
       ? Object.fromEntries(
@@ -57,6 +139,18 @@ function parseCommandPayloadMessage(
     ...(typeof record.input === "string" ? { input: record.input } : {}),
     ...(noOutputTimeoutSeconds != null ? { noOutputTimeoutSeconds } : {}),
     ...(outputMaxBytes != null && outputMaxBytes > 0 ? { outputMaxBytes } : {}),
+    ...(parseOptionalStringField(record, "successRegex")
+      ? { successRegex: parseOptionalStringField(record, "successRegex") }
+      : {}),
+    ...(parseOptionalStringField(record, "failureRegex")
+      ? { failureRegex: parseOptionalStringField(record, "failureRegex") }
+      : {}),
+    ...(parseOptionalStringField(record, "summaryRegex")
+      ? { summaryRegex: parseOptionalStringField(record, "summaryRegex") }
+      : {}),
+    ...(parseOptionalStringField(record, "outputMode")
+      ? { outputMode: parseOptionalStringField(record, "outputMode") }
+      : {}),
   };
 }
 

@@ -37,12 +37,18 @@ function cronCommandPayloadSchema(params: { argv: TSchema }) {
     {
       kind: Type.Literal("command"),
       argv: params.argv,
+      command: Type.Optional(Type.String({ minLength: 1 })),
+      args: Type.Optional(Type.Array(Type.String())),
       cwd: Type.Optional(Type.String({ minLength: 1 })),
       env: Type.Optional(Type.Record(Type.String({ minLength: 1 }), Type.String())),
       input: Type.Optional(Type.String()),
       timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
       noOutputTimeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
       outputMaxBytes: Type.Optional(Type.Integer({ minimum: 1 })),
+      successRegex: Type.Optional(Type.String({ minLength: 1 })),
+      failureRegex: Type.Optional(Type.String({ minLength: 1 })),
+      summaryRegex: Type.Optional(Type.String({ minLength: 1 })),
+      outputMode: Type.Optional(Type.String({ minLength: 1 })),
     },
     { additionalProperties: false },
   );

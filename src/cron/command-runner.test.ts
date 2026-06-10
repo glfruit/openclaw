@@ -56,6 +56,38 @@ describe("runCronCommandJob", () => {
     expect(result.summary).toBe("NO_REPLY");
   });
 
+  it("runs legacy command plus args payloads and extracts summaryRegex", async () => {
+    const result = await runCronCommandJob({
+      job: makeCommandJob({
+        kind: "command",
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('SUMMARY: legacy ok\\n')"],
+        successRegex: "legacy ok",
+        summaryRegex: "SUMMARY: (.*)",
+        timeoutSeconds: 5,
+      } as Extract<CronJob["payload"], { kind: "command" }>),
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.summary).toBe("legacy ok");
+  });
+
+  it("marks legacy failureRegex matches as cron errors", async () => {
+    const result = await runCronCommandJob({
+      job: makeCommandJob({
+        kind: "command",
+        command: process.execPath,
+        args: ["-e", "process.stdout.write('ERROR: blocked\\n')"],
+        failureRegex: "ERROR:",
+        timeoutSeconds: 5,
+      } as Extract<CronJob["payload"], { kind: "command" }>),
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.error).toBe("failureRegex matched in command output");
+    expect(result.summary).toBe("ERROR: blocked");
+  });
+
   it("marks non-zero exit codes as cron errors and keeps stderr as summary", async () => {
     const result = await runCronCommandJob({
       job: makeCommandJob({
