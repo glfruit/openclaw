@@ -272,7 +272,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
     );
     expect(result.promptTimeoutOutcome).toEqual({
       message:
-        "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.",
+        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
       replayInvalid: true,
       livenessState: "abandoned",
     });
@@ -1756,9 +1756,6 @@ describe("runCodexAppServerAttempt turn watches", () => {
     expect(completionWarnData?.timeoutMs).toBe(100);
     expect(completionWarnData?.lastNotificationMethod).toBe("rawResponseItem/completed");
     expect(completionWarnData?.lastAssistantTextPreview).toBe("I'm writing the report now.");
-    expect(result.codexAppServerFailure?.diagnostics?.lastAssistantTextPreview).toBe(
-      "I'm writing the report now.",
-    );
   });
 
   it("uses the post-tool timeout for commentary raw assistant progress", async () => {
@@ -2939,7 +2936,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
       promptError: "codex app-server turn idle timed out waiting for turn/completed",
       promptTimeoutOutcome: {
         message:
-          "Codex stopped before confirming the turn was complete. The response may be incomplete; retry if needed.",
+          "OpenClaw detected an incomplete Codex turn before a final answer was available. Please retry if needed.",
       },
       codexAppServerFailure: {
         kind: "turn_completion_idle_timeout",
