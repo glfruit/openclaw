@@ -58,16 +58,18 @@ describe("dispatchAndStartWorkboardCards", () => {
     );
     expect(run).toHaveBeenCalledTimes(2);
     expect(run.mock.calls[0]?.[0]).toMatchObject({
-      sessionKey: `agent:codex-main:subagent:workboard-default-${first.id}`,
+      sessionKey: `agent:codex-main:subagent:workboard-default-${first.id}-10`,
       lane: `workboard:default:${first.id}`,
       deliver: false,
     });
     expect(run.mock.calls[0]?.[0]?.message).toContain("Claim token:");
+    expect(run.mock.calls[0]?.[0]?.message).toContain("Copy the claim token exactly");
     expect(run.mock.calls[0]?.[0]?.message).toContain("workboard_complete with the card id");
+    expect(run.mock.calls[0]?.[0]?.message).toContain("Do not call read on a directory");
     expect(run.mock.calls[0]?.[0]?.message).not.toContain("ownerId and token");
     await expect(store.get(first.id)).resolves.toMatchObject({
       status: "running",
-      sessionKey: `agent:codex-main:subagent:workboard-default-${first.id}`,
+      sessionKey: `agent:codex-main:subagent:workboard-default-${first.id}-10`,
       runId: "run-first",
       execution: { status: "running", runId: "run-first" },
       metadata: {
@@ -79,6 +81,35 @@ describe("dispatchAndStartWorkboardCards", () => {
       status: "ready",
       metadata: { automation: { dispatchCount: 1 } },
     });
+  });
+
+  it("includes the card workspace in worker prompts", async () => {
+    const store = new WorkboardStore(createMemoryStore());
+    const card = await store.create({
+      title: "Review project files",
+      status: "ready",
+      agentId: "edu-critic",
+      workspace: { kind: "dir", path: "/Users/me/project" },
+    });
+    const run = vi.fn().mockResolvedValue({ runId: "run-review" });
+
+    await dispatchAndStartWorkboardCards({
+      store,
+      subagent: { run },
+      options: { now: 10, maxStarts: 1 },
+    });
+
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: `agent:edu-critic:subagent:workboard-default-${card.id}-10`,
+        message: expect.stringContaining(
+          "Use this as the only project workspace: /Users/me/project",
+        ),
+      }),
+    );
+    expect(run.mock.calls[0]?.[0]?.message).toContain(
+      "Do not assume the assigned agent's default workspace contains the card artifacts.",
+    );
   });
 
   it("does not let review cards consume an agent running slot", async () => {
@@ -190,7 +221,7 @@ describe("dispatchAndStartWorkboardCards", () => {
     ]);
     expect(run).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionKey: `subagent:workboard-default-${card.id}`,
+        sessionKey: `subagent:workboard-default-${card.id}-10`,
       }),
     );
     await expect(store.get(card.id)).resolves.toMatchObject({
