@@ -91,6 +91,81 @@ function hasAgentTurnOnlyPayloadHint(payload: UnknownRecord): boolean {
   );
 }
 
+function splitLegacyCommandLine(input: string): string[] | undefined {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  let tokenStarted = false;
+
+  for (const ch of input.trim()) {
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      tokenStarted = true;
+      continue;
+    }
+    if (ch === "\\" && quote !== "'") {
+      escaped = true;
+      tokenStarted = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = undefined;
+      } else {
+        current += ch;
+      }
+      tokenStarted = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      tokenStarted = true;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (tokenStarted) {
+        tokens.push(current);
+        current = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+    current += ch;
+    tokenStarted = true;
+  }
+
+  if (escaped || quote) {
+    return undefined;
+  }
+  if (tokenStarted) {
+    tokens.push(current);
+  }
+  return tokens.length > 0 ? tokens : undefined;
+}
+
+function normalizeLegacyCommandArgv(payload: UnknownRecord): string[] | undefined {
+  const command = normalizeOptionalString(payload.command);
+  if (!command) {
+    return undefined;
+  }
+  if ("args" in payload) {
+    if (!Array.isArray(payload.args) || payload.args.some((entry) => typeof entry !== "string")) {
+      return undefined;
+    }
+    if (/\s/.test(command)) {
+      return undefined;
+    }
+    return [command, ...payload.args];
+  }
+  return splitLegacyCommandLine(command);
+}
+
+function normalizeLegacyCommandStringField(value: unknown): string | undefined {
+  return parseOptionalField(TrimmedNonEmptyStringFieldSchema, value);
+}
+
 function coerceSchedule(schedule: UnknownRecord) {
   const next: UnknownRecord = { ...schedule };
   const rawKind = normalizeLowercaseStringOrEmpty(schedule.kind);
@@ -233,6 +308,16 @@ function coercePayload(payload: UnknownRecord) {
       delete next.argv;
     }
   }
+  if (next.kind === "command" && !("argv" in next)) {
+    const argv = normalizeLegacyCommandArgv(next);
+    if (argv) {
+      next.argv = argv;
+    }
+  }
+  if (next.kind === "command") {
+    delete next.command;
+    delete next.args;
+  }
   if ("cwd" in next) {
     const cwd = parseOptionalField(TrimmedNonEmptyStringFieldSchema, next.cwd);
     if (cwd !== undefined) {
@@ -271,6 +356,16 @@ function coercePayload(payload: UnknownRecord) {
       delete next.outputMaxBytes;
     }
   }
+  for (const key of ["successRegex", "failureRegex", "summaryRegex", "outputMode"] as const) {
+    if (key in next) {
+      const value = normalizeLegacyCommandStringField(next[key]);
+      if (value !== undefined) {
+        next[key] = value;
+      } else {
+        delete next[key];
+      }
+    }
+  }
   if (
     "allowUnsafeExternalContent" in next &&
     typeof next.allowUnsafeExternalContent !== "boolean"
@@ -296,14 +391,26 @@ function coercePayload(payload: UnknownRecord) {
     delete next.input;
     delete next.noOutputTimeoutSeconds;
     delete next.outputMaxBytes;
+    delete next.command;
+    delete next.args;
+    delete next.successRegex;
+    delete next.failureRegex;
+    delete next.summaryRegex;
+    delete next.outputMode;
   } else if (next.kind === "agentTurn") {
     delete next.text;
     delete next.argv;
+    delete next.command;
+    delete next.args;
     delete next.cwd;
     delete next.env;
     delete next.input;
     delete next.noOutputTimeoutSeconds;
     delete next.outputMaxBytes;
+    delete next.successRegex;
+    delete next.failureRegex;
+    delete next.summaryRegex;
+    delete next.outputMode;
   } else if (next.kind === "command") {
     delete next.text;
     delete next.message;

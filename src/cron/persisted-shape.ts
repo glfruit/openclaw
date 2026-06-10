@@ -9,6 +9,25 @@ export type InvalidPersistedCronJobReason =
   | "missing-payload"
   | "invalid-payload";
 
+function isValidStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((entry) => typeof entry === "string" && entry.length > 0)
+  );
+}
+
+function isValidLegacyCommandPayload(payload: Record<string, unknown>): boolean {
+  const command = payload.command;
+  if (typeof command !== "string" || command.trim().length === 0) {
+    return false;
+  }
+  if (!("args" in payload)) {
+    return true;
+  }
+  return Array.isArray(payload.args) && payload.args.every((entry) => typeof entry === "string");
+}
+
 /** Returns the first structural reason a persisted cron job cannot be loaded safely. */
 export function getInvalidPersistedCronJobReason(
   candidate: Record<string, unknown>,
@@ -74,12 +93,7 @@ export function getInvalidPersistedCronJobReason(
     }
   }
   if (payloadKind === "command") {
-    const argv = payloadRecord.argv;
-    if (
-      !Array.isArray(argv) ||
-      argv.length === 0 ||
-      argv.some((value) => typeof value !== "string" || value.length === 0)
-    ) {
+    if (!isValidStringArray(payloadRecord.argv) && !isValidLegacyCommandPayload(payloadRecord)) {
       return "invalid-payload";
     }
   }
