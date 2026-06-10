@@ -551,6 +551,30 @@ describe("cron store", () => {
     });
   });
 
+  it("loads legacy command payloads through SQLite as canonical argv payloads", async () => {
+    const store = await makeStorePath();
+    const payload = makeStore("legacy-command-job", true);
+    payload.jobs[0].sessionTarget = "isolated";
+    payload.jobs[0].payload = {
+      kind: "command",
+      command: "/usr/bin/env",
+      args: ["printf", "ok\\n"],
+      successRegex: "ok",
+      summaryRegex: "^(ok)$",
+      timeoutSeconds: 45,
+    } as unknown as (typeof payload.jobs)[number]["payload"];
+
+    await saveCronStore(store.storePath, payload);
+
+    expect((await loadCronStore(store.storePath)).jobs[0]?.payload).toEqual({
+      kind: "command",
+      argv: ["/usr/bin/env", "printf", "ok\\n"],
+      successRegex: "ok",
+      summaryRegex: "^(ok)$",
+      timeoutSeconds: 45,
+    });
+  });
+
   it("round-trips completion destinations through SQLite delivery columns", async () => {
     const { storePath } = await makeStorePath();
     const job = makeStore("sqlite-webhook-delivery-job", true).jobs[0];
