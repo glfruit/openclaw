@@ -264,12 +264,24 @@ type CronAgentTurnPayloadPatch = {
 type CronCommandPayloadFields = {
   /** Explicit argv vector to execute. Use a shell wrapper argv for shell syntax. */
   argv: string[];
+  /** @deprecated Legacy command cron payloads are normalized to argv on load. */
+  command?: string;
+  /** @deprecated Legacy command cron payloads are normalized to argv on load. */
+  args?: string[];
   cwd?: string;
   env?: Record<string, string>;
   input?: string;
   timeoutSeconds?: number;
   noOutputTimeoutSeconds?: number;
   outputMaxBytes?: number;
+  /** @deprecated Legacy completion matcher preserved for existing command cron jobs. */
+  successRegex?: string;
+  /** @deprecated Legacy failure matcher preserved for existing command cron jobs. */
+  failureRegex?: string;
+  /** @deprecated Legacy summary extractor preserved for existing command cron jobs. */
+  summaryRegex?: string;
+  /** @deprecated Legacy summary mode preserved for existing command cron jobs. */
+  outputMode?: string;
 };
 
 type CronCommandPayload = {

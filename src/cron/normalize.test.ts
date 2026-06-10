@@ -402,6 +402,32 @@ describe("normalizeCronJobCreate", () => {
     expect(validateCronAddParams(normalized)).toBe(true);
   });
 
+  it("normalizes legacy command payloads to argv and preserves matcher fields", () => {
+    const normalized = normalizeCronJobCreate({
+      name: "legacy command",
+      schedule: { kind: "every", everyMs: 60_000 },
+      payload: {
+        kind: "command",
+        command: "/usr/bin/env",
+        args: ["printf", "done\\n"],
+        successRegex: "done",
+        failureRegex: "ERROR",
+        summaryRegex: "^(done)$",
+        outputMode: "lastLine",
+      },
+    }) as unknown as Record<string, unknown>;
+
+    expect(normalized.payload).toEqual({
+      kind: "command",
+      argv: ["/usr/bin/env", "printf", "done\\n"],
+      successRegex: "done",
+      failureRegex: "ERROR",
+      summaryRegex: "^(done)$",
+      outputMode: "lastLine",
+    });
+    expect(validateCronAddParams(normalized)).toBe(true);
+  });
+
   it("preserves command argv argument bytes", () => {
     const normalized = normalizeCronJobCreate({
       name: "command exact argv",

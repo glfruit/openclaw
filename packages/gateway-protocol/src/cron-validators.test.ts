@@ -68,6 +68,10 @@ describe("cron protocol validators", () => {
           timeoutSeconds: 30,
           noOutputTimeoutSeconds: 5,
           outputMaxBytes: 4096,
+          successRegex: "ok",
+          failureRegex: "ERROR",
+          summaryRegex: "^(ok)$",
+          outputMode: "lastLine",
         },
       }),
     ).toBe(true);
