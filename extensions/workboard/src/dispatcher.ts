@@ -60,10 +60,11 @@ function cardIsArchived(card: WorkboardCard): boolean {
   return Boolean(card.metadata?.archivedAt);
 }
 
-function buildSessionKey(card: WorkboardCard): string {
+function buildSessionKey(card: WorkboardCard, attemptId: string): string {
   const boardId = sanitizeSessionSegment(cardBoardId(card), "default");
   const cardId = sanitizeSessionSegment(card.id, "card");
-  const suffix = `subagent:workboard-${boardId}-${cardId}`;
+  const attempt = sanitizeSessionSegment(attemptId, "attempt");
+  const suffix = `subagent:workboard-${boardId}-${cardId}-${attempt}`;
   return card.agentId ? `agent:${sanitizeSessionSegment(card.agentId, "agent")}:${suffix}` : suffix;
 }
 
@@ -94,6 +95,16 @@ function buildWorkerPrompt(params: {
   ownerId: string;
   token: string;
 }): string {
+  const workspace = params.card.metadata?.automation?.workspace;
+  const workspaceLines =
+    workspace?.kind === "dir" && workspace.path
+      ? [
+          "## Workspace",
+          `Use this as the only project workspace: ${workspace.path}`,
+          "Resolve relative project paths from this directory. Do not assume the assigned agent's default workspace contains the card artifacts.",
+          "",
+        ]
+      : [];
   return [
     `Work on this OpenClaw Workboard card: ${params.card.title}`,
     "",
@@ -102,10 +113,13 @@ function buildWorkerPrompt(params: {
     `Claim ownerId: ${params.ownerId}`,
     `Claim token: ${params.token}`,
     "",
-    "Heartbeat with workboard_heartbeat using the card id and token while working.",
-    "When done, call workboard_complete with the card id, token, summary, and proof.",
-    "If blocked, call workboard_block with the card id, token, and reason.",
+    "Copy the claim token exactly as written above. Never abbreviate it or replace the middle with an ellipsis.",
+    "Heartbeat with workboard_heartbeat using arguments { id: <card id>, token: <exact claim token>, note?: <short status> } while working.",
+    "When done, call workboard_complete with the card id, exact token, summary, and proof.",
+    "If blocked, call workboard_block with the card id, exact token, and reason.",
+    "Read only concrete files. Do not call read on a directory; use the explicit file paths in the card context, or block if required paths are missing.",
     "",
+    ...workspaceLines,
     params.context,
   ].join("\n");
 }
@@ -181,7 +195,8 @@ export async function dispatchAndStartWorkboardCards(params: {
 
   for (const card of selectStartableCards(cards, maxStarts, candidates)) {
     const ownerId = params.options?.ownerId?.trim() || card.agentId || DEFAULT_DISPATCH_OWNER;
-    const sessionKey = buildSessionKey(card);
+    const attemptId = String(now);
+    const sessionKey = buildSessionKey(card, attemptId);
     let token = "";
     try {
       const claimed = await params.store.claim(card.id, {

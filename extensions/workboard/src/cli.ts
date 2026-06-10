@@ -85,10 +85,14 @@ async function callWorkboardGateway(
   method: string,
   options: GatewayOptions,
   params?: unknown,
+  scopes: Array<"operator.admin" | "operator.write" | "operator.read"> = [
+    "operator.write",
+    "operator.read",
+  ],
 ): Promise<unknown> {
   return await callGatewayFromCli(method, options, params, {
     mode: "cli",
-    scopes: ["operator.write", "operator.read"],
+    scopes,
   });
 }
 
@@ -208,9 +212,12 @@ export function registerWorkboardCli(params: { program: Command; store: Workboar
       .option("--json", "Print JSON", false),
   ).action(async (options: GatewayOptions) => {
     try {
-      const result = await callWorkboardGateway("workboard.cards.dispatch", options, {
-        boardId: options.board,
-      });
+      const result = await callWorkboardGateway(
+        "workboard.cards.dispatch",
+        options,
+        { boardId: options.board },
+        ["operator.admin", "operator.write", "operator.read"],
+      );
       if (options.json) {
         writeJson(result);
       } else {
