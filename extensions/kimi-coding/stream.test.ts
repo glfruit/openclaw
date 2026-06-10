@@ -349,11 +349,6 @@ describe("kimi tool-call markup wrapper", () => {
           content: [
             { type: "text", text: "hello" },
             {
-              type: "tool_result",
-              tool_use_id: "tool_1",
-              content: [{ type: "text", text: "done" }],
-            },
-            {
               type: "tool_use",
               id: "tool_2",
               name: "persist",
