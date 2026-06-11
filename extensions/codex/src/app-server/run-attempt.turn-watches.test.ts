@@ -1758,7 +1758,7 @@ describe("runCodexAppServerAttempt turn watches", () => {
     expect(completionWarnData?.lastAssistantTextPreview).toBe("I'm writing the report now.");
   });
 
-  it("uses the post-tool timeout for commentary raw assistant progress", async () => {
+  it("releases commentary raw assistant progress after post-tool idle", async () => {
     let notify: (notification: CodexServerNotification) => Promise<void> = async () => undefined;
     let handleRequest:
       | ((request: { id: string; method: string; params?: unknown }) => Promise<unknown>)
@@ -1838,19 +1838,34 @@ describe("runCodexAppServerAttempt turn watches", () => {
       },
     });
 
-    await new Promise((resolve) => {
-      setTimeout(resolve, 40);
-    });
-    expect(settled).toBe(false);
-
     const result = await run;
-    expect(result.aborted).toBe(true);
-    expect(result.timedOut).toBe(true);
-    const completionWarnCall = warn.mock.calls.find(
-      ([message]) => message === "codex app-server turn idle timed out waiting for completion",
+    expect(settled).toBe(true);
+    expect(result.aborted).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.promptError).toBeNull();
+    expect(result.assistantTexts).toEqual(["I'm editing app.js now."]);
+    const releaseWarnCall = warn.mock.calls.find(
+      ([message]) =>
+        message ===
+        "codex app-server turn released after completed assistant item without terminal event",
     );
-    const completionWarnData = completionWarnCall?.[1] as { timeoutMs?: number } | undefined;
-    expect(completionWarnData?.timeoutMs).toBe(100);
+    const releaseWarnData = releaseWarnCall?.[1] as
+      | {
+          lastAssistantTextPreview?: string;
+          lastNotificationItemRole?: string;
+          lastNotificationItemType?: string;
+          timeoutMs?: number;
+        }
+      | undefined;
+    expect(releaseWarnData?.timeoutMs).toBe(100);
+    expect(releaseWarnData?.lastNotificationItemType).toBe("message");
+    expect(releaseWarnData?.lastNotificationItemRole).toBe("assistant");
+    expect(releaseWarnData?.lastAssistantTextPreview).toBe("I'm editing app.js now.");
+    expect(
+      warn.mock.calls.some(
+        ([message]) => message === "codex app-server turn idle timed out waiting for completion",
+      ),
+    ).toBe(false);
   });
 
   it("counts native response deltas as post-tool raw assistant activity", async () => {
