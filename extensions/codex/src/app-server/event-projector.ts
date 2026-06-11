@@ -1745,6 +1745,20 @@ export class CodexAppServerEventProjector {
     return this.resolveFinalAssistantTextItem()?.text;
   }
 
+  promoteLatestCommentaryAssistantTextForMissingTerminal(): void {
+    for (let i = this.assistantItemOrder.length - 1; i >= 0; i -= 1) {
+      const itemId = this.assistantItemOrder[i];
+      if (!itemId || this.assistantPhaseByItem.get(itemId) !== "commentary") {
+        continue;
+      }
+      const text = this.assistantTextByItem.get(itemId)?.trim();
+      if (text && !this.toolProgressTexts.has(text)) {
+        this.assistantPhaseByItem.set(itemId, "final_answer");
+        return;
+      }
+    }
+  }
+
   private resolveFinalAssistantTextItem(): { itemId: string; text: string } | undefined {
     for (let i = this.assistantItemOrder.length - 1; i >= 0; i -= 1) {
       const itemId = this.assistantItemOrder[i];

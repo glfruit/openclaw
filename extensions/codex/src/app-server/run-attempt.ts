@@ -1514,6 +1514,7 @@ export async function runCodexAppServerAttempt(
     onMarkTimedOut: () => projectorRef.current?.markTimedOut(),
     onAbort: (reason) => runAbortController.abort(reason),
     onCompleted: () => {
+      projectorRef.current?.promoteLatestCommentaryAssistantTextForMissingTerminal();
       completed = true;
     },
     onResolveCompletion: () => resolveCompletion?.(),
@@ -1852,6 +1853,16 @@ export async function runCodexAppServerAttempt(
         // model stream, so reserve synchronously before queued projection.
         projector.recordNativeToolOutcome(nativeItem);
       }
+    }
+    if (
+      isNativeResponseStreamDelta &&
+      !nativeResponseStreamDeltaMatchesActiveTurn &&
+      turnWatches.isAssistantCompletionIdleWatchArmed()
+    ) {
+      turnWatches.disarmAssistantCompletionIdleWatch();
+      turnWatches.armCompletionIdleWatch({
+        timeoutMs: postToolRawAssistantCompletionIdleTimeoutMs,
+      });
     }
     if (notificationMatchesActiveTurn) {
       // If Codex app-server exposes raw response deltas, treat them as activity

@@ -151,11 +151,16 @@ export function applyCodexTurnNotificationState(params: {
     turnCrossedToolHandoff &&
     isRawVisibleAssistantCompletionNotification(notification) &&
     params.activeTurnItemIds.size === 0;
+  const postToolRawAssistantProgressNeedsTerminalGuard =
+    isCurrentTurnNotification &&
+    turnCrossedToolHandoff &&
+    isRawAssistantProgressNotification(notification) &&
+    params.activeTurnItemIds.size === 0;
   const postToolProgressNeedsTerminalGuard =
     isCurrentTurnNotification &&
     turnCrossedToolHandoff &&
     ((((isRawAssistantProgressNotification(notification) &&
-      !postToolRawAssistantCompletionNeedsTerminalGuard) ||
+      !postToolRawAssistantProgressNeedsTerminalGuard) ||
       isRawReasoningCompletionNotification(notification)) &&
       params.activeTurnItemIds.size === 0) ||
       isReasoningProgressNotification(notification));
@@ -225,11 +230,17 @@ export function applyCodexTurnNotificationState(params: {
     turnWatches.disarmAssistantCompletionIdleWatch();
   } else if (isCurrentTurnNotification && assistantCompletionCanRelease) {
     turnWatches.armAssistantCompletionIdleWatch(describeNotificationActivity(notification));
-  } else if (postToolRawAssistantCompletionNeedsTerminalGuard) {
+  } else if (
+    postToolRawAssistantCompletionNeedsTerminalGuard ||
+    postToolRawAssistantProgressNeedsTerminalGuard
+  ) {
     // Codex can emit a final visible raw assistant item after a tool handoff
     // and then miss turn/completed. Release the OpenClaw turn through the
     // assistant-completion path so channels receive the visible answer instead
-    // of an internal lifecycle fallback.
+    // of an internal lifecycle fallback. Treat commentary-phase raw assistant
+    // text the same way after the guard interval: if no later terminal event or
+    // assistant text arrives, the visible progress update is still better than
+    // surfacing an internal incomplete-turn error to the channel.
     turnWatches.armAssistantCompletionIdleWatch(describeNotificationActivity(notification), {
       timeoutMs: params.postToolRawAssistantCompletionIdleTimeoutMs,
     });
@@ -277,6 +288,7 @@ export function applyCodexTurnNotificationState(params: {
     !trackedDynamicToolCompletion &&
     !rawToolOutputCompletion &&
     !postToolRawAssistantCompletionNeedsTerminalGuard &&
+    !postToolRawAssistantProgressNeedsTerminalGuard &&
     !postToolProgressNeedsTerminalGuard &&
     !postToolPatchUpdateNeedsTerminalGuard &&
     !postToolNativeResponseDeltaNeedsContinuationGuard &&
