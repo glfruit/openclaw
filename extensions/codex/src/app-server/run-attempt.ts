@@ -1354,6 +1354,7 @@ export async function runCodexAppServerAttempt(
     onMarkTimedOut: () => projectorRef.current?.markTimedOut(),
     onAbort: (reason) => runAbortController.abort(reason),
     onCompleted: () => {
+      projectorRef.current?.promoteLatestCommentaryAssistantTextForMissingTerminal();
       completed = true;
     },
     onResolveCompletion: () => resolveCompletion?.(),
@@ -1676,6 +1677,16 @@ export async function runCodexAppServerAttempt(
       correlation.matchesActiveTurn === true ||
       (!isNativeResponseStreamDelta && correlation.matchesActiveTurn !== false) ||
       nativeResponseStreamDeltaMatchesActiveTurn;
+    if (
+      isNativeResponseStreamDelta &&
+      !nativeResponseStreamDeltaMatchesActiveTurn &&
+      turnWatches.isAssistantCompletionIdleWatchArmed()
+    ) {
+      turnWatches.disarmAssistantCompletionIdleWatch();
+      turnWatches.armCompletionIdleWatch({
+        timeoutMs: postToolRawAssistantCompletionIdleTimeoutMs,
+      });
+    }
     if (notificationMatchesActiveTurn) {
       // If Codex app-server exposes raw response deltas, treat them as activity
       // only when scoped to this turn or attributable to a single lease.
