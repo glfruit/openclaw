@@ -210,6 +210,8 @@ function isReadOnlyShellSegment(segment: string): boolean {
     /^python3?\s+-m\s+json\.tool\b/,
     /^python3?\s+\S*(?:audit|check|status|probe|doctor|inspect)[\w-]*\.py\b/,
     /^uv\s+run\b.*\bpython3?\s+\S*(?:audit|check|status|probe|doctor|inspect)[\w-]*\.py\b/,
+    /^(?:\S*\/)?scripts\/edu-python\.sh\s+(?:\S*\/)?scripts\/edu_task_state\.py\b/,
+    /^(?:\S*\/)?scripts\/edu-python\.sh\s+(?:\S*\/)?scripts\/\S*(?:audit|check|status|probe|doctor|inspect)[\w-]*\.py\b/,
   ].some((pattern) => pattern.test(normalized));
 }
 
