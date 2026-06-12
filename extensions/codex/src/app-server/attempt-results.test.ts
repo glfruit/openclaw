@@ -178,6 +178,39 @@ describe("Codex app-server attempt results", () => {
     expect(
       classifyCodexAppServerRecoveryMetadata(
         createResult({
+          toolMetas: [{ toolName: "bash", meta: "rg TODO src" }],
+        }),
+      ),
+    ).toEqual({
+      sideEffectClass: "read_only",
+      recoveryMode: "safe_fallback",
+      lastToolSummary: "bash: rg TODO src",
+    });
+    expect(
+      classifyCodexAppServerRecoveryMetadata(
+        createResult({
+          toolMetas: [{ toolName: "bash", meta: "rg TODO src; python scripts/mutate.py" }],
+        }),
+      ),
+    ).toEqual({
+      sideEffectClass: "unknown",
+      recoveryMode: "verify_only",
+      lastToolSummary: "bash: rg TODO src; python scripts/mutate.py",
+    });
+    expect(
+      classifyCodexAppServerRecoveryMetadata(
+        createResult({
+          toolMetas: [{ toolName: "bash", meta: "find . -exec rm {} \\;" }],
+        }),
+      ),
+    ).toEqual({
+      sideEffectClass: "unknown",
+      recoveryMode: "verify_only",
+      lastToolSummary: "bash: find . -exec rm {} \\;",
+    });
+    expect(
+      classifyCodexAppServerRecoveryMetadata(
+        createResult({
           didSendViaMessagingTool: true,
           messagingToolSentTexts: ["sent"],
         }),

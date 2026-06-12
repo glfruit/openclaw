@@ -6,11 +6,8 @@ import { classifyFailoverReason } from "../embedded-agent-helpers/errors.js";
 import type { FailoverReason } from "../embedded-agent-helpers/types.js";
 import { isGpt5ModelId } from "../gpt5-prompt-overlay.js";
 import type { ModelFallbackResultClassification } from "../model-fallback.js";
-import {
-  hasCommittedOutboundDeliveryEvidence,
-  hasVisibleAgentPayload,
-} from "./delivery-evidence.js";
-import type { EmbeddedAgentRunResult } from "./types.js";
+import { hasOutboundDeliveryEvidence, hasVisibleAgentPayload } from "./delivery-evidence.js";
+import type { CodexAppServerRecoveryTrace, EmbeddedAgentRunResult } from "./types.js";
 
 /**
  * Classifies embedded-agent terminal results for model fallback decisions.
@@ -145,17 +142,47 @@ function collectTerminalErrorText(result: EmbeddedAgentRunResult): string {
     .join("\n");
 }
 
+function hasToolActivityMetadata(result: EmbeddedAgentRunResult): boolean {
+  const toolSummary = result.meta.toolSummary;
+  return Boolean(
+    toolSummary &&
+    ((typeof toolSummary.calls === "number" && toolSummary.calls > 0) ||
+      (Array.isArray(toolSummary.tools) && toolSummary.tools.length > 0)),
+  );
+}
+
 function classifyCodexAppServerIncompleteResult(params: {
   provider: string;
   model: string;
   errorText: string;
+  recovery?: CodexAppServerRecoveryTrace;
+  hasToolActivity: boolean;
 }): ModelFallbackResultClassification {
+  if (params.recovery) {
+    const sideEffectClass = params.recovery.sideEffectClass;
+    if (
+      params.recovery.recoveryMode === "blocked_side_effect" ||
+      params.recovery.recoveryMode === "verify_only" ||
+      sideEffectClass === "mutating" ||
+      sideEffectClass === "external_delivery" ||
+      sideEffectClass === "prepare_only" ||
+      sideEffectClass === "unknown"
+    ) {
+      return null;
+    }
+  }
   if (CODEX_APP_SERVER_INCOMPLETE_SIDE_EFFECT_RE.test(params.errorText)) {
+    if (params.recovery?.recoveryMode !== "safe_fallback") {
+      return null;
+    }
     return {
       message: `${params.provider}/${params.model} stopped after tool activity before a final reply`,
       reason: "format",
       code: "codex_app_server_incomplete_side_effect",
     };
+  }
+  if (params.hasToolActivity) {
+    return null;
   }
   if (CODEX_APP_SERVER_INCOMPLETE_RE.test(params.errorText)) {
     return {
@@ -196,7 +223,7 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
   if (params.result.meta.replayInvalid === true && !fallbackSafeIncompleteTurn) {
     return null;
   }
-  if (hasCommittedOutboundDeliveryEvidence(params.result)) {
+  if (hasOutboundDeliveryEvidence(params.result)) {
     return null;
   }
   if (params.result.meta.error?.kind === "hook_block") {
@@ -210,6 +237,8 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
     provider: params.provider,
     model: params.model,
     errorText,
+    recovery: params.result.meta.codexAppServerRecovery,
+    hasToolActivity: hasToolActivityMetadata(params.result),
   });
   if (
     params.result.meta.aborted &&

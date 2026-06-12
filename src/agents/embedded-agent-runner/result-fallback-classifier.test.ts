@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { classifyEmbeddedAgentRunResultForModelFallback } from "./result-fallback-classifier.js";
 
 describe("classifyEmbeddedAgentRunResultForModelFallback", () => {
-  it("classifies Codex app-server incomplete turns after tool activity for side-effect recovery", () => {
+  it("does not fallback Codex app-server incomplete turns with side-effect recovery", () => {
     const classification = classifyEmbeddedAgentRunResultForModelFallback({
       provider: "openai-codex",
       model: "gpt-5.5",
@@ -14,13 +14,87 @@ describe("classifyEmbeddedAgentRunResultForModelFallback", () => {
             isError: true,
           },
         ],
-        meta: { durationMs: 1 },
+        meta: {
+          durationMs: 1,
+          codexAppServerRecovery: {
+            sideEffectClass: "mutating",
+            recoveryMode: "blocked_side_effect",
+          },
+        },
+      },
+    });
+
+    expect(classification).toBeNull();
+  });
+
+  it("does not fallback legacy Codex app-server side-effect text without recovery metadata", () => {
+    const classification = classifyEmbeddedAgentRunResultForModelFallback({
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      result: {
+        payloads: [
+          {
+            text: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
+            isError: true,
+          },
+        ],
+        meta: {
+          durationMs: 1,
+        },
+      },
+    });
+
+    expect(classification).toBeNull();
+  });
+
+  it("does not fallback prepare-only Codex app-server recovery turns", () => {
+    const classification = classifyEmbeddedAgentRunResultForModelFallback({
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      result: {
+        payloads: [
+          {
+            text: "Codex 没有返回完整结束信号；OpenClaw 正在按最新状态恢复，请稍后重试或发送“怎么样了”查看进度。",
+            isError: true,
+          },
+        ],
+        meta: {
+          durationMs: 1,
+          codexAppServerRecovery: {
+            sideEffectClass: "prepare_only",
+            recoveryMode: "verify_only",
+          },
+        },
+      },
+    });
+
+    expect(classification).toBeNull();
+  });
+
+  it("allows fallback for read-only Codex app-server incomplete recovery turns", () => {
+    const classification = classifyEmbeddedAgentRunResultForModelFallback({
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      result: {
+        payloads: [
+          {
+            text: "Codex 没有返回完整结束信号；OpenClaw 正在按最新状态恢复，请稍后重试或发送“怎么样了”查看进度。",
+            isError: true,
+          },
+        ],
+        meta: {
+          durationMs: 1,
+          codexAppServerRecovery: {
+            sideEffectClass: "read_only",
+            recoveryMode: "safe_fallback",
+          },
+        },
       },
     });
 
     expect(classification).toMatchObject({
       reason: "format",
-      code: "codex_app_server_incomplete_side_effect",
+      code: "codex_app_server_incomplete_result",
     });
   });
 
