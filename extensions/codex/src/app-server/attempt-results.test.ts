@@ -3,6 +3,7 @@ import type { EmbeddedRunAttemptResult } from "openclaw/plugin-sdk/agent-harness
 import { describe, expect, it } from "vitest";
 import {
   buildCodexAppServerPromptTimeoutOutcome,
+  classifyCodexAppServerRecoveryMetadata,
   collectTerminalAssistantText,
   isInvalidCodexImagePayloadError,
   resolveCodexAppServerReplayBlockedReason,
@@ -87,7 +88,9 @@ describe("Codex app-server attempt results", () => {
       }),
     ).toEqual({
       message:
-        "OpenClaw detected an incomplete Codex turn before a final answer was available. Please retry if needed.",
+        "Codex 没有返回完整结束信号；OpenClaw 正在按最新状态恢复，请稍后重试或发送“怎么样了”查看进度。",
+      sideEffectClass: "none",
+      recoveryMode: "safe_fallback",
     });
     expect(
       buildCodexAppServerPromptTimeoutOutcome({
@@ -101,8 +104,9 @@ describe("Codex app-server attempt results", () => {
         turnWatchTimeoutKind: "completion",
       }),
     ).toEqual({
-      message:
-        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
+      message: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
+      sideEffectClass: "mutating",
+      recoveryMode: "blocked_side_effect",
       replayInvalid: true,
       livenessState: "abandoned",
     });
@@ -115,8 +119,10 @@ describe("Codex app-server attempt results", () => {
         turnWatchTimeoutKind: "completion",
       }),
     ).toEqual({
-      message:
-        "OpenClaw detected an incomplete Codex turn before a final answer was available. Please retry if needed.",
+      message: "I am changing the data model now...",
+      sideEffectClass: "none",
+      recoveryMode: "safe_fallback",
+      lastAssistantText: "I am changing the data model now...",
       replayInvalid: true,
       livenessState: "abandoned",
     });
@@ -133,11 +139,50 @@ describe("Codex app-server attempt results", () => {
         turnWatchTimeoutKind: "completion",
       }),
     ).toEqual({
-      message:
-        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
+      message: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
+      sideEffectClass: "unknown",
+      recoveryMode: "verify_only",
+      lastToolSummary: "exec",
       replayInvalid: true,
       livenessState: "abandoned",
     });
+  });
+
+  it("classifies incomplete turn recovery metadata", () => {
+    expect(classifyCodexAppServerRecoveryMetadata(createResult())).toEqual({
+      sideEffectClass: "none",
+      recoveryMode: "safe_fallback",
+    });
+    expect(
+      classifyCodexAppServerRecoveryMetadata(
+        createResult({
+          toolMetas: [{ toolName: "read", meta: "path=README.md" }],
+        }),
+      ),
+    ).toEqual({
+      sideEffectClass: "read_only",
+      recoveryMode: "safe_fallback",
+      lastToolSummary: "read: path=README.md",
+    });
+    expect(
+      classifyCodexAppServerRecoveryMetadata(
+        createResult({
+          toolMetas: [{ toolName: "dispatch_prepare", meta: "label=review" }],
+        }),
+      ),
+    ).toEqual({
+      sideEffectClass: "prepare_only",
+      recoveryMode: "verify_only",
+      lastToolSummary: "dispatch_prepare: label=review",
+    });
+    expect(
+      classifyCodexAppServerRecoveryMetadata(
+        createResult({
+          didSendViaMessagingTool: true,
+          messagingToolSentTexts: ["sent"],
+        }),
+      ).sideEffectClass,
+    ).toBe("external_delivery");
   });
 
   it("classifies replay blocked reasons", () => {

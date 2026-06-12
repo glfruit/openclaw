@@ -15,7 +15,8 @@ import type { EmbeddedRunAttemptResult } from "./run/types.js";
 let runEmbeddedAgent: typeof import("./run.js").runEmbeddedAgent;
 
 const CODEX_MISSING_TERMINAL_MESSAGE =
-  "Codex stopped before confirming the turn was complete. The response may be incomplete; retry if needed.";
+  "Codex 没有返回完整结束信号；OpenClaw 正在按最新状态恢复，请稍后重试或发送“怎么样了”查看进度。";
+const CODEX_SIDE_EFFECT_RECOVERY_MESSAGE = "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。";
 
 function codexClientClosedAttempt(
   overrides: Partial<EmbeddedRunAttemptResult> = {},
@@ -276,10 +277,11 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
         didSendViaMessagingTool: true,
         replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
         promptTimeoutOutcome: {
-          message:
-            "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.",
+          message: CODEX_SIDE_EFFECT_RECOVERY_MESSAGE,
           replayInvalid: true,
           livenessState: "abandoned",
+          sideEffectClass: "external_delivery",
+          recoveryMode: "blocked_side_effect",
         },
         codexAppServerFailure: {
           kind: "turn_completion_idle_timeout",
@@ -289,6 +291,8 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
           turnId: "turn-1",
           replaySafe: false,
           replayBlockedReason: "potential_side_effect",
+          sideEffectClass: "external_delivery",
+          recoveryMode: "blocked_side_effect",
         },
       }),
     );
@@ -312,7 +316,7 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
 
     expect(result.payloads?.[0]).toMatchObject({
       isError: true,
-      text: "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.",
+      text: CODEX_SIDE_EFFECT_RECOVERY_MESSAGE,
     });
     expect(result.meta.replayInvalid).toBe(true);
     expect(result.meta.livenessState).toBe("abandoned");
