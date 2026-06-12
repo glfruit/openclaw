@@ -112,6 +112,37 @@ describe("dispatchAndStartWorkboardCards", () => {
     );
   });
 
+  it("starts only the requested ready card when cardId is provided", async () => {
+    const store = new WorkboardStore(createMemoryStore());
+    const first = await store.create({
+      title: "First worker",
+      status: "ready",
+      priority: "urgent",
+      agentId: "codex-main",
+    });
+    const second = await store.create({
+      title: "Second worker",
+      status: "ready",
+      priority: "normal",
+      agentId: "codex-side",
+    });
+    const run = vi.fn().mockResolvedValue({ runId: "run-second" });
+
+    const result = await dispatchAndStartWorkboardCards({
+      store,
+      subagent: { run },
+      options: { now: 10, maxStarts: 3, cardId: second.id },
+    });
+
+    expect(result.started.map((entry) => entry.cardId)).toEqual([second.id]);
+    expect(run).toHaveBeenCalledOnce();
+    await expect(store.get(first.id)).resolves.toMatchObject({ status: "ready" });
+    await expect(store.get(second.id)).resolves.toMatchObject({
+      status: "running",
+      runId: "run-second",
+    });
+  });
+
   it("does not let review cards consume an agent running slot", async () => {
     const store = new WorkboardStore(createMemoryStore());
     await store.create({

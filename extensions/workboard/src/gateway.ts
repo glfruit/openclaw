@@ -1,7 +1,10 @@
 // Workboard plugin module implements gateway behavior.
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { OpenClawPluginApi } from "../api.js";
-import { dispatchAndStartWorkboardCards } from "./dispatcher.js";
+import {
+  dispatchAndStartWorkboardCards,
+  type WorkboardDispatchStartOptions,
+} from "./dispatcher.js";
 import { WorkboardStore } from "./store.js";
 import { WORKBOARD_STATUSES, type WorkboardCard } from "./types.js";
 
@@ -34,6 +37,53 @@ function readPatch(params: Record<string, unknown>): Record<string, unknown> {
     return patch as Record<string, unknown>;
   }
   return params;
+}
+
+function readOptionalString(
+  params: Record<string, unknown>,
+  ...keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function readOptionalPositiveInteger(
+  params: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = params[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.max(0, Math.trunc(value));
+}
+
+function readDispatchOptions(params: Record<string, unknown>): WorkboardDispatchStartOptions {
+  const cardId = readOptionalString(params, "id", "cardId", "card_id");
+  const boardId = readOptionalString(params, "boardId", "board_id", "board");
+  const maxStarts = readOptionalPositiveInteger(params, "maxStarts");
+  const provider = readOptionalString(params, "provider");
+  const model = readOptionalString(params, "model");
+  const ownerId = readOptionalString(params, "ownerId", "owner_id");
+  return {
+    ...(cardId ? { cardId } : {}),
+    ...(boardId ? { boardId } : {}),
+    ...(maxStarts !== undefined ? { maxStarts } : {}),
+    ...(provider ? { provider } : {}),
+    ...(model ? { model } : {}),
+    ...(ownerId ? { ownerId } : {}),
+  };
+}
+
+function readObjectParams(params: unknown): Record<string, unknown> {
+  return params && typeof params === "object" && !Array.isArray(params)
+    ? (params as Record<string, unknown>)
+    : {};
 }
 
 function assertNoCursorAdvance(params: Record<string, unknown>) {
@@ -385,16 +435,10 @@ export function registerWorkboardGatewayMethods(params: {
     "workboard.cards.dispatch",
     async ({ params: requestParams, respond }) => {
       try {
-        const boardId =
-          requestParams && typeof requestParams === "object" && "boardId" in requestParams
-            ? requestParams.boardId
-            : undefined;
         const result = await dispatchAndStartWorkboardCards({
           store,
           subagent: api.runtime.subagent,
-          options: {
-            boardId: typeof boardId === "string" ? boardId : undefined,
-          },
+          options: readDispatchOptions(readObjectParams(requestParams)),
         });
         respond(true, {
           ...result,

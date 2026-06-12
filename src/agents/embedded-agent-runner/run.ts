@@ -3127,6 +3127,29 @@ export async function runEmbeddedAgent(
               });
             const timeoutPhase = attempt.promptTimeoutOutcome?.timeoutPhase ?? "provider";
             const providerStarted = attempt.promptTimeoutOutcome?.providerStarted ?? true;
+            const codexAppServerRecovery = attempt.promptTimeoutOutcome
+              ? {
+                  ...(attempt.promptTimeoutOutcome.sideEffectClass
+                    ? { sideEffectClass: attempt.promptTimeoutOutcome.sideEffectClass }
+                    : {}),
+                  ...(attempt.promptTimeoutOutcome.recoveryMode
+                    ? { recoveryMode: attempt.promptTimeoutOutcome.recoveryMode }
+                    : {}),
+                  ...(attempt.promptTimeoutOutcome.lastAssistantText
+                    ? { lastAssistantText: attempt.promptTimeoutOutcome.lastAssistantText }
+                    : {}),
+                  ...(attempt.promptTimeoutOutcome.lastToolSummary
+                    ? { lastToolSummary: attempt.promptTimeoutOutcome.lastToolSummary }
+                    : {}),
+                }
+              : undefined;
+            const hasCodexAppServerRecovery = Boolean(
+              codexAppServerRecovery &&
+              (codexAppServerRecovery.sideEffectClass ||
+                codexAppServerRecovery.recoveryMode ||
+                codexAppServerRecovery.lastAssistantText ||
+                codexAppServerRecovery.lastToolSummary),
+            );
             setTerminalLifecycleMeta({
               replayInvalid,
               livenessState,
@@ -3153,6 +3176,9 @@ export async function runEmbeddedAgent(
                 livenessState,
                 timeoutPhase,
                 providerStarted,
+                ...(hasCodexAppServerRecovery && codexAppServerRecovery
+                  ? { codexAppServerRecovery }
+                  : {}),
                 toolSummary: attemptToolSummary,
                 ...(failureSignal ? { failureSignal } : {}),
                 agentHarnessResultClassification: attempt.agentHarnessResultClassification,

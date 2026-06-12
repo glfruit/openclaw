@@ -129,6 +129,23 @@ export type ContextManagementTrace = {
 
 export type EmbeddedRunLivenessState = "working" | "paused" | "blocked" | "abandoned";
 
+export type CodexAppServerSideEffectClass =
+  | "none"
+  | "read_only"
+  | "prepare_only"
+  | "mutating"
+  | "external_delivery"
+  | "unknown";
+
+export type CodexAppServerRecoveryMode = "safe_fallback" | "verify_only" | "blocked_side_effect";
+
+export type CodexAppServerRecoveryTrace = {
+  sideEffectClass?: CodexAppServerSideEffectClass;
+  recoveryMode?: CodexAppServerRecoveryMode;
+  lastAssistantText?: string;
+  lastToolSummary?: string;
+};
+
 export type EmbeddedRunFailureSignal = {
   kind: "execution_denied";
   source: "tool";
@@ -150,6 +167,7 @@ export type EmbeddedAgentRunMeta = {
   livenessState?: EmbeddedRunLivenessState;
   timeoutPhase?: AgentRunTimeoutPhase;
   providerStarted?: boolean;
+  codexAppServerRecovery?: CodexAppServerRecoveryTrace;
   agentHarnessResultClassification?: "empty" | "reasoning-only" | "planning-only";
   terminalReplyKind?: "silent-empty";
   yielded?: boolean;

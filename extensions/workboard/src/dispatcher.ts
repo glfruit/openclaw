@@ -11,6 +11,7 @@ const DEFAULT_DISPATCH_MODEL = "default";
 export type WorkboardSubagentRuntime = Pick<PluginRuntime["subagent"], "run">;
 
 export type WorkboardDispatchStartOptions = {
+  cardId?: string;
   maxStarts?: number;
   model?: string;
   provider?: string;
@@ -141,11 +142,13 @@ function sortReadyCards(a: WorkboardCard, b: WorkboardCard): number {
 function selectStartableCards(
   cards: WorkboardCard[],
   limit: number,
-  candidates: WorkboardCard[] = cards,
+  options: { candidates?: WorkboardCard[]; cardId?: string } = {},
 ): WorkboardCard[] {
   if (limit <= 0) {
     return [];
   }
+  const candidates = options.candidates ?? cards;
+  const cardId = options.cardId?.trim();
   const runningByOwner = new Map<string, number>();
   for (const card of cards) {
     const consumesOwnerSlot =
@@ -160,7 +163,13 @@ function selectStartableCards(
   }
   const selected: WorkboardCard[] = [];
   for (const card of candidates
-    .filter((entry) => entry.status === "ready" && !entry.metadata?.claim && !cardIsArchived(entry))
+    .filter(
+      (entry) =>
+        entry.status === "ready" &&
+        !entry.metadata?.claim &&
+        !cardIsArchived(entry) &&
+        (!cardId || entry.id === cardId),
+    )
     .toSorted(sortReadyCards)) {
     const owner = card.agentId ?? DEFAULT_DISPATCH_OWNER;
     if ((runningByOwner.get(owner) ?? 0) > 0) {
@@ -193,7 +202,10 @@ export async function dispatchAndStartWorkboardCards(params: {
   const cards = await params.store.list();
   const candidates = await params.store.list({ boardId });
 
-  for (const card of selectStartableCards(cards, maxStarts, candidates)) {
+  for (const card of selectStartableCards(cards, maxStarts, {
+    candidates,
+    cardId: params.options?.cardId,
+  })) {
     const ownerId = params.options?.ownerId?.trim() || card.agentId || DEFAULT_DISPATCH_OWNER;
     const attemptId = String(now);
     const sessionKey = buildSessionKey(card, attemptId);
