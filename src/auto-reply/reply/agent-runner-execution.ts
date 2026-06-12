@@ -845,10 +845,10 @@ const CODEX_APP_SERVER_TURN_COMPLETION_IDLE_TIMEOUT_RE =
 function buildCodexAppServerFailureText(message: string): string | null {
   const normalizedMessage = collapseRepeatedFailureDetail(message);
   if (CODEX_APP_SERVER_CLIENT_CLOSED_BEFORE_REPLY_RE.test(normalizedMessage)) {
-    return "⚠️ Codex app-server connection closed before this turn finished. OpenClaw retried once when the stdio turn was still replay-safe; please try again if this keeps happening.";
+    return "⚠️ Codex 连接在本轮完成前关闭。OpenClaw 会在安全时自动恢复；如果仍无进展，请发送“怎么样了”核验当前状态。";
   }
   if (CODEX_APP_SERVER_TURN_COMPLETION_IDLE_TIMEOUT_RE.test(normalizedMessage)) {
-    return "⚠️ Codex app-server stopped before confirming turn completion. OpenClaw did not replay the turn automatically because it may still be active; try again, or use /new if the session stays stuck.";
+    return "⚠️ Codex 没有确认本轮已结束。OpenClaw 正在避免重复执行可能已经发生的动作；请发送“怎么样了”核验当前状态。";
   }
   return null;
 }
