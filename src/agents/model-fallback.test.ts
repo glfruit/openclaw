@@ -1521,9 +1521,7 @@ describe("runWithModelFallback", () => {
       .mockResolvedValueOnce({
         payloads: [
           {
-            text:
-              "OpenClaw detected an incomplete Codex turn after tool activity. " +
-              "I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
+            text: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
             isError: true,
           },
         ],

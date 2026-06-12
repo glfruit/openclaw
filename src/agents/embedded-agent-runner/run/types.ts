@@ -97,6 +97,16 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   maxBeforeAgentFinalizeRevisions?: number;
 };
 
+export type CodexAppServerSideEffectClass =
+  | "none"
+  | "read_only"
+  | "prepare_only"
+  | "mutating"
+  | "external_delivery"
+  | "unknown";
+
+export type CodexAppServerRecoveryMode = "safe_fallback" | "verify_only" | "blocked_side_effect";
+
 export type EmbeddedRunAttemptResult = {
   aborted: boolean;
   /** True when the abort originated from the caller-provided abortSignal. */
@@ -143,6 +153,10 @@ export type EmbeddedRunAttemptResult = {
     livenessState?: EmbeddedRunLivenessState;
     timeoutPhase?: AgentRunTimeoutPhase;
     providerStarted?: boolean;
+    sideEffectClass?: CodexAppServerSideEffectClass;
+    recoveryMode?: CodexAppServerRecoveryMode;
+    lastAssistantText?: string;
+    lastToolSummary?: string;
   };
   codexAppServerFailure?: {
     kind: "client_closed_before_turn_completed" | "turn_completion_idle_timeout";
@@ -156,6 +170,10 @@ export type EmbeddedRunAttemptResult = {
       | "tool_activity"
       | "potential_side_effect"
       | "active_item";
+    sideEffectClass?: CodexAppServerSideEffectClass;
+    recoveryMode?: CodexAppServerRecoveryMode;
+    lastAssistantText?: string;
+    lastToolSummary?: string;
     diagnostics?: {
       idleMs?: number;
       timeoutMs?: number;

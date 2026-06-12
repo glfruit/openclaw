@@ -91,6 +91,7 @@ import {
 import {
   buildCodexAppServerPromptTimeoutOutcome,
   buildCodexTurnStartFailureResult,
+  classifyCodexAppServerRecoveryMetadata,
   collectTerminalAssistantText,
   isInvalidCodexImagePayloadError,
   resolveCodexAppServerReplayBlockedReason,
@@ -2756,6 +2757,9 @@ export async function runCodexAppServerAttempt(
     const codexAppServerReplayBlockedReason = codexAppServerFailureKind
       ? resolveCodexAppServerReplayBlockedReason(result)
       : undefined;
+    const codexAppServerRecoveryMetadata = codexAppServerFailureKind
+      ? classifyCodexAppServerRecoveryMetadata(result)
+      : undefined;
     const promptTimeoutOutcome = buildCodexAppServerPromptTimeoutOutcome({
       result,
       turnCompletionIdleTimedOut,
@@ -2943,6 +2947,18 @@ export async function runCodexAppServerAttempt(
               replaySafe: codexAppServerReplayBlockedReason === undefined,
               ...(codexAppServerReplayBlockedReason
                 ? { replayBlockedReason: codexAppServerReplayBlockedReason }
+                : {}),
+              ...(codexAppServerRecoveryMetadata
+                ? {
+                    sideEffectClass: codexAppServerRecoveryMetadata.sideEffectClass,
+                    recoveryMode: codexAppServerRecoveryMetadata.recoveryMode,
+                    ...(codexAppServerRecoveryMetadata.lastAssistantText
+                      ? { lastAssistantText: codexAppServerRecoveryMetadata.lastAssistantText }
+                      : {}),
+                    ...(codexAppServerRecoveryMetadata.lastToolSummary
+                      ? { lastToolSummary: codexAppServerRecoveryMetadata.lastToolSummary }
+                      : {}),
+                  }
                 : {}),
               ...(codexAppServerFailureDiagnostics
                 ? { diagnostics: codexAppServerFailureDiagnostics }
