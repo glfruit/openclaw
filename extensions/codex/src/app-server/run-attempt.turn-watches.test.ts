@@ -221,9 +221,10 @@ describe("runCodexAppServerAttempt turn watches", () => {
 
     expect(result.timedOut).toBe(true);
     expect(result.itemLifecycle.completedCount).toBe(1);
-    expect(result.promptTimeoutOutcome).toEqual({
-      message:
-        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
+    expect(result.promptTimeoutOutcome).toMatchObject({
+      message: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
+      sideEffectClass: "mutating",
+      recoveryMode: "blocked_side_effect",
       replayInvalid: true,
       livenessState: "abandoned",
     });
@@ -271,8 +272,9 @@ describe("runCodexAppServerAttempt turn watches", () => {
       Buffer.from(tinyPngBase64, "base64"),
     );
     expect(result.promptTimeoutOutcome).toEqual({
-      message:
-        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
+      message: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
+      sideEffectClass: "mutating",
+      recoveryMode: "blocked_side_effect",
       replayInvalid: true,
       livenessState: "abandoned",
     });
@@ -318,8 +320,9 @@ describe("runCodexAppServerAttempt turn watches", () => {
         turnCompletionIdleTimedOut: true,
       }),
     ).toEqual({
-      message:
-        "OpenClaw detected an incomplete Codex turn after tool activity. I stopped automatic retry to avoid repeating side effects; verify the current state before continuing.",
+      message: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
+      sideEffectClass: "mutating",
+      recoveryMode: "blocked_side_effect",
       replayInvalid: true,
       livenessState: "abandoned",
     });
@@ -2937,7 +2940,9 @@ describe("runCodexAppServerAttempt turn watches", () => {
       promptError: "codex app-server turn idle timed out waiting for turn/completed",
       promptTimeoutOutcome: {
         message:
-          "OpenClaw detected an incomplete Codex turn before a final answer was available. Please retry if needed.",
+          "Codex 没有返回完整结束信号；OpenClaw 正在按最新状态恢复，请稍后重试或发送“怎么样了”查看进度。",
+        sideEffectClass: "none",
+        recoveryMode: "safe_fallback",
       },
       codexAppServerFailure: {
         kind: "turn_completion_idle_timeout",
@@ -3916,12 +3921,14 @@ describe("runCodexAppServerAttempt turn watches", () => {
     expect(result.promptError).toBe("codex app-server client closed before turn completed");
     expect(result.aborted).toBe(false);
     expect(result.timedOut).toBe(false);
-    expect(result.codexAppServerFailure).toEqual({
+    expect(result.codexAppServerFailure).toMatchObject({
       kind: "client_closed_before_turn_completed",
       transport: "stdio",
       threadId: "thread-1",
       turnId: "turn-1",
       replaySafe: true,
+      sideEffectClass: "none",
+      recoveryMode: "safe_fallback",
     });
   });
 
@@ -3977,13 +3984,16 @@ describe("runCodexAppServerAttempt turn watches", () => {
     const result = await run;
     expect(result.promptError).toBe("codex app-server client closed before turn completed");
     expect(result.assistantTexts).toEqual(["Still writing"]);
-    expect(result.codexAppServerFailure).toEqual({
+    expect(result.codexAppServerFailure).toMatchObject({
       kind: "client_closed_before_turn_completed",
       transport: "stdio",
       threadId: "thread-1",
       turnId: "turn-1",
       replaySafe: false,
       replayBlockedReason: "assistant_output",
+      sideEffectClass: "none",
+      recoveryMode: "safe_fallback",
+      lastAssistantText: "Still writing",
     });
   });
 
@@ -4021,13 +4031,16 @@ describe("runCodexAppServerAttempt turn watches", () => {
     const result = await run;
     expect(result.promptError).toBe("codex app-server client closed before turn completed");
     expect(result.assistantTexts).toEqual(["Later partial reply"]);
-    expect(result.codexAppServerFailure).toEqual({
+    expect(result.codexAppServerFailure).toMatchObject({
       kind: "client_closed_before_turn_completed",
       transport: "stdio",
       threadId: "thread-1",
       turnId: "turn-1",
       replaySafe: false,
       replayBlockedReason: "assistant_output",
+      sideEffectClass: "none",
+      recoveryMode: "safe_fallback",
+      lastAssistantText: "Later partial reply",
     });
   });
 
@@ -4068,13 +4081,16 @@ describe("runCodexAppServerAttempt turn watches", () => {
     const result = await run;
     expect(result.promptError).toBe("codex app-server client closed before turn completed");
     expect(result.assistantTexts).toEqual(["Done before restart."]);
-    expect(result.codexAppServerFailure).toEqual({
+    expect(result.codexAppServerFailure).toMatchObject({
       kind: "client_closed_before_turn_completed",
       transport: "stdio",
       threadId: "thread-1",
       turnId: "turn-1",
       replaySafe: false,
       replayBlockedReason: "potential_side_effect",
+      sideEffectClass: "mutating",
+      recoveryMode: "blocked_side_effect",
+      lastAssistantText: "Done before restart.",
     });
   });
 
