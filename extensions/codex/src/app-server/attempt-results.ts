@@ -44,7 +44,11 @@ const MUTATING_TOOL_NAMES = new Set([
 ]);
 
 const READ_ONLY_SHELL_COMMAND_RE =
-  /^\s*(?:g?timeout\s+\d+\s+)?(?:rg|grep|sed|awk|cat|tail|head|ls|find|pwd|wc|jq|python3?\s+-m\s+json\.tool)\b/u;
+  /^(?:rg|grep|sed|awk|cat|tail|head|ls|find|pwd|wc|jq|python3?\s+-m\s+json\.tool)(?:\s+.*)?$/u;
+const SHELL_CONTROL_OPERATOR_RE = /[;&|<>`$()]/u;
+const SHELL_XARGS_RE = /(?:^|\s)xargs(?:\s|$)/u;
+const FIND_MUTATING_ARG_RE = /(?:^|\s)-(?:delete|exec|execdir|ok|okdir)(?:\s|$)/u;
+const SED_IN_PLACE_ARG_RE = /(?:^|\s)-i(?:\s|$|[.])/u;
 const PREPARE_ONLY_TOOL_RE = /(?:^|[_-])prepare(?:[_-]|$)/iu;
 
 type CodexAppServerRecoveryMetadata = {
@@ -205,9 +209,32 @@ function isReadOnlyToolMeta(tool: { toolName: string; meta?: string }): boolean 
     return true;
   }
   if ((tool.toolName === "bash" || tool.toolName === "exec") && tool.meta) {
-    return READ_ONLY_SHELL_COMMAND_RE.test(tool.meta);
+    return isReadOnlyShellCommand(tool.meta);
   }
   return false;
+}
+
+function isReadOnlyShellCommand(command: string): boolean {
+  let normalized = command.trim();
+  const timeoutPrefix = /^(?:g?timeout)\s+\d+\s+/u;
+  while (timeoutPrefix.test(normalized)) {
+    normalized = normalized.replace(timeoutPrefix, "").trim();
+  }
+  if (
+    !normalized ||
+    SHELL_CONTROL_OPERATOR_RE.test(normalized) ||
+    SHELL_XARGS_RE.test(normalized) ||
+    !READ_ONLY_SHELL_COMMAND_RE.test(normalized)
+  ) {
+    return false;
+  }
+  if (/^find(?:\s|$)/u.test(normalized) && FIND_MUTATING_ARG_RE.test(normalized)) {
+    return false;
+  }
+  if (/^sed(?:\s|$)/u.test(normalized) && SED_IN_PLACE_ARG_RE.test(normalized)) {
+    return false;
+  }
+  return true;
 }
 
 function isPrepareOnlyToolMeta(tool: { toolName: string; meta?: string }): boolean {

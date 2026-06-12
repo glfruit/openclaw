@@ -26,7 +26,11 @@ import type { AuthStorage, ModelRegistry } from "../../sessions/index.js";
 import type { ToolErrorSummary } from "../../tool-error-summary.js";
 import type { NormalizedUsage } from "../../usage.js";
 import type { EmbeddedRunReplayMetadata, EmbeddedRunReplayState } from "../replay-state.js";
-import type { EmbeddedRunLivenessState } from "../types.js";
+import type {
+  CodexAppServerRecoveryMode,
+  CodexAppServerSideEffectClass,
+  EmbeddedRunLivenessState,
+} from "../types.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import type { PreemptiveCompactionRoute } from "./preemptive-compaction.types.js";
 
@@ -108,16 +112,6 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   beforeAgentFinalizeRevisionAttempts?: number;
   maxBeforeAgentFinalizeRevisions?: number;
 };
-
-export type CodexAppServerSideEffectClass =
-  | "none"
-  | "read_only"
-  | "prepare_only"
-  | "mutating"
-  | "external_delivery"
-  | "unknown";
-
-export type CodexAppServerRecoveryMode = "safe_fallback" | "verify_only" | "blocked_side_effect";
 
 export type EmbeddedRunAttemptResult = {
   aborted: boolean;
