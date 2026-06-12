@@ -184,6 +184,48 @@ describe("workboard gateway methods", () => {
     });
   });
 
+  it("dispatches only the requested card id from gateway params", async () => {
+    type RegisteredMethod = {
+      handler: Parameters<OpenClawPluginApi["registerGatewayMethod"]>[1];
+      opts: Parameters<OpenClawPluginApi["registerGatewayMethod"]>[2];
+    };
+    const methods = new Map<string, RegisteredMethod>();
+    const subagentRun = vi.fn().mockResolvedValue({ runId: "run-second" });
+    const api = {
+      runtime: {
+        state: {
+          openKeyedStore: vi.fn(() => createMemoryStore()),
+        },
+        subagent: {
+          run: subagentRun,
+        },
+      },
+      registerGatewayMethod: vi.fn(
+        (method: string, handler: RegisteredMethod["handler"], opts: RegisteredMethod["opts"]) => {
+          methods.set(method, { handler, opts });
+        },
+      ),
+    } as unknown as OpenClawPluginApi;
+    const store = new WorkboardStore(createMemoryStore());
+    const first = await store.create({ title: "First worker", status: "ready" });
+    const second = await store.create({ title: "Second worker", status: "ready" });
+
+    registerWorkboardGatewayMethods({ api, store });
+
+    const dispatchRespond = vi.fn();
+    await methods.get("workboard.cards.dispatch")?.handler({
+      params: { id: second.id, maxStarts: 3 },
+      respond: dispatchRespond,
+    } as never);
+
+    expect(dispatchRespond.mock.calls[0]?.[0]).toBe(true);
+    expect(dispatchRespond.mock.calls[0]?.[1]).toMatchObject({
+      started: [expect.objectContaining({ cardId: second.id, runId: "run-second" })],
+    });
+    expect(subagentRun).toHaveBeenCalledOnce();
+    await expect(store.get(first.id)).resolves.toMatchObject({ status: "ready" });
+  });
+
   it("validates labels from comma-separated gateway input", async () => {
     type RegisteredMethod = {
       handler: Parameters<OpenClawPluginApi["registerGatewayMethod"]>[1];
