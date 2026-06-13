@@ -1,4 +1,6 @@
 // Kimi Coding tests cover implicit provider plugin behavior.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it } from "vitest";
 import plugin from "./index.js";
@@ -35,6 +37,17 @@ async function runKimiCatalogProvider(params: {
 }
 
 describe("Kimi implicit provider (#22409)", () => {
+  it("declares coding provider auth aliases in the manifest", () => {
+    const pluginJson = JSON.parse(
+      readFileSync(resolve(import.meta.dirname, "openclaw.plugin.json"), "utf-8"),
+    );
+
+    expect(pluginJson.providerAuthAliases).toEqual({
+      "kimi-code": "kimi",
+      "kimi-coding": "kimi",
+    });
+  });
+
   it("publishes the env vars used by core api-key auto-detection", async () => {
     const provider = await registerSingleProviderPlugin(plugin);
 
