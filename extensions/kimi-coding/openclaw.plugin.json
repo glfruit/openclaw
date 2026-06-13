@@ -5,6 +5,10 @@
   },
   "enabledByDefault": true,
   "providers": ["kimi", "kimi-coding"],
+  "providerAuthAliases": {
+    "kimi-code": "kimi",
+    "kimi-coding": "kimi"
+  },
   "providerRequest": {
     "providers": {
       "kimi": {
