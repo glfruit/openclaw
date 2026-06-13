@@ -121,6 +121,7 @@ overrides:
   yauzl: 3.2.1
   protobufjs: 7.6.3
   uuid: 14.0.0
+  "@mariozechner/pi-coding-agent": 0.73.0
 
 allowBuilds:
   "@openclaw/fs-safe": true
