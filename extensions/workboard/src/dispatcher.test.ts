@@ -199,7 +199,7 @@ describe("dispatchAndStartWorkboardCards", () => {
     expect(result.started).toEqual([expect.objectContaining({ cardId: ops.id })]);
     expect(run).toHaveBeenCalledOnce();
     expect(run.mock.calls[0]?.[0]).toMatchObject({
-      sessionKey: `subagent:workboard-ops-${ops.id}`,
+      sessionKey: `subagent:workboard-ops-${ops.id}-10`,
       lane: `workboard:ops:${ops.id}`,
     });
     await expect(store.get(product.id)).resolves.toMatchObject({
