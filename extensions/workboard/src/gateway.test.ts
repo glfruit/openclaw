@@ -298,7 +298,9 @@ describe("workboard gateway methods", () => {
     });
     expect(run).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionKey: `subagent:workboard-default-${card.id}`,
+        sessionKey: expect.stringMatching(
+          new RegExp(`^subagent:workboard-default-${card.id}-\\d+$`),
+        ),
       }),
     );
   });
