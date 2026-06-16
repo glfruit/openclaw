@@ -2502,6 +2502,115 @@ describe("gateway agent handler", () => {
     expect(callArgs.runContext?.messageChannel).toBe("voice");
   });
 
+  it("defaults telegram group agent sessions to visible delivery", async () => {
+    const sessionKey = "agent:main:telegram:group:-1003802090799";
+    mocks.loadSessionEntry.mockReturnValue({
+      cfg: {},
+      storePath: "/tmp/sessions.json",
+      canonicalKey: sessionKey,
+      entry: {
+        sessionId: "telegram-group-session-id",
+        updatedAt: Date.now(),
+        deliveryContext: { channel: "telegram", to: "-1003802090799" },
+      },
+    });
+    mocks.updateSessionStore.mockResolvedValue(undefined);
+    mocks.agentCommand.mockResolvedValue({
+      payloads: [{ text: "ok" }],
+      meta: { durationMs: 100 },
+    });
+
+    await invokeAgent(
+      {
+        message: "group visible reply",
+        sessionKey,
+        channel: "telegram",
+        to: "-1003802090799",
+        idempotencyKey: "telegram-group-default-delivery",
+      } as AgentParams,
+      { reqId: "telegram-group-default-delivery-1" },
+    );
+
+    const callArgs = await waitForAgentCommandCall<{
+      channel?: string;
+      deliver?: boolean;
+      to?: string;
+      messageChannel?: string;
+    }>();
+    expect(callArgs.channel).toBe("telegram");
+    expect(callArgs.to).toBe("-1003802090799");
+    expect(callArgs.deliver).toBe(true);
+    expect(callArgs.messageChannel).toBe("telegram");
+  });
+
+  it("keeps explicit deliver=false as session-only for telegram group agent sessions", async () => {
+    const sessionKey = "agent:main:telegram:group:-1003802090799:topic:77";
+    mocks.loadSessionEntry.mockReturnValue({
+      cfg: {},
+      storePath: "/tmp/sessions.json",
+      canonicalKey: sessionKey,
+      entry: {
+        sessionId: "telegram-group-topic-session-id",
+        updatedAt: Date.now(),
+        deliveryContext: { channel: "telegram", to: "-1003802090799", threadId: "77" },
+      },
+    });
+    mocks.updateSessionStore.mockResolvedValue(undefined);
+    mocks.agentCommand.mockResolvedValue({
+      payloads: [{ text: "ok" }],
+      meta: { durationMs: 100 },
+    });
+
+    await invokeAgent(
+      {
+        message: "group session-only reply",
+        sessionKey,
+        channel: "telegram",
+        to: "-1003802090799",
+        threadId: "77",
+        deliver: false,
+        idempotencyKey: "telegram-group-explicit-no-delivery",
+      } as AgentParams,
+      { reqId: "telegram-group-explicit-no-delivery-1" },
+    );
+
+    const callArgs = await waitForAgentCommandCall<{ deliver?: boolean }>();
+    expect(callArgs.deliver).toBe(false);
+  });
+
+  it("does not default telegram direct sessions to visible delivery", async () => {
+    const sessionKey = "agent:main:telegram:direct:5074167398";
+    mocks.loadSessionEntry.mockReturnValue({
+      cfg: {},
+      storePath: "/tmp/sessions.json",
+      canonicalKey: sessionKey,
+      entry: {
+        sessionId: "telegram-direct-session-id",
+        updatedAt: Date.now(),
+        deliveryContext: { channel: "telegram", to: "5074167398" },
+      },
+    });
+    mocks.updateSessionStore.mockResolvedValue(undefined);
+    mocks.agentCommand.mockResolvedValue({
+      payloads: [{ text: "ok" }],
+      meta: { durationMs: 100 },
+    });
+
+    await invokeAgent(
+      {
+        message: "direct session-only reply",
+        sessionKey,
+        channel: "telegram",
+        to: "5074167398",
+        idempotencyKey: "telegram-direct-default-session-only",
+      } as AgentParams,
+      { reqId: "telegram-direct-default-session-only-1" },
+    );
+
+    const callArgs = await waitForAgentCommandCall<{ deliver?: boolean }>();
+    expect(callArgs.deliver).toBe(false);
+  });
+
   it("accepts music generation internal events", async () => {
     primeMainAgentRun();
     mocks.agentCommand.mockClear();
