@@ -217,6 +217,12 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
       email: undefined,
     });
     expect(refreshProviderOAuthCredentialWithPluginMock).toHaveBeenCalledTimes(1);
+    const persisted = await readPersistedStore(agentDir);
+    expectPersistedOpenAICodexProfile(persisted.profiles[profileId], {
+      access: "cached-access-token",
+      refresh: "cached-refresh-token",
+      accountId: "acct-cached",
+    });
   });
 
   it("refreshes near-expiry openai credentials before hard expiry", async () => {
@@ -533,10 +539,8 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     const persisted = await readPersistedStore(agentDir);
     const persistedProfile = requireOAuthProfile(persisted, profileId);
     expect(persistedProfile.accountId).toBe("acct-shared");
-    expect(persistedProfile.access).toBe("local-access-token");
-    expect(persistedProfile.refresh).toBe("local-refresh-token");
-    expect(JSON.stringify(persisted)).not.toContain("codex-cli-access-token");
-    expect(JSON.stringify(persisted)).not.toContain("codex-cli-refresh-token");
+    expect(persistedProfile.access).toBe("codex-cli-access-token");
+    expect(persistedProfile.refresh).toBe("codex-cli-refresh-token");
   });
 
   it("uses same-account Codex CLI credentials for named Codex profiles after forced local refresh fails", async () => {
@@ -589,8 +593,8 @@ describe("resolveApiKeyForProfile openai refresh fallback", () => {
     const persistedProfile = requireOAuthProfile(persisted, profileId);
     expect(persistedProfile.accountId).toBe("acct-shared");
     expect(persistedProfile.email).toBe("user@example.com");
-    expect(JSON.stringify(persisted)).not.toContain("codex-cli-access-token");
-    expect(JSON.stringify(persisted)).not.toContain("codex-cli-refresh-token");
+    expect(persistedProfile.access).toBe("codex-cli-access-token");
+    expect(persistedProfile.refresh).toBe("codex-cli-refresh-token");
   });
 
   it("rejects mismatched Codex CLI fallback after forced local refresh fails", async () => {

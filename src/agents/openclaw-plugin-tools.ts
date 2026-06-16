@@ -10,7 +10,7 @@ import {
   getRuntimeConfigSourceSnapshot,
 } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolvePluginTools } from "../plugins/tools.js";
+import { resolvePluginContractToolNames, resolvePluginTools } from "../plugins/tools.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resolveApiKeyForProfile, resolveAuthProfileOrder } from "./auth-profiles.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
@@ -133,5 +133,48 @@ export function resolveOpenClawPluginToolsForOptions(params: {
   return applyPluginToolDeliveryDefaults({
     tools: pluginTools,
     deliveryContext,
+  });
+}
+
+/** Resolves manifest-declared plugin tool names for diagnostics/policy matching. */
+export function resolveOpenClawPluginContractToolNamesForOptions(params: {
+  options?: ResolveOpenClawPluginToolsOptions;
+  resolvedConfig?: OpenClawConfig;
+}): string[] {
+  if (params.options?.disablePluginTools) {
+    return [];
+  }
+
+  const resolveCurrentRuntimeConfig = () =>
+    resolveApplicablePluginRuntimeConfig(params.resolvedConfig ?? params.options?.config);
+  const authProfileStore = params.options?.authProfileStore;
+  const resolveAuthProfileIdsForProvider = authProfileStore
+    ? (providerId: string): string[] =>
+        resolveAuthProfileOrder({
+          cfg: resolveCurrentRuntimeConfig(),
+          store: authProfileStore,
+          provider: providerId,
+        })
+    : undefined;
+  const hasAuthForProvider = authProfileStore
+    ? (providerId: string) => (resolveAuthProfileIdsForProvider?.(providerId) ?? []).length > 0
+    : undefined;
+  const pluginToolInputs = resolveOpenClawPluginToolInputs({
+    options: params.options,
+    resolvedConfig: params.resolvedConfig,
+    runtimeConfig: resolveCurrentRuntimeConfig(),
+    getRuntimeConfig: resolveCurrentRuntimeConfig,
+  });
+
+  return resolvePluginContractToolNames({
+    ...pluginToolInputs,
+    context: {
+      ...pluginToolInputs.context,
+      ...(hasAuthForProvider ? { hasAuthForProvider } : {}),
+    },
+    toolAllowlist: params.options?.pluginToolAllowlist,
+    toolDenylist: params.options?.pluginToolDenylist,
+    allowGatewaySubagentBinding: params.options?.allowGatewaySubagentBinding,
+    ...(hasAuthForProvider ? { hasAuthForProvider } : {}),
   });
 }

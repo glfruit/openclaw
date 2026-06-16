@@ -160,6 +160,29 @@ describe("OpenAI Codex OAuth flow", () => {
     });
   });
 
+  it("scopes token requests to the OpenAI OAuth fake-IP hostname policy", async () => {
+    mockTokenResponse({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      expires_in: 3600,
+    });
+
+    const result = await testing.refreshAccessToken("old-refresh-token", { timeoutMs: 5 });
+
+    expect(result.type).toBe("success");
+    expect(ssrfMocks.fetchWithSsrFGuard).toHaveBeenCalledWith(
+      expect.objectContaining({
+        auditContext: "openai-chatgpt-oauth-token",
+        requireHttps: true,
+        policy: {
+          allowRfc2544BenchmarkRange: true,
+          allowIpv6UniqueLocalRange: true,
+          hostnameAllowlist: ["auth.openai.com"],
+        },
+      }),
+    );
+  });
+
   it("rejects non-positive token refresh lifetimes", async () => {
     mockTokenResponse({
       access_token: "access-token",

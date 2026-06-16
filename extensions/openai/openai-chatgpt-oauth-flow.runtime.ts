@@ -10,7 +10,7 @@ import {
   resolveOAuthTokenExpiresAt,
   resolveOAuthTokenLifetimeMs,
 } from "openclaw/plugin-sdk/provider-oauth-runtime";
-import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
+import { fetchWithSsrFGuard, type SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import { resolveCodexAuthIdentity } from "./openai-chatgpt-auth-identity.js";
 import {
   createOAuthLoginCancelledError,
@@ -29,6 +29,11 @@ import { generatePKCE } from "./openai-chatgpt-pkce.runtime.js";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
+const TOKEN_SSRF_POLICY = {
+  allowRfc2544BenchmarkRange: true,
+  allowIpv6UniqueLocalRange: true,
+  hostnameAllowlist: ["auth.openai.com"],
+} satisfies SsrFPolicy;
 const CALLBACK_PORT = 1455;
 const CALLBACK_PATH = "/auth/callback";
 const DEFAULT_CALLBACK_HOST = "localhost";
@@ -175,6 +180,8 @@ async function postTokenForm(
     },
     timeoutMs,
     signal: options.signal,
+    requireHttps: true,
+    policy: TOKEN_SSRF_POLICY,
     auditContext: "openai-chatgpt-oauth-token",
   });
   try {

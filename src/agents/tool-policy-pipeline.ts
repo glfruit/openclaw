@@ -127,6 +127,7 @@ export function buildDefaultToolPolicyPipelineSteps(params: {
 export function applyToolPolicyPipeline(params: {
   tools: AnyAgentTool[];
   toolMeta: (tool: AnyAgentTool) => { pluginId: string } | undefined;
+  knownPluginToolNames?: string[];
   warn: (message: string) => void;
   steps: ToolPolicyPipelineStep[];
   auditLogLevel?: ToolPolicyAuditLogLevel;
@@ -138,10 +139,17 @@ export function applyToolPolicyPipeline(params: {
       .filter(Boolean),
   );
 
-  const pluginGroups = buildPluginToolGroups({
+  const concretePluginGroups = buildPluginToolGroups({
     tools: params.tools,
     toolMeta: params.toolMeta,
   });
+  const knownPluginToolNames = (params.knownPluginToolNames ?? [])
+    .map((name) => normalizeToolName(name))
+    .filter(Boolean);
+  const pluginGroups = {
+    all: Array.from(new Set([...concretePluginGroups.all, ...knownPluginToolNames])),
+    byPlugin: concretePluginGroups.byPlugin,
+  };
 
   let filtered = params.tools;
   for (const step of params.steps) {

@@ -6,6 +6,7 @@ import {
   resolveSubagentToolPolicyForSession,
 } from "../../agents/agent-tools.policy.js";
 import type { AnyAgentTool } from "../../agents/agent-tools.types.js";
+import { resolveOpenClawPluginContractToolNamesForOptions } from "../../agents/openclaw-plugin-tools.js";
 import { createOpenClawTools } from "../../agents/openclaw-tools.runtime.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import { resolveSenderToolPolicy } from "../../agents/sender-tool-policy.js";
@@ -168,7 +169,9 @@ export function resolveSkillDispatchTools(params: {
         },
       }
     : undefined;
-  const tools = createOpenClawTools({
+  const pluginToolAllowlist = collectExplicitAllowlist(explicitPolicyList);
+  const pluginToolDenylist = collectExplicitDenylist(explicitPolicyList);
+  const openClawToolOptions = {
     agentSessionKey: params.sessionKey,
     agentChannel: channel,
     agentAccountId: params.message.accountId,
@@ -190,14 +193,20 @@ export function resolveSkillDispatchTools(params: {
     ...(beforeToolCallHookContext ? { beforeToolCallHookContext } : {}),
     modelProvider: params.provider,
     modelId: params.model,
-    pluginToolAllowlist: collectExplicitAllowlist(explicitPolicyList),
-    pluginToolDenylist: collectExplicitDenylist(explicitPolicyList),
+    pluginToolAllowlist,
+    pluginToolDenylist,
     inheritedToolAllowlist,
-    inheritedToolDenylist: collectExplicitDenylist(explicitPolicyList),
+    inheritedToolDenylist: pluginToolDenylist,
+  };
+  const tools = createOpenClawTools(openClawToolOptions);
+  const knownPluginToolNames = resolveOpenClawPluginContractToolNamesForOptions({
+    options: openClawToolOptions,
+    resolvedConfig: params.cfg,
   });
   const policyFiltered = applyToolPolicyPipeline({
     tools,
     toolMeta: (tool) => getPluginToolMeta(tool),
+    knownPluginToolNames,
     warn: logVerbose,
     steps: [
       ...buildDefaultToolPolicyPipelineSteps({
