@@ -407,7 +407,13 @@ async function resolveBareSessionResetResult(params: {
   ackText?: string;
 }) {
   params.assertCurrent?.();
-  if (params.request.deliver !== true) {
+  if (
+    !resolveAgentVisibleDeliveryIntent({
+      requestDeliver:
+        typeof params.request.deliver === "boolean" ? params.request.deliver : undefined,
+      sessionKey: params.sessionKey,
+    })
+  ) {
     return buildBareSessionResetResult({
       reason: params.reason,
       sessionId: params.sessionId,
@@ -1064,6 +1070,25 @@ function yieldAfterAgentAcceptedAck(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 10);
   });
+}
+
+function isTelegramGroupAgentSessionKey(sessionKey: string | undefined): boolean {
+  const parsed = parseAgentSessionKey(sessionKey);
+  if (!parsed) {
+    return false;
+  }
+  const parts = parsed.rest.split(":").map((part) => part.trim().toLowerCase());
+  return parts[0] === "telegram" && parts.includes("group");
+}
+
+function resolveAgentVisibleDeliveryIntent(params: {
+  requestDeliver?: boolean;
+  sessionKey?: string;
+}): boolean {
+  if (typeof params.requestDeliver === "boolean") {
+    return params.requestDeliver;
+  }
+  return isTelegramGroupAgentSessionKey(params.sessionKey);
 }
 
 export const agentHandlers: GatewayRequestHandlers = {
@@ -1751,14 +1776,16 @@ export const agentHandlers: GatewayRequestHandlers = {
         } else {
           let resetAckResult: Awaited<ReturnType<typeof resolveBareSessionResetResult>>;
           try {
-            const deliverySession =
-              request.deliver === true
-                ? loadBareSessionResetDeliverySession({
-                    cfg,
-                    sessionKey: resetResult.key,
-                    ...(agentId ? { agentId } : {}),
-                  })
-                : undefined;
+            const deliverySession = resolveAgentVisibleDeliveryIntent({
+              requestDeliver: request.deliver,
+              sessionKey: resetResult.key,
+            })
+              ? loadBareSessionResetDeliverySession({
+                  cfg,
+                  sessionKey: resetResult.key,
+                  ...(agentId ? { agentId } : {}),
+                })
+              : undefined;
             resetAckResult = await resolveBareSessionResetResult({
               cfg: deliverySession?.cfg ?? cfg,
               context,
@@ -2210,16 +2237,18 @@ export const agentHandlers: GatewayRequestHandlers = {
                     ? { ...patchBuild.patch, sessionStartedAt: recoveredSessionStartedAt }
                     : patchBuild.patch;
                 const merged = mergeSessionEntry(freshEntry, effectivePatch);
-                const sendPolicy =
-                  request.deliver === true
-                    ? resolveSendPolicy({
-                        cfg: cfgLocal,
-                        entry: merged,
-                        sessionKey: canonicalKey,
-                        channel: merged?.channel,
-                        chatType: merged?.chatType,
-                      })
-                    : "allow";
+                const sendPolicy = resolveAgentVisibleDeliveryIntent({
+                  requestDeliver: request.deliver,
+                  sessionKey: canonicalKey,
+                })
+                  ? resolveSendPolicy({
+                      cfg: cfgLocal,
+                      entry: merged,
+                      sessionKey: canonicalKey,
+                      channel: merged?.channel,
+                      chatType: merged?.chatType,
+                    })
+                  : "allow";
                 if (sendPolicy === "deny") {
                   deniedBySendPolicy = true;
                   return merged;
@@ -2298,7 +2327,12 @@ export const agentHandlers: GatewayRequestHandlers = {
           };
           emitAgentSendSessionLifecycleTransition(sessionLifecycleTransition);
         }
-        if (request.deliver === true) {
+        if (
+          resolveAgentVisibleDeliveryIntent({
+            requestDeliver: request.deliver,
+            sessionKey: canonicalKey,
+          })
+        ) {
           const sendPolicy = resolveSendPolicy({
             cfg: cfgLocal,
             entry: sessionEntry,
@@ -2358,8 +2392,12 @@ export const agentHandlers: GatewayRequestHandlers = {
         }
       }
 
-      const wantsDelivery = request.deliver === true;
-      const explicitTo = replyTo || to || undefined;
+      const wantsDelivery = resolveAgentVisibleDeliveryIntent({
+        requestDeliver: request.deliver,
+        sessionKey: resolvedSessionKey,
+      });
+      const explicitTo =
+        normalizeOptionalString(request.replyTo) ?? normalizeOptionalString(request.to);
       const explicitThreadId = normalizeOptionalString(request.threadId);
       const turnSourceChannel = normalizeOptionalString(request.channel);
       const turnSourceTo = to || undefined;
@@ -2485,7 +2523,7 @@ export const agentHandlers: GatewayRequestHandlers = {
           ? INTERNAL_MESSAGE_CHANNEL
           : resolvedChannel);
 
-      const deliver = request.deliver === true && resolvedChannel !== INTERNAL_MESSAGE_CHANNEL;
+      const deliver = wantsDelivery && resolvedChannel !== INTERNAL_MESSAGE_CHANNEL;
 
       const preRegistrationAbort = readGatewayDedupeEntry({
         dedupe: context.dedupe,
