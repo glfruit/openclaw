@@ -75,7 +75,10 @@ import {
   resolveLocalModelLeanPreserveToolNames,
 } from "./local-model-lean.js";
 import type { ModelAuthMode } from "./model-auth.js";
-import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
+import {
+  resolveOpenClawPluginContractToolNamesForOptions,
+  resolveOpenClawPluginToolsForOptions,
+} from "./openclaw-plugin-tools.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
 import type { SandboxContext } from "./sandbox.js";
 import { SANDBOX_AGENT_WORKSPACE_MOUNT } from "./sandbox/constants.js";
@@ -957,43 +960,46 @@ export function createOpenClawCodingTools(options?: {
   const shouldCaptureCronCreatorToolAllowlist = toolPolicyInheritanceSources.some(
     (policy) => hasRestrictiveAllowPolicy(policy) || hasExplicitDenyPolicy(policy),
   );
+  const pluginToolResolverOptions = {
+    options: {
+      agentSessionKey: options?.sessionKey,
+      agentChannel: resolveGatewayMessageChannel(options?.messageProvider),
+      agentAccountId: options?.agentAccountId,
+      agentTo: options?.messageTo,
+      agentThreadId: options?.messageThreadId,
+      agentDir: options?.agentDir,
+      workspaceDir: workspaceRoot,
+      config: options?.config,
+      fsPolicy,
+      requesterSenderId: options?.senderId,
+      sessionId: options?.sessionId,
+      oneShotCliRun: options?.oneShotCliRun,
+      sandboxBrowserBridgeUrl: sandbox?.browser?.bridgeUrl,
+      allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
+      sandboxed: Boolean(sandbox),
+      pluginToolAllowlist,
+      pluginToolDenylist,
+      currentChannelId: options?.currentChannelId,
+      currentMessagingTarget: options?.currentMessagingTarget,
+      currentThreadTs: options?.currentThreadTs,
+      currentMessageId: options?.currentMessageId,
+      modelProvider: options?.modelProvider,
+      modelId: options?.modelId,
+      modelHasVision: options?.modelHasVision,
+      requireExplicitMessageTarget: options?.requireExplicitMessageTarget,
+      disableMessageTool: options?.disableMessageTool,
+      requesterAgentIdOverride: agentId,
+      allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
+      authProfileStore: options?.authProfileStore,
+    },
+    resolvedConfig: options?.config,
+  };
+  const knownPluginToolNames =
+    resolveOpenClawPluginContractToolNamesForOptions(pluginToolResolverOptions);
   const pluginToolsOnly =
     includeOpenClawTools || !includePluginTools
       ? []
-      : resolveOpenClawPluginToolsForOptions({
-          options: {
-            agentSessionKey: options?.sessionKey,
-            agentChannel: resolveGatewayMessageChannel(options?.messageProvider),
-            agentAccountId: options?.agentAccountId,
-            agentTo: options?.messageTo,
-            agentThreadId: options?.messageThreadId,
-            agentDir: options?.agentDir,
-            workspaceDir: workspaceRoot,
-            config: options?.config,
-            fsPolicy,
-            requesterSenderId: options?.senderId,
-            sessionId: options?.sessionId,
-            oneShotCliRun: options?.oneShotCliRun,
-            sandboxBrowserBridgeUrl: sandbox?.browser?.bridgeUrl,
-            allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
-            sandboxed: Boolean(sandbox),
-            pluginToolAllowlist,
-            pluginToolDenylist,
-            currentChannelId: options?.currentChannelId,
-            currentMessagingTarget: options?.currentMessagingTarget,
-            currentThreadTs: options?.currentThreadTs,
-            currentMessageId: options?.currentMessageId,
-            modelProvider: options?.modelProvider,
-            modelId: options?.modelId,
-            modelHasVision: options?.modelHasVision,
-            requireExplicitMessageTarget: options?.requireExplicitMessageTarget,
-            disableMessageTool: options?.disableMessageTool,
-            requesterAgentIdOverride: agentId,
-            allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
-            authProfileStore: options?.authProfileStore,
-          },
-          resolvedConfig: options?.config,
-        });
+      : resolveOpenClawPluginToolsForOptions(pluginToolResolverOptions);
   const toolSearchTools = toolSearchControlsEnabled
     ? createToolSearchTools({
         config: options?.config,
@@ -1154,6 +1160,7 @@ export function createOpenClawCodingTools(options?: {
   const subagentFiltered = applyToolPolicyPipeline({
     tools: toolsForModelProvider,
     toolMeta: (tool) => getPluginToolMeta(tool),
+    knownPluginToolNames,
     warn: logWarn,
     steps: [
       ...buildDefaultToolPolicyPipelineSteps({

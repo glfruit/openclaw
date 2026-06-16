@@ -96,6 +96,27 @@ describe("tool-policy-pipeline", () => {
     ]);
   });
 
+  test("does not warn about allowlisted plugin contract tools that are not instantiated yet", () => {
+    const warnings: string[] = [];
+    const tools = [{ name: "exec" }] as unknown as DummyTool[];
+    const filtered = applyToolPolicyPipeline({
+      tools: tools as any,
+      toolMeta: () => undefined,
+      knownPluginToolNames: ["search_semantic"],
+      warn: (msg) => warnings.push(msg),
+      steps: [
+        {
+          policy: { allow: ["exec", "search_semantic"] },
+          label: "tools.byProvider.allow",
+          stripPluginOnlyAllowlist: true,
+        },
+      ],
+    });
+
+    expect(warnings).toEqual([]);
+    expect(filtered.map((tool) => (tool as unknown as DummyTool).name)).toEqual(["exec"]);
+  });
+
   test("suppresses built-in profile warnings for unavailable gated core tools", () => {
     const warnings = runAllowlistWarningStep({
       allow: ["apply_patch"],

@@ -6,6 +6,7 @@ import {
   resolveInheritedToolPolicyForSession,
   resolveSubagentToolPolicyForSession,
 } from "../agents/agent-tools.policy.js";
+import { resolveOpenClawPluginContractToolNamesForOptions } from "../agents/openclaw-plugin-tools.js";
 import { createOpenClawTools } from "../agents/openclaw-tools.js";
 import {
   isSubagentEnvelopeSession,
@@ -169,7 +170,19 @@ export function resolveGatewayScopedTools(params: {
     explicitDenylist.length > 0 ||
     excludedToolNames.length > 0;
 
-  const allTools = createOpenClawTools({
+  const pluginToolAllowlist = collectExplicitAllowlist([
+    profilePolicy,
+    providerProfilePolicy,
+    globalPolicy,
+    globalProviderPolicy,
+    agentPolicy,
+    agentProviderPolicy,
+    groupPolicy,
+    subagentPolicy,
+    inheritedToolPolicy,
+    gatewayRequestedTools.length > 0 ? { allow: gatewayRequestedTools } : undefined,
+  ]);
+  const openClawToolOptions = {
     agentSessionKey: params.sessionKey,
     agentChannel: params.messageProvider ?? undefined,
     agentAccountId: params.accountId,
@@ -191,29 +204,24 @@ export function resolveGatewayScopedTools(params: {
     wrapBeforeToolCallHook: false,
     config: params.cfg,
     workspaceDir,
-    pluginToolAllowlist: collectExplicitAllowlist([
-      profilePolicy,
-      providerProfilePolicy,
-      globalPolicy,
-      globalProviderPolicy,
-      agentPolicy,
-      agentProviderPolicy,
-      groupPolicy,
-      subagentPolicy,
-      inheritedToolPolicy,
-      gatewayRequestedTools.length > 0 ? { allow: gatewayRequestedTools } : undefined,
-    ]),
+    pluginToolAllowlist,
     pluginToolDenylist: explicitDenylist,
     cronCreatorToolAllowlist: shouldCaptureCronCreatorToolAllowlist
       ? cronCreatorToolAllowlist
       : undefined,
     inheritedToolAllowlist,
     inheritedToolDenylist,
+  };
+  const allTools = createOpenClawTools(openClawToolOptions);
+  const knownPluginToolNames = resolveOpenClawPluginContractToolNamesForOptions({
+    options: openClawToolOptions,
+    resolvedConfig: params.cfg,
   });
 
   const policyFiltered = applyToolPolicyPipeline({
     tools: allTools,
     toolMeta: (tool: AnyAgentTool) => getPluginToolMeta(tool),
+    knownPluginToolNames,
     warn: logWarn,
     steps: [
       ...buildDefaultToolPolicyPipelineSteps({
