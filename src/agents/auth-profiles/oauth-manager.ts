@@ -821,17 +821,28 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           candidate: fallback,
         })
       ) {
+        const adoptedFallback = {
+          ...fallback,
+          accountId: fallback.accountId ?? params.credential.accountId,
+          email: fallback.email ?? params.credential.email,
+        };
+        await saveOAuthCredentialWithStoreLock({
+          agentDir: params.agentDir,
+          profileId: params.profileId,
+          expected: effectiveCredential,
+          credential: adoptedFallback,
+        });
         log.info("using external OAuth credential after refresh failure", {
           profileId: params.profileId,
-          provider: fallback.provider,
-          expires: new Date(fallback.expires).toISOString(),
+          provider: adoptedFallback.provider,
+          expires: new Date(adoptedFallback.expires).toISOString(),
         });
         return {
-          apiKey: await adapter.buildApiKey(fallback.provider, fallback, {
+          apiKey: await adapter.buildApiKey(adoptedFallback.provider, adoptedFallback, {
             cfg: params.cfg,
             agentDir: params.agentDir,
           }),
-          credential: fallback,
+          credential: adoptedFallback,
         };
       }
       throw new OAuthManagerRefreshError({

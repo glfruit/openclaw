@@ -1038,6 +1038,60 @@ export function ensureStandalonePluginToolRegistryLoaded(params: {
   });
 }
 
+/** Lists manifest-declared plugin tool names that are available for this runtime context. */
+export function resolvePluginContractToolNames(params: {
+  context: OpenClawPluginToolContext;
+  toolAllowlist?: string[];
+  toolDenylist?: string[];
+  allowGatewaySubagentBinding?: boolean;
+  hasAuthForProvider?: (providerId: string) => boolean;
+  env?: NodeJS.ProcessEnv;
+}): string[] {
+  const loadState = resolvePluginToolLoadState(params);
+  if (!loadState) {
+    return [];
+  }
+  const { context, env, onlyPluginIds, snapshot } = loadState;
+  const onlyPluginIdSet = new Set(onlyPluginIds);
+  const allowlist = normalizeAllowlist(params.toolAllowlist);
+  const denylist = normalizeDenylist(params.toolDenylist);
+  const names = new Set<string>();
+  for (const plugin of snapshot.plugins) {
+    if (!onlyPluginIdSet.has(plugin.id)) {
+      continue;
+    }
+    if (denylistBlocksPlugin({ pluginId: plugin.id, denylist })) {
+      continue;
+    }
+    const allowedToolNames = listManifestToolNamesForAvailability({
+      plugin,
+      toolNames: plugin.contracts?.tools ?? [],
+      pluginId: plugin.id,
+      allowlist,
+    }).filter(
+      (toolName) =>
+        !denylistBlocksPluginTool({
+          pluginId: plugin.id,
+          toolName,
+          denylist,
+        }),
+    );
+    const availableToolNames = filterManifestToolNamesForAvailability({
+      plugin,
+      toolNames: allowedToolNames,
+      config: params.context.runtimeConfig ?? context.config,
+      env,
+      hasAuthForProvider: params.hasAuthForProvider,
+    });
+    for (const toolName of availableToolNames) {
+      if (toolName.trim()) {
+        names.add(toolName.trim());
+      }
+    }
+  }
+  return [...names].toSorted((left, right) => left.localeCompare(right));
+}
+
 export function resolvePluginTools(params: {
   context: OpenClawPluginToolContext;
   existingToolNames?: Set<string>;
