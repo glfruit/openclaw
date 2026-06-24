@@ -2396,8 +2396,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         requestDeliver: request.deliver,
         sessionKey: resolvedSessionKey,
       });
-      const explicitTo =
-        normalizeOptionalString(request.replyTo) ?? normalizeOptionalString(request.to);
+      const explicitTo = replyTo || to || undefined;
       const explicitThreadId = normalizeOptionalString(request.threadId);
       const turnSourceChannel = normalizeOptionalString(request.channel);
       const turnSourceTo = to || undefined;

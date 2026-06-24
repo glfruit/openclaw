@@ -6,7 +6,10 @@ import { classifyFailoverReason } from "../embedded-agent-helpers/errors.js";
 import type { FailoverReason } from "../embedded-agent-helpers/types.js";
 import { isGpt5ModelId } from "../gpt5-prompt-overlay.js";
 import type { ModelFallbackResultClassification } from "../model-fallback.js";
-import { hasOutboundDeliveryEvidence, hasVisibleAgentPayload } from "./delivery-evidence.js";
+import {
+  hasCommittedOutboundDeliveryEvidence,
+  hasVisibleAgentPayload,
+} from "./delivery-evidence.js";
 import type { CodexAppServerRecoveryTrace, EmbeddedAgentRunResult } from "./types.js";
 
 /**
@@ -223,7 +226,7 @@ export function classifyEmbeddedAgentRunResultForModelFallback(params: {
   if (params.result.meta.replayInvalid === true && !fallbackSafeIncompleteTurn) {
     return null;
   }
-  if (hasOutboundDeliveryEvidence(params.result)) {
+  if (hasCommittedOutboundDeliveryEvidence(params.result)) {
     return null;
   }
   if (params.result.meta.error?.kind === "hook_block") {
