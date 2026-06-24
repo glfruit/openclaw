@@ -332,8 +332,7 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
     expect(result.meta.livenessState).toBe("abandoned");
     expect(result.meta.error).toEqual({
       kind: "incomplete_turn",
-      message:
-        "Codex stopped before confirming the turn was complete. Some work may already have been performed; verify the current state before retrying.",
+      message: CODEX_SIDE_EFFECT_RECOVERY_MESSAGE,
       fallbackSafe: false,
     });
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
