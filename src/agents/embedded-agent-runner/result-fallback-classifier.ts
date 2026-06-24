@@ -23,7 +23,6 @@ const CODEX_APP_SERVER_INCOMPLETE_SIDE_EFFECT_RE =
   /(?:OpenClaw detected an incomplete Codex turn after tool activity|正在核验刚才执行到哪一步)/iu;
 const CODEX_APP_SERVER_INCOMPLETE_RE =
   /(?:OpenClaw detected an incomplete Codex turn before a final answer|Codex 没有返回完整结束信号)/iu;
-const PLAN_ONLY_TERMINAL_REPLY_RE = /Agent stopped after repeated plan-only turns/i;
 
 function isEmbeddedAgentRunResult(value: unknown): value is EmbeddedAgentRunResult {
   return Boolean(
