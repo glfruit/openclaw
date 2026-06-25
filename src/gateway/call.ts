@@ -347,10 +347,21 @@ const gatewayCallDeps = {
 };
 
 async function stopGatewayClient(client: GatewayClient): Promise<void> {
+  let forceStopTimer: NodeJS.Timeout | undefined;
   try {
+    forceStopTimer = setTimeout(() => {
+      try {
+        client.stop();
+      } catch {}
+    }, 1_250);
+    forceStopTimer.unref?.();
     await client.stopAndWait({ timeoutMs: 1_000 });
   } catch {
     client.stop();
+  } finally {
+    if (forceStopTimer) {
+      clearTimeout(forceStopTimer);
+    }
   }
 }
 
@@ -936,7 +947,11 @@ async function executeGatewayRequestWithScopes<T>(params: {
         complete();
         return;
       }
-      void stopGatewayClient(activeClient).finally(complete);
+      // One-shot CLI calls should not lose a successful gateway response just
+      // because the websocket close handshake stalls. Start teardown before
+      // settling, but let the caller receive the result immediately.
+      void stopGatewayClient(activeClient).catch(() => undefined);
+      complete();
     };
     const stop = (err?: Error, value?: T) => {
       if (settled) {

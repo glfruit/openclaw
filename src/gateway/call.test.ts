@@ -1853,7 +1853,7 @@ describe("callGateway error details", () => {
     expect(lastRequestOptions?.opts?.timeoutMs).toBeUndefined();
   });
 
-  it("waits for gateway client teardown before resolving", async () => {
+  it("starts gateway client teardown before resolving without waiting for close", async () => {
     setLocalLoopbackGatewayConfig();
 
     let releaseStop: (() => void) | undefined;
@@ -1907,16 +1907,20 @@ describe("callGateway error details", () => {
     await vi.waitFor(() => {
       expect(stopStarted).toBe(true);
     });
-    expect(callResolved).toBe(false);
+    await promise;
+    expect(callResolved).toBe(true);
+    expect(stopFinished).toBe(false);
 
     if (!releaseStop) {
       throw new Error("Expected gateway stop release callback to be initialized");
     }
     releaseStop();
-    await promise;
+
+    await vi.waitFor(() => {
+      expect(stopFinished).toBe(true);
+    });
 
     expect(stopFinished).toBe(true);
-    expect(callResolved).toBe(true);
   });
 
   it("clears the wrapper timeout before awaiting gateway teardown", async () => {
