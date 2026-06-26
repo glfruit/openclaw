@@ -848,6 +848,45 @@ describe("openai-completions stop-reason tool-call guard", () => {
     expect(toolCalls).toHaveLength(1);
   });
 
+  it("preserves tool calls when reasoning streams before tool calls", async () => {
+    mockChunksRef.chunks = [
+      {
+        id: "chatcmpl-test",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              reasoning_content: "Need to inspect the file first.",
+            },
+          },
+        ],
+      },
+      makeToolCallChunk("call_1", "read", '{"path":"README.md"}'),
+      makeFinishChunk("tool_calls"),
+    ];
+
+    const stream = streamOpenAICompletions(reasoningModel, context, {
+      apiKey: "sk-test",
+      reasoningEffort: "medium",
+    });
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("toolUse");
+    expect(result.content).toContainEqual({
+      type: "thinking",
+      thinking: "Need to inspect the file first.",
+      thinkingSignature: "reasoning_content",
+    });
+    expect(result.content).toContainEqual(
+      expect.objectContaining({
+        type: "toolCall",
+        id: "call_1",
+        name: "read",
+        arguments: { path: "README.md" },
+      }),
+    );
+  });
+
   it("keeps buffered visible text before following tool calls", async () => {
     mockChunksRef.chunks = [
       makeTextChunk("Use <"),
