@@ -36,7 +36,7 @@ export async function runPluginsListCommand(
   runtime: RuntimeEnv = defaultRuntime,
 ): Promise<void> {
   const { buildPluginRegistrySnapshotReport } = await import("../plugins/status-snapshot.js");
-  const cfg = getRuntimeConfig();
+  const cfg = getRuntimeConfig({ skipPluginValidation: true });
   const report = buildPluginRegistrySnapshotReport({
     config: cfg,
     ...(opts.json ? { logger: quietPluginJsonLogger } : {}),

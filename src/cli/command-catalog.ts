@@ -324,7 +324,12 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
   {
     commandPath: ["plugins", "list"],
     exact: true,
-    policy: { ensureCliPath: false, loadPlugins: "never", networkProxy: "bypass" },
+    policy: {
+      ensureCliPath: false,
+      loadPlugins: "never",
+      networkProxy: "bypass",
+      routeConfigGuard: "when-suppressed",
+    },
     route: { id: "plugins-list" },
   },
   {

@@ -31,8 +31,9 @@ describe("runPluginsListCommand", () => {
     vi.resetModules();
     const importedHumanModules: string[] = [];
 
+    const getRuntimeConfigMock = vi.fn(() => ({}));
     vi.doMock("../config/config.js", () => ({
-      getRuntimeConfig: () => ({}),
+      getRuntimeConfig: getRuntimeConfigMock,
     }));
     vi.doMock("../plugins/status.js", () => {
       throw new Error("plugins list JSON must use the snapshot status module");
@@ -94,6 +95,7 @@ describe("runPluginsListCommand", () => {
 
     await runPluginsListCommand({ json: true }, createJsonRuntime(writes));
 
+    expect(getRuntimeConfigMock).toHaveBeenCalledWith({ skipPluginValidation: true });
     expect(importedHumanModules).toEqual([]);
     expect(writes).toEqual([
       {

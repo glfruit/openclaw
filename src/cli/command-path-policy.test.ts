@@ -221,6 +221,7 @@ describe("command-path-policy", () => {
       ensureCliPath: false,
       loadPlugins: "never",
       networkProxy: "bypass",
+      routeConfigGuard: "when-suppressed",
     });
     for (const commandPath of [["tasks"], ["tasks", "list"], ["tasks", "audit"]]) {
       expectResolvedPolicy(commandPath, {

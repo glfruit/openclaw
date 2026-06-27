@@ -944,6 +944,16 @@ export async function runCli(argv: string[] = process.argv) {
       return;
     }
 
+    if (!shouldUseCliEnvProxy) {
+      const { tryRouteCli } = await startupTrace.measure(
+        "route-import",
+        () => import("./route.js"),
+      );
+      if (await startupTrace.measure("route", () => tryRouteCli(normalizedArgv))) {
+        return;
+      }
+    }
+
     if (!isHelpOrVersionInvocation) {
       await bootstrapCliProxyCaptureAndDispatcher(startupTrace, {
         ensureDispatcher: shouldUseCliEnvProxy,
@@ -957,9 +967,14 @@ export async function runCli(argv: string[] = process.argv) {
       return;
     }
 
-    const { tryRouteCli } = await startupTrace.measure("route-import", () => import("./route.js"));
-    if (await startupTrace.measure("route", () => tryRouteCli(normalizedArgv))) {
-      return;
+    if (shouldUseCliEnvProxy) {
+      const { tryRouteCli } = await startupTrace.measure(
+        "route-import",
+        () => import("./route.js"),
+      );
+      if (await startupTrace.measure("route", () => tryRouteCli(normalizedArgv))) {
+        return;
+      }
     }
 
     let parseArgv = normalizeGeneratedHelpCommandArgv(rewriteUpdateFlagArgv(normalizedArgv));

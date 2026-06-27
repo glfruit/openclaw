@@ -65,6 +65,9 @@ const resolveManifestCliCommandSurfaceOwnerMock = vi.hoisted(() => vi.fn());
 const restoreTerminalStateMock = vi.hoisted(() => vi.fn());
 const hasEnvHttpProxyAgentConfiguredMock = vi.hoisted(() => vi.fn(() => false));
 const ensureGlobalUndiciEnvProxyDispatcherMock = vi.hoisted(() => vi.fn());
+const initializeDebugProxyCaptureMock = vi.hoisted(() => vi.fn());
+const finalizeDebugProxyCaptureMock = vi.hoisted(() => vi.fn());
+const maybeWarnAboutDebugProxyCoverageMock = vi.hoisted(() => vi.fn());
 const readConfigFileSnapshotMock = vi.hoisted(() =>
   vi.fn<(options?: ConfigSnapshotReadOptionsStub) => Promise<ConfigSnapshotStub>>(async () => ({
     exists: true,
@@ -289,6 +292,15 @@ vi.mock("../infra/net/proxy-env.js", () => ({
 
 vi.mock("../infra/net/undici-global-dispatcher.js", () => ({
   ensureGlobalUndiciEnvProxyDispatcher: ensureGlobalUndiciEnvProxyDispatcherMock,
+}));
+
+vi.mock("../proxy-capture/runtime.js", () => ({
+  initializeDebugProxyCapture: initializeDebugProxyCaptureMock,
+  finalizeDebugProxyCapture: finalizeDebugProxyCaptureMock,
+}));
+
+vi.mock("../proxy-capture/coverage.js", () => ({
+  maybeWarnAboutDebugProxyCoverage: maybeWarnAboutDebugProxyCoverageMock,
 }));
 
 vi.mock("../config/config.js", () => ({
@@ -1953,6 +1965,19 @@ describe("runCli exit behavior", () => {
 
     expect(startProxyMock).not.toHaveBeenCalled();
     expect(stopProxyMock).not.toHaveBeenCalled();
+  });
+
+  it("routes plugins list JSON before proxy capture bootstrap", async () => {
+    tryRouteCliMock.mockResolvedValueOnce(true);
+
+    await runCli(["node", "openclaw", "plugins", "list", "--json"]);
+
+    expect(shouldStartProxyForCli(["node", "openclaw", "plugins", "list", "--json"])).toBe(false);
+    expect(tryRouteCliMock).toHaveBeenCalledWith(["node", "openclaw", "plugins", "list", "--json"]);
+    expect(initializeDebugProxyCaptureMock).not.toHaveBeenCalled();
+    expect(maybeWarnAboutDebugProxyCoverageMock).not.toHaveBeenCalled();
+    expect(startProxyMock).not.toHaveBeenCalled();
+    expect(buildProgramMock).not.toHaveBeenCalled();
   });
 
   it.each([
