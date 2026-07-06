@@ -467,6 +467,54 @@ describe("server-channels auto restart", () => {
     expect(hoisted.sleepWithAbort).not.toHaveBeenCalled();
   });
 
+  it("detaches stale recovery tasks and starts a fresh provider after timeout grace", async () => {
+    const releaseFirstTask = createDeferred();
+    let startCount = 0;
+    const startAccount = vi.fn(async ({ abortSignal }: { abortSignal: AbortSignal }) => {
+      startCount += 1;
+      abortSignal.addEventListener("abort", () => {}, { once: true });
+      if (startCount === 1) {
+        await releaseFirstTask.promise;
+        return;
+      }
+      await new Promise<void>(() => {});
+    });
+    installTestRegistry(
+      createTestPlugin({
+        startAccount,
+      }),
+    );
+    const manager = createManager();
+
+    await manager.startChannels();
+    const recoveryStopTask = manager.stopChannel("discord", DEFAULT_ACCOUNT_ID, {
+      manual: false,
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await recoveryStopTask;
+
+    await manager.startChannel("discord", DEFAULT_ACCOUNT_ID);
+    expect(startAccount).toHaveBeenCalledTimes(1);
+    let account = manager.getRuntimeSnapshot().channelAccounts.discord?.[DEFAULT_ACCOUNT_ID];
+    expect(account?.running).toBe(false);
+    expect(account?.restartPending).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(60_001);
+    await manager.startChannel("discord", DEFAULT_ACCOUNT_ID);
+
+    expect(startAccount).toHaveBeenCalledTimes(2);
+    account = manager.getRuntimeSnapshot().channelAccounts.discord?.[DEFAULT_ACCOUNT_ID];
+    expect(account?.running).toBe(true);
+    expect(account?.restartPending).toBe(false);
+    expect(account?.lastError).toBeNull();
+
+    releaseFirstTask.resolve();
+    await flushMicrotasks();
+    account = manager.getRuntimeSnapshot().channelAccounts.discord?.[DEFAULT_ACCOUNT_ID];
+    expect(account?.running).toBe(true);
+    expect(account?.restartPending).toBe(false);
+  });
+
   it("keeps recovery timeout diagnostics when a stale task reports connected after abort", async () => {
     let emitLateStatus: (() => void) | undefined;
     const startAccount = vi.fn(async (ctx: ChannelGatewayContext<TestAccount>) => {
