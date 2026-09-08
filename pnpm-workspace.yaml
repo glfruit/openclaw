@@ -39,9 +39,8 @@ minimumReleaseAgeExclude:
   # Owned: bundled Feishu/Lark SDK for the owned package layout.
   - "@larksuiteoapi/node-sdk@1.66.0"
 
-# Owned: the owned package build bundles a flat node_modules layout into the
-# release tarball, which requires hoisted linking.
-nodeLinker: hoisted
+# Isolated installs let pnpm reuse whole-package APFS clones instead of relinking every file.
+nodeLinker: isolated
 # GWTs share node_modules; script commands must not reconcile that shared install.
 verifyDepsBeforeRun: false
 blockExoticSubdeps: true
