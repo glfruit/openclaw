@@ -15,6 +15,8 @@ import {
 } from "./docker-runtime.js";
 import { shellQuote } from "./shell-quote.js";
 
+const QA_DOCKER_HEALTH_REQUEST_TIMEOUT_MS = 2_000;
+
 type QaDockerUpResult = {
   outputDir: string;
   composeFile: string;
@@ -30,7 +32,9 @@ function resolveDefaultQaDockerDir(repoRoot: string) {
 async function isQaLabDockerHealthReachable(url: string, fetchImpl: FetchLike) {
   let response: Awaited<ReturnType<FetchLike>> | undefined;
   try {
-    response = await fetchImpl(url);
+    response = await fetchImpl(url, {
+      signal: AbortSignal.timeout(QA_DOCKER_HEALTH_REQUEST_TIMEOUT_MS),
+    });
     return response.ok;
   } catch {
     return false;
@@ -41,7 +45,11 @@ async function isQaLabDockerHealthReachable(url: string, fetchImpl: FetchLike) {
   }
 }
 
-function isMissingCommandError(error: unknown, command: string, seen = new Set<unknown>()): boolean {
+function isMissingCommandError(
+  error: unknown,
+  command: string,
+  seen = new Set<unknown>(),
+): boolean {
   if (!error || seen.has(error)) {
     return false;
   }
@@ -99,6 +107,11 @@ export async function runQaDockerUp(
     params.gatewayPort != null,
   );
   const qaLabPort = await resolveHostPortImpl(params.qaLabPort ?? 43124, params.qaLabPort != null);
+  if (gatewayPort === qaLabPort) {
+    throw new Error(
+      `QA Lab gateway and UI host ports must be different. Both resolved to ${gatewayPort}.`,
+    );
+  }
   const runCommand = deps?.runCommand ?? execCommand;
   const fetchImpl = deps?.fetchImpl ?? fetchHealthUrl;
   const sleepImpl = deps?.sleepImpl ?? sleep;

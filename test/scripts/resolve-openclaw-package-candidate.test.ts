@@ -1,30 +1,40 @@
 // Resolve Openclaw Package Candidate tests cover resolve openclaw package candidate script behavior.
 import { execFile, spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { toErrorObject as toLintErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ARTIFACT_TARBALL_SCAN_MAX_ENTRIES,
   assertExpectedSha256ForTest,
   cleanupPackageSourceWorktreeForTest,
   cleanPackedOpenClawTarballsForTest,
   downloadUrl,
   findSingleTarballForTest,
   loadTrustedPackageSource,
+  main,
   moveNewestPackedTarballForTest,
   parseArgs,
   readArtifactPackageCandidateMetadata,
   readPackageBuildSourceSha,
   resolveNpmPackageCandidatePackRunner,
   runCommandForTest,
-  signalChildProcessTree,
   validateOpenClawPackageSpec,
-} from "../../scripts/resolve-openclaw-package-candidate.mjs";
+} from "../../scripts/resolve-openclaw-package-candidate.mts";
+import { killPidIfAlive } from "../../src/test-utils/process-tree.js";
+import {
+  isProcessAlive,
+  waitForChildClose,
+  waitForDead,
+  waitForPidFile,
+} from "../helpers/process-wait.js";
+import { startProcessWatchdogFixture } from "../helpers/process-watchdog.js";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs: string[] = [];
+const autoTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 type LookupAddress = { address: string; family: number };
 
@@ -43,61 +53,95 @@ async function missing(file: string): Promise<boolean> {
   );
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-async function waitForFile(filePath: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(filePath)) {
-      return;
-    }
-    await sleep(25);
-  }
-  throw new Error(`timeout waiting for ${filePath}`);
-}
-
-async function waitForDead(pid: number, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!isProcessAlive(pid)) {
-      return;
-    }
-    await sleep(25);
-  }
-  throw new Error(`process still alive: ${pid}`);
-}
-
-async function waitForExit(
-  child: ReturnType<typeof spawn>,
-  timeoutMs: number,
-): Promise<{ signal: NodeJS.Signals | null; status: number | null }> {
-  return await new Promise((resolve, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error("timeout waiting for child exit")),
-      timeoutMs,
+async function createPackageTarball(
+  dir: string,
+  buildInfo?: string | { commit: string },
+  version = "2026.8.1",
+): Promise<string> {
+  const root = path.join(dir, "package");
+  await mkdir(path.join(root, "dist"), { recursive: true });
+  await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "openclaw", version }));
+  if (buildInfo !== undefined) {
+    await writeFile(
+      path.join(root, "dist", "build-info.json"),
+      typeof buildInfo === "string" ? buildInfo : JSON.stringify(buildInfo),
     );
-    child.on("close", (status, signal) => {
-      clearTimeout(timeout);
-      resolve({ signal, status });
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
+  }
+  const tarball = path.join(dir, "openclaw.tgz");
+  await new Promise<void>((resolve, reject) => {
+    execFile("tar", ["-czf", tarball, "-C", dir, "package"], (error) => {
+      if (error) {
+        reject(toLintErrorObject(error, "Non-Error rejection"));
+        return;
+      }
+      resolve();
     });
   });
+  return tarball;
+}
+
+async function createArtifactFixture(
+  prefix: string,
+  {
+    buildInfo,
+    packageSourceSha,
+  }: { buildInfo?: string | { commit: string }; packageSourceSha?: string },
+) {
+  const dir = autoTempDirs.make(prefix);
+  const artifactDir = path.join(dir, "artifact");
+  const binDir = path.join(dir, "bin");
+  const gitLog = path.join(dir, "git.log");
+  const nodeLog = path.join(dir, "node.log");
+  await mkdir(artifactDir);
+  await mkdir(binDir);
+  await createPackageTarball(artifactDir, buildInfo);
+  if (packageSourceSha !== undefined) {
+    await writeFile(
+      path.join(artifactDir, "package-candidate.json"),
+      JSON.stringify({ packageSourceSha }),
+    );
+  }
+  await writeFile(
+    path.join(binDir, "git"),
+    `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_GIT_LOG"
+exit 99
+`,
+  );
+  await writeFile(
+    path.join(binDir, "node"),
+    `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_NODE_LOG"
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "git"), 0o755);
+  await chmod(path.join(binDir, "node"), 0o755);
+  return {
+    artifactDir,
+    binDir,
+    dir,
+    gitLog,
+    nodeLog,
+    registryDir: path.join(dir, "registry"),
+  };
+}
+
+async function withArtifactFixtureCommands<T>(
+  fixture: Awaited<ReturnType<typeof createArtifactFixture>>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const previousPath = process.env.PATH;
+  process.env.FAKE_GIT_LOG = fixture.gitLog;
+  process.env.FAKE_NODE_LOG = fixture.nodeLog;
+  process.env.PATH = `${fixture.binDir}:${previousPath}`;
+  try {
+    return await run();
+  } finally {
+    process.env.PATH = previousPath;
+    delete process.env.FAKE_GIT_LOG;
+    delete process.env.FAKE_NODE_LOG;
+  }
 }
 
 afterEach(async () => {
@@ -105,10 +149,29 @@ afterEach(async () => {
 });
 
 describe("resolve-openclaw-package-candidate", () => {
+  it("preflights package-acceptance ref candidates before dependency installation", () => {
+    const script = readFileSync("scripts/resolve-openclaw-package-candidate.mts", "utf8");
+    const refPackageBuild = script.slice(
+      script.indexOf('if (options.source === "ref")'),
+      script.indexOf('} else if (options.source === "npm")'),
+    );
+    const workflow = readFileSync(".github/workflows/package-acceptance.yml", "utf8");
+
+    expect(workflow).toContain('--source "$SOURCE"');
+    expect(workflow).toContain("PACKAGE_REF: ${{ inputs.package_ref }}");
+    expect(refPackageBuild).toContain("validatePackageSourceDir(packageSource.sourceDir");
+    expect(refPackageBuild.indexOf("validatePackageSourceDir")).toBeLessThan(
+      refPackageBuild.indexOf("installPackageSourceDeps"),
+    );
+    expect(refPackageBuild).toContain('"scripts/package-openclaw-for-docker.mjs"');
+    expect(refPackageBuild).toContain('"--allow-unreleased-changelog"');
+  });
+
   it("accepts only OpenClaw release package specs for npm candidates", () => {
     for (const spec of [
       "openclaw@beta",
       "openclaw@alpha",
+      "openclaw@extended-stable",
       "openclaw@latest",
       "openclaw@2026.4.27",
       "openclaw@2026.4.27-1",
@@ -163,10 +226,87 @@ describe("resolve-openclaw-package-candidate", () => {
       packageRef: "release/2026.4.27",
       packageSpec: "openclaw@beta",
       packageUrl: "",
+      pluginRegistryOutputDir: "",
+      requiredPluginPackagesJson: "[]",
       source: "npm",
       trustedSourceId: "",
       trustedSourcePolicy: ".github/package-trusted-sources.json",
     });
+  });
+
+  it("rejects option-shaped package candidate option values", () => {
+    for (const flag of [
+      "--artifact-dir",
+      "--github-output",
+      "--metadata",
+      "--output-dir",
+      "--output-name",
+      "--package-ref",
+      "--package-spec",
+      "--package-url",
+      "--package-sha256",
+      "--source",
+      "--trusted-source-id",
+      "--trusted-source-policy",
+    ]) {
+      expect(() => parseArgs([flag, "--output-dir", "out"]), flag).toThrow(
+        `${flag} requires a value`,
+      );
+      expect(() => parseArgs([flag, "-h"]), flag).toThrow(`${flag} requires a value`);
+    }
+  });
+
+  it("rejects duplicate package candidate CLI options", () => {
+    const requiredArgs = ["--source", "npm", "--output-dir", ".artifacts/docker-e2e-package"];
+    const duplicateCases = [
+      ["--artifact-dir", [...requiredArgs, "--artifact-dir", "one", "--artifact-dir", "two"]],
+      [
+        "--github-output",
+        [...requiredArgs, "--github-output", "one.out", "--github-output", "two.out"],
+      ],
+      ["--metadata", [...requiredArgs, "--metadata", "one.json", "--metadata", "two.json"]],
+      ["--output-dir", ["--source", "npm", "--output-dir", "one", "--output-dir", "two"]],
+      ["--output-name", [...requiredArgs, "--output-name", "one.tgz", "--output-name", "two.tgz"]],
+      ["--package-ref", [...requiredArgs, "--package-ref", "one", "--package-ref", "two"]],
+      [
+        "--package-spec",
+        [...requiredArgs, "--package-spec", "openclaw@beta", "--package-spec", "openclaw@latest"],
+      ],
+      [
+        "--package-url",
+        [...requiredArgs, "--package-url", "", "--package-url", "https://example.com/openclaw.tgz"],
+      ],
+      ["--package-sha256", [...requiredArgs, "--package-sha256", "", "--package-sha256", "abc123"]],
+      [
+        "--source",
+        [
+          "--source",
+          "npm",
+          "--source",
+          "artifact",
+          "--output-dir",
+          ".artifacts/docker-e2e-package",
+        ],
+      ],
+      [
+        "--trusted-source-id",
+        [...requiredArgs, "--trusted-source-id", "one", "--trusted-source-id", "two"],
+      ],
+      [
+        "--trusted-source-policy",
+        [
+          ...requiredArgs,
+          "--trusted-source-policy",
+          "one.json",
+          "--trusted-source-policy",
+          "two.json",
+        ],
+      ],
+    ] satisfies Array<[string, string[]]>;
+
+    for (const [flag, args] of duplicateCases) {
+      expect(() => parseArgs(args), flag).toThrow(`${flag} was provided more than once`);
+    }
   });
 
   it("rejects package candidate output names that escape the output directory", () => {
@@ -215,31 +355,6 @@ describe("resolve-openclaw-package-candidate", () => {
     });
   });
 
-  it("signals Windows package runner process trees with taskkill", () => {
-    const child = {
-      kill: vi.fn(),
-      pid: 12345,
-    };
-    const runTaskkill = vi.fn(() => ({ error: undefined, status: 0 }));
-
-    signalChildProcessTree(child, "SIGTERM", {
-      platform: "win32",
-      runTaskkill,
-    });
-    expect(runTaskkill).toHaveBeenNthCalledWith(1, "taskkill", ["/PID", "12345", "/T"], {
-      stdio: "ignore",
-    });
-
-    signalChildProcessTree(child, "SIGKILL", {
-      platform: "win32",
-      runTaskkill,
-    });
-    expect(runTaskkill).toHaveBeenNthCalledWith(2, "taskkill", ["/PID", "12345", "/T", "/F"], {
-      stdio: "ignore",
-    });
-    expect(child.kill).not.toHaveBeenCalled();
-  });
-
   it("keeps npm pack filenames inside the package candidate output directory", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-npm-pack-"));
     tempDirs.push(dir);
@@ -253,6 +368,88 @@ describe("resolve-openclaw-package-candidate", () => {
       ),
     ).resolves.toBe(path.join(dir, "openclaw-current.tgz"));
     await expect(readFile(path.join(dir, "openclaw-current.tgz"), "utf8")).resolves.toBe("package");
+  });
+
+  it("keeps the first packed identity when a moving npm tag changes", async () => {
+    const dir = autoTempDirs.make("openclaw-package-moving-tag-");
+    const binDir = path.join(dir, "bin");
+    const outputDir = path.join(dir, "output");
+    const firstTarball = await createPackageTarball(path.join(dir, "first"), undefined, "2026.8.1");
+    const secondTarball = await createPackageTarball(
+      path.join(dir, "second"),
+      undefined,
+      "2026.9.1",
+    );
+    const countPath = path.join(dir, "pack-count");
+    await mkdir(binDir);
+    await writeFile(
+      path.join(binDir, "npm"),
+      `#!/bin/sh
+set -e
+count="$(cat "$FAKE_PACK_COUNT" 2>/dev/null || printf 0)"
+count=$((count + 1))
+printf '%s' "$count" > "$FAKE_PACK_COUNT"
+source="$FAKE_FIRST_TARBALL"
+version=2026.8.1
+if [ "$count" -gt 1 ]; then
+  source="$FAKE_SECOND_TARBALL"
+  version=2026.9.1
+fi
+cp "$source" "$FAKE_PACK_OUTPUT/openclaw-$version.tgz"
+printf '[{"filename":"openclaw-%s.tgz"}]\\n' "$version"
+`,
+    );
+    await chmod(path.join(binDir, "npm"), 0o755);
+    await mkdir(outputDir);
+    const runner = resolveNpmPackageCandidatePackRunner("openclaw@beta", outputDir, {
+      env: {
+        ...process.env,
+        FAKE_FIRST_TARBALL: firstTarball,
+        FAKE_PACK_COUNT: countPath,
+        FAKE_PACK_OUTPUT: outputDir,
+        FAKE_SECOND_TARBALL: secondTarball,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+      execPath: path.join(binDir, "node"),
+      existsSync: () => false,
+      platform: process.platform,
+    });
+
+    const packOutput = await runCommandForTest(runner.command, runner.args, {
+      capture: true,
+      env: runner.env,
+    });
+    const candidate = await moveNewestPackedTarballForTest(
+      outputDir,
+      packOutput,
+      "openclaw-current.tgz",
+    );
+    const packageJson = await new Promise<string>((resolve, reject) => {
+      execFile("tar", ["-xOf", candidate, "package/package.json"], (error, stdout) => {
+        if (error) {
+          reject(toLintErrorObject(error, "Non-Error rejection"));
+          return;
+        }
+        resolve(stdout);
+      });
+    });
+
+    expect(JSON.parse(packageJson)).toMatchObject({ name: "openclaw", version: "2026.8.1" });
+    await expect(readFile(countPath, "utf8")).resolves.toBe("1");
+  });
+
+  it("reads npm 12 name-keyed package candidate filenames", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-npm-pack-"));
+    tempDirs.push(dir);
+    await writeFile(path.join(dir, "openclaw-2026.6.17.tgz"), "package");
+
+    await expect(
+      moveNewestPackedTarballForTest(
+        dir,
+        JSON.stringify({ openclaw: { filename: "openclaw-2026.6.17.tgz" } }),
+        "openclaw-current.tgz",
+      ),
+    ).resolves.toBe(path.join(dir, "openclaw-current.tgz"));
   });
 
   it("rejects path-like npm pack filenames instead of renaming outside the output directory", async () => {
@@ -338,41 +535,99 @@ describe("resolve-openclaw-package-candidate", () => {
     ).rejects.toThrow(/produced more than \d+ captured stdout chars/u);
   });
 
+  it("clamps oversized package runner command timers before scheduling", async () => {
+    await expect(
+      runCommandForTest(process.execPath, ["-e", "setTimeout(() => process.exit(0), 25);"], {
+        killAfterMs: Number.MAX_SAFE_INTEGER,
+        timeoutMs: Number.MAX_SAFE_INTEGER,
+      }),
+    ).resolves.toBe("");
+  });
+
   it("kills timed-out package runner process groups", async () => {
     if (process.platform === "win32") {
       return;
     }
 
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-runner-timeout-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-runner-timeout-");
     const childPidPath = path.join(dir, "child.pid");
-    let childPid: number | undefined;
-
-    try {
-      const childScript = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
-      const parentScript = [
-        "const { spawn } = require('node:child_process');",
-        "const fs = require('node:fs');",
-        `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: 'ignore' });`,
-        "fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));",
-        "setInterval(() => {}, 1000);",
-      ].join("");
-
-      const timeoutAssertion = expect(
+    const childScript = [
+      "process.on('SIGTERM', () => {});",
+      "setInterval(() => {}, 1000);",
+      `require('node:fs').writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid));`,
+    ].join("\n");
+    const parentScript = [
+      "const { spawn } = require('node:child_process');",
+      `spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: 'ignore' });`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const releaseAndWait = startProcessWatchdogFixture(() =>
+      expect(
         runCommandForTest(process.execPath, ["-e", parentScript], {
-          env: { ...process.env, OPENCLAW_TEST_CHILD_PID: childPidPath },
           killAfterMs: 25,
           timeoutMs: 500,
         }),
-      ).rejects.toThrow(/timed out after 500ms/u);
-
-      await waitForFile(childPidPath, 2_000);
-      childPid = Number.parseInt(readFileSync(childPidPath, "utf8"), 10);
-      await timeoutAssertion;
+      ).rejects.toThrow(/timed out after 500ms/u),
+    );
+    const killSpy = vi.spyOn(process, "kill");
+    let childPid: number | undefined;
+    try {
+      childPid = await waitForPidFile(childPidPath, 2_000);
+      expect(isProcessAlive(childPid)).toBe(true);
+      await releaseAndWait();
+      expect(killSpy).toHaveBeenCalledWith(expect.any(Number), "SIGKILL");
       await waitForDead(childPid, 2_000);
     } finally {
-      if (childPid !== undefined && isProcessAlive(childPid)) {
-        process.kill(childPid, "SIGKILL");
+      try {
+        await releaseAndWait();
+      } finally {
+        killSpy.mockRestore();
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
+          await waitForDead(childPid, 2_000);
+        }
+      }
+    }
+  });
+
+  it("clamps oversized package runner kill grace before scheduling", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const dir = autoTempDirs.make("openclaw-package-runner-grace-");
+    const childPidPath = path.join(dir, "child.pid");
+    const cleanupPath = path.join(dir, "child.cleanup");
+    const childScript = [
+      "const fs = require('node:fs');",
+      "process.on('SIGTERM', () => {",
+      `  setTimeout(() => { fs.writeFileSync(${JSON.stringify(cleanupPath)}, 'clean'); process.exit(0); }, 75);`,
+      "});",
+      "setInterval(() => {}, 1000);",
+      `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid));`,
+    ].join("\n");
+    const releaseAndWait = startProcessWatchdogFixture(() =>
+      expect(
+        runCommandForTest(process.execPath, ["-e", childScript], {
+          killAfterMs: Number.MAX_SAFE_INTEGER,
+          timeoutMs: 500,
+        }),
+      ).rejects.toThrow(/timed out after 500ms/u),
+    );
+    let childPid: number | undefined;
+    try {
+      childPid = await waitForPidFile(childPidPath, 2_000);
+      await releaseAndWait();
+      expect(readFileSync(cleanupPath, "utf8")).toBe("clean");
+      await waitForDead(childPid, 2_000);
+    } finally {
+      try {
+        await releaseAndWait();
+      } finally {
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
+          await waitForDead(childPid, 2_000);
+        }
       }
     }
   });
@@ -382,56 +637,50 @@ describe("resolve-openclaw-package-candidate", () => {
       return;
     }
 
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-runner-timeout-clean-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-runner-timeout-clean-");
     const childPidPath = path.join(dir, "child.pid");
-    const readyPath = path.join(dir, "child.ready");
     const cleanupPath = path.join(dir, "child.cleanup");
-
     const childScript = [
       "const fs = require('node:fs');",
       "process.on('SIGTERM', () => {",
-      "  fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_CLEANUP, 'clean');",
-      "  setTimeout(() => process.exit(0), 75);",
+      "  setTimeout(() => {",
+      `    fs.writeFileSync(${JSON.stringify(cleanupPath)}, 'clean');`,
+      "    process.exit(0);",
+      "  }, 25);",
       "});",
-      "fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_READY, 'ready');",
       "setInterval(() => {}, 1000);",
-    ].join("");
+      `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid));`,
+    ].join("\n");
     const parentScript = [
       "const { spawn } = require('node:child_process');",
-      "const fs = require('node:fs');",
-      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], {`,
-      "  stdio: 'ignore',",
-      "  env: {",
-      "    ...process.env,",
-      "    OPENCLAW_TEST_CHILD_CLEANUP: process.env.OPENCLAW_TEST_CHILD_CLEANUP,",
-      "    OPENCLAW_TEST_CHILD_READY: process.env.OPENCLAW_TEST_CHILD_READY,",
-      "  },",
-      "});",
-      "fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));",
       "process.on('SIGTERM', () => process.exit(0));",
+      `spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: 'ignore' });`,
       "setInterval(() => {}, 1000);",
-    ].join("");
-
-    const startedAt = Date.now();
-    const timeoutAssertion = expect(
-      runCommandForTest(process.execPath, ["-e", parentScript], {
-        env: {
-          ...process.env,
-          OPENCLAW_TEST_CHILD_CLEANUP: cleanupPath,
-          OPENCLAW_TEST_CHILD_PID: childPidPath,
-          OPENCLAW_TEST_CHILD_READY: readyPath,
-        },
-        killAfterMs: 1000,
-        timeoutMs: 1000,
-      }),
-    ).rejects.toThrow(/timed out after 1000ms/u);
-
-    await waitForFile(readyPath, 2_000);
-    await timeoutAssertion;
-
-    expect(readFileSync(cleanupPath, "utf8")).toBe("clean");
-    expect(Date.now() - startedAt).toBeLessThan(1_700);
+    ].join("\n");
+    const releaseAndWait = startProcessWatchdogFixture(() =>
+      expect(
+        runCommandForTest(process.execPath, ["-e", parentScript], {
+          killAfterMs: 250,
+          timeoutMs: 250,
+        }),
+      ).rejects.toThrow(/timed out after 250ms/u),
+    );
+    let childPid: number | undefined;
+    try {
+      childPid = await waitForPidFile(childPidPath, 2_000);
+      await releaseAndWait();
+      expect(readFileSync(cleanupPath, "utf8")).toBe("clean");
+      await waitForDead(childPid, 2_000);
+    } finally {
+      try {
+        await releaseAndWait();
+      } finally {
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
+          await waitForDead(childPid, 2_000);
+        }
+      }
+    }
   });
 
   it("forwards external termination to package runner process groups", async () => {
@@ -439,48 +688,66 @@ describe("resolve-openclaw-package-candidate", () => {
       return;
     }
 
-    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-runner-signal-"));
-    tempDirs.push(dir);
+    const dir = autoTempDirs.make("openclaw-package-runner-signal-");
     const childPidPath = path.join(dir, "child.pid");
+    const killPath = path.join(dir, "child.kill");
     const scriptUrl = pathToFileURL(
-      path.resolve("scripts/resolve-openclaw-package-candidate.mjs"),
+      path.resolve("scripts/resolve-openclaw-package-candidate.mts"),
     ).href;
+    const childScript = [
+      "process.on('SIGTERM', () => {});",
+      "setInterval(() => {}, 1000);",
+      `require('node:fs').writeFileSync(${JSON.stringify(childPidPath)}, String(process.pid));`,
+    ].join("\n");
+    const parentScript = [
+      "const { spawn } = require('node:child_process');",
+      `spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: 'ignore' });`,
+      "setInterval(() => {}, 1000);",
+    ].join("\n");
+    const runnerScript = [
+      "import fs from 'node:fs';",
+      "const kill = process.kill.bind(process);",
+      "process.kill = (pid, signal) => {",
+      "  const result = kill(pid, signal);",
+      `  if (signal === 'SIGKILL') fs.writeFileSync(${JSON.stringify(killPath)}, signal);`,
+      "  return result;",
+      "};",
+      `const { runCommandForTest } = await import(${JSON.stringify(scriptUrl)});`,
+      `await runCommandForTest(process.execPath, ['-e', ${JSON.stringify(parentScript)}], { timeoutMs: 60000 });`,
+    ].join("\n");
+    const runner = spawn(process.execPath, ["--input-type=module", "-e", runnerScript], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     let childPid: number | undefined;
-    let runnerPid: number | undefined;
-
     try {
-      const childScript = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
-      const parentScript = [
-        "const { spawn } = require('node:child_process');",
-        "const fs = require('node:fs');",
-        `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: 'ignore' });`,
-        "fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));",
-        "setInterval(() => {}, 1000);",
-      ].join("");
-      const runnerScript = [
-        `import { runCommandForTest } from ${JSON.stringify(scriptUrl)};`,
-        `await runCommandForTest(process.execPath, ['-e', ${JSON.stringify(parentScript)}], { timeoutMs: 60000 });`,
-      ].join("\n");
-      const runner = spawn(process.execPath, ["--input-type=module", "-e", runnerScript], {
-        cwd: process.cwd(),
-        env: { ...process.env, OPENCLAW_TEST_CHILD_PID: childPidPath },
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      runnerPid = runner.pid;
-
-      await waitForFile(childPidPath, 2_000);
-      childPid = Number.parseInt(readFileSync(childPidPath, "utf8"), 10);
+      childPid = await waitForPidFile(childPidPath, 2_000);
+      expect(isProcessAlive(childPid)).toBe(true);
+      const closed = waitForChildClose(runner, 7_000);
       runner.kill("SIGTERM");
-      const result = await waitForExit(runner, 7_000);
-
-      expect(result).toEqual({ signal: null, status: 143 });
+      await expect(closed).resolves.toEqual({ signal: null, code: 143 });
+      expect(readFileSync(killPath, "utf8")).toBe("SIGKILL");
       await waitForDead(childPid, 2_000);
     } finally {
-      if (runnerPid !== undefined && isProcessAlive(runnerPid)) {
-        process.kill(runnerPid, "SIGKILL");
-      }
-      if (childPid !== undefined && isProcessAlive(childPid)) {
-        process.kill(childPid, "SIGKILL");
+      try {
+        if (runner.pid && isProcessAlive(runner.pid)) {
+          const closed = waitForChildClose(runner, 7_000);
+          // Let the runner clean its detached group even if readiness failed.
+          runner.kill("SIGTERM");
+          try {
+            await closed;
+          } finally {
+            if (isProcessAlive(runner.pid)) {
+              runner.kill("SIGKILL");
+              await waitForDead(runner.pid, 2_000);
+            }
+          }
+        }
+      } finally {
+        if (childPid !== undefined) {
+          killPidIfAlive(childPid);
+          await waitForDead(childPid, 2_000);
+        }
       }
     }
   });
@@ -644,7 +911,7 @@ describe("resolve-openclaw-package-candidate", () => {
           status: 200,
         });
       },
-      lookupHost: lookupAddresses([{ address: "10.0.0.8", family: 4 }]),
+      lookupHost: lookupAddresses([{ address: "203.0.113.8", family: 4 }]),
       maxBytes: 3,
       trustedSource,
     });
@@ -664,7 +931,44 @@ describe("resolve-openclaw-package-candidate", () => {
     await expect(
       downloadUrl("https://packages.internal:8443/other/openclaw.tgz", target, {
         fetchImpl: unexpectedFetch,
-        lookupHost: lookupAddresses([{ address: "10.0.0.8", family: 4 }]),
+        lookupHost: lookupAddresses([{ address: "203.0.113.8", family: 4 }]),
+        trustedSource,
+      }),
+    ).rejects.toThrow("path is not allowed by trusted package source enterprise-artifactory");
+  });
+
+  it("matches trusted package_url path prefixes on path segment boundaries", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
+    tempDirs.push(dir);
+    const target = path.join(dir, "openclaw.tgz");
+    const trustedSource = {
+      allowPrivateNetwork: true,
+      hosts: ["packages.internal"],
+      id: "enterprise-artifactory",
+      pathPrefixes: ["/artifactory/openclaw"],
+      ports: [8443],
+      redirectHosts: ["packages.internal"],
+    };
+    const requestedUrls: string[] = [];
+
+    await downloadUrl("https://packages.internal:8443/artifactory/openclaw/pkg.tgz", target, {
+      fetchImpl: async (url: URL) => {
+        requestedUrls.push(url.toString());
+        return new Response(new Uint8Array([1, 2, 3]), {
+          headers: { "content-length": "3" },
+          status: 200,
+        });
+      },
+      lookupHost: lookupAddresses([{ address: "203.0.113.8", family: 4 }]),
+      maxBytes: 3,
+      trustedSource,
+    });
+
+    expect(requestedUrls).toEqual(["https://packages.internal:8443/artifactory/openclaw/pkg.tgz"]);
+    await expect(
+      downloadUrl("https://packages.internal:8443/artifactory/openclaw-malicious/pkg.tgz", target, {
+        fetchImpl: unexpectedFetch,
+        lookupHost: lookupAddresses([{ address: "203.0.113.8", family: 4 }]),
         trustedSource,
       }),
     ).rejects.toThrow("path is not allowed by trusted package source enterprise-artifactory");
@@ -958,6 +1262,36 @@ describe("resolve-openclaw-package-candidate", () => {
     await expect(missing(`${target}.tmp`)).resolves.toBe(true);
   });
 
+  it("clamps oversized package_url download timers before scheduling", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-"));
+    tempDirs.push(dir);
+    const target = path.join(dir, "openclaw.tgz");
+
+    await downloadUrl("https://packages.example/openclaw.tgz", target, {
+      fetchImpl: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              setTimeout(() => {
+                controller.enqueue(new Uint8Array([1, 2, 3]));
+                controller.close();
+              }, 25);
+            },
+          }),
+          {
+            headers: { "content-length": "3" },
+            status: 200,
+          },
+        ),
+      lookupHost: lookupAddresses([{ address: "93.184.216.34", family: 4 }]),
+      maxBytes: 3,
+      timeoutMs: Number.MAX_SAFE_INTEGER,
+    });
+
+    await expect(readFile(target)).resolves.toEqual(Buffer.from([1, 2, 3]));
+    await expect(missing(`${target}.tmp`)).resolves.toBe(true);
+  });
+
   it("times out stalled package_url response bodies", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-download-timeout-"));
     tempDirs.push(dir);
@@ -1051,6 +1385,236 @@ describe("resolve-openclaw-package-candidate", () => {
     });
   });
 
+  it("normalizes artifact package source SHAs before workflow output", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-candidate-sha-"));
+    tempDirs.push(dir);
+    await writeFile(
+      path.join(dir, "package-candidate.json"),
+      JSON.stringify({
+        packageSourceSha: "66CE632B9B7C5C7FDD3E66C739687D51638AD6E2",
+      }),
+    );
+
+    await expect(readArtifactPackageCandidateMetadata(dir)).resolves.toEqual({
+      packageSourceSha: "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2",
+    });
+  });
+
+  it.each([
+    ["without a registry", false],
+    ["with a registry", true],
+  ])("rejects artifact provenance mismatches %s before side effects", async (_label, registry) => {
+    const metadataSha = "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2";
+    const buildInfoSha = "77df743c0c8d6d80ee4f77d84a798e62749be7f3";
+    const fixture = await createArtifactFixture("openclaw-artifact-provenance-mismatch-", {
+      buildInfo: { commit: buildInfoSha.toUpperCase() },
+      packageSourceSha: metadataSha.toUpperCase(),
+    });
+
+    await withArtifactFixtureCommands(fixture, async () => {
+      await expect(
+        main([
+          "--source",
+          "artifact",
+          "--artifact-dir",
+          fixture.artifactDir,
+          "--output-dir",
+          path.join(fixture.dir, "output"),
+          ...(registry
+            ? [
+                "--plugin-registry-output-dir",
+                fixture.registryDir,
+                "--required-plugin-packages-json",
+                '["@openclaw/codex"]',
+              ]
+            : []),
+        ]),
+      ).rejects.toThrow(
+        `artifact packageSourceSha ${metadataSha} does not match package build-info commit ${buildInfoSha}`,
+      );
+    });
+    await expect(missing(fixture.gitLog)).resolves.toBe(true);
+    await expect(missing(fixture.registryDir)).resolves.toBe(true);
+  });
+
+  it("uses normalized artifact build-info provenance when metadata is absent", async () => {
+    const sourceSha = "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2";
+    const fixture = await createArtifactFixture("openclaw-artifact-build-info-fallback-", {
+      buildInfo: { commit: sourceSha.toUpperCase() },
+    });
+    const metadataPath = path.join(fixture.dir, "resolved.json");
+
+    await withArtifactFixtureCommands(fixture, async () => {
+      await main([
+        "--source",
+        "artifact",
+        "--artifact-dir",
+        fixture.artifactDir,
+        "--output-dir",
+        path.join(fixture.dir, "output"),
+        "--metadata",
+        metadataPath,
+      ]);
+    });
+
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as Record<string, unknown>;
+    expect(metadata.packageSourceSha).toBe(sourceSha);
+    expect(metadata.packageTrustedReason).toBe("package-build-info");
+  });
+
+  it("requires artifact build-info only when preparing a registry", async () => {
+    const sourceSha = "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2";
+    const fixture = await createArtifactFixture("openclaw-artifact-missing-build-info-", {
+      packageSourceSha: sourceSha,
+    });
+    const metadataPath = path.join(fixture.dir, "resolved.json");
+
+    await withArtifactFixtureCommands(fixture, async () => {
+      await main([
+        "--source",
+        "artifact",
+        "--artifact-dir",
+        fixture.artifactDir,
+        "--output-dir",
+        path.join(fixture.dir, "output-without-registry"),
+        "--metadata",
+        metadataPath,
+      ]);
+      await expect(
+        main([
+          "--source",
+          "artifact",
+          "--artifact-dir",
+          fixture.artifactDir,
+          "--output-dir",
+          path.join(fixture.dir, "output-with-registry"),
+          "--plugin-registry-output-dir",
+          fixture.registryDir,
+          "--required-plugin-packages-json",
+          '["@openclaw/codex"]',
+        ]),
+      ).rejects.toThrow(
+        "source=artifact requires a valid package build-info commit for prerelease plugin registry creation",
+      );
+    });
+
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as Record<string, unknown>;
+    expect(metadata.packageSourceSha).toBe(sourceSha);
+    await expect(missing(fixture.gitLog)).resolves.toBe(true);
+    await expect(missing(fixture.registryDir)).resolves.toBe(true);
+  });
+
+  it("rejects malformed artifact build-info before package validation", async () => {
+    const fixture = await createArtifactFixture("openclaw-artifact-malformed-build-info-", {
+      buildInfo: "{not-json",
+      packageSourceSha: "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2",
+    });
+
+    await withArtifactFixtureCommands(fixture, async () => {
+      await expect(
+        main([
+          "--source",
+          "artifact",
+          "--artifact-dir",
+          fixture.artifactDir,
+          "--output-dir",
+          path.join(fixture.dir, "output"),
+        ]),
+      ).rejects.toBeInstanceOf(SyntaxError);
+    });
+    await expect(missing(fixture.nodeLog)).resolves.toBe(true);
+  });
+
+  it("validates the normalized artifact source SHA before registry preparation", async () => {
+    const dir = autoTempDirs.make("openclaw-artifact-registry-source-");
+    const artifactDir = path.join(dir, "artifact");
+    const binDir = path.join(dir, "bin");
+    const gitLog = path.join(dir, "git.log");
+    const sourceSha = "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2";
+    await mkdir(artifactDir);
+    await mkdir(binDir);
+    await createPackageTarball(artifactDir, { commit: sourceSha });
+    await writeFile(
+      path.join(artifactDir, "package-candidate.json"),
+      JSON.stringify({ packageSourceSha: sourceSha.toUpperCase() }),
+    );
+    const fakeGit = path.join(binDir, "git");
+    await writeFile(
+      fakeGit,
+      `#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_GIT_LOG"
+case "$1" in
+  fetch) exit 0 ;;
+  rev-parse) printf '%s\\n' "$FAKE_SOURCE_SHA" ;;
+  merge-base) exit 1 ;;
+  tag | for-each-ref) exit 0 ;;
+  *) exit 99 ;;
+esac
+`,
+    );
+    await chmod(fakeGit, 0o755);
+
+    const previousPath = process.env.PATH;
+    process.env.FAKE_GIT_LOG = gitLog;
+    process.env.FAKE_SOURCE_SHA = sourceSha;
+    process.env.PATH = `${binDir}:${previousPath}`;
+    try {
+      await expect(
+        main([
+          "--source",
+          "artifact",
+          "--artifact-dir",
+          artifactDir,
+          "--output-dir",
+          path.join(dir, "output"),
+          "--plugin-registry-output-dir",
+          path.join(dir, "registry"),
+          "--required-plugin-packages-json",
+          '["@openclaw/codex"]',
+        ]),
+      ).rejects.toThrow(
+        `package_ref ${sourceSha} resolved to ${sourceSha}, which is not reachable from an OpenClaw branch or release tag`,
+      );
+    } finally {
+      process.env.PATH = previousPath;
+      delete process.env.FAKE_GIT_LOG;
+      delete process.env.FAKE_SOURCE_SHA;
+    }
+    await expect(readFile(gitLog, "utf8")).resolves.toContain(
+      `rev-parse --verify ${sourceSha}^{commit}`,
+    );
+  });
+
+  it("normalizes whitespace-only artifact package source SHAs to absent", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-candidate-empty-sha-"));
+    tempDirs.push(dir);
+    await writeFile(
+      path.join(dir, "package-candidate.json"),
+      JSON.stringify({
+        packageSourceSha: " \r\n ",
+      }),
+    );
+
+    await expect(readArtifactPackageCandidateMetadata(dir)).resolves.toEqual({
+      packageSourceSha: "",
+    });
+  });
+
+  it("rejects malformed artifact package source SHAs", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-candidate-bad-sha-"));
+    tempDirs.push(dir);
+    await writeFile(
+      path.join(dir, "package-candidate.json"),
+      JSON.stringify({
+        packageSourceSha: "66ce632b9b7c5c7fdd3e66c739687d51638ad6e2\r\nsource=main",
+      }),
+    );
+
+    await expect(readArtifactPackageCandidateMetadata(dir)).rejects.toThrow(
+      "artifact package-candidate.json packageSourceSha must be a 40-character commit SHA",
+    );
+  });
+
   it("accepts uppercase package artifact SHA-256 metadata", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-sha-"));
     tempDirs.push(dir);
@@ -1064,13 +1628,14 @@ describe("resolve-openclaw-package-candidate", () => {
   it("rejects source artifact scans that exceed the filesystem entry limit", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-artifact-scan-"));
     tempDirs.push(dir);
+    const maxEntries = 3;
 
-    for (let index = 0; index <= ARTIFACT_TARBALL_SCAN_MAX_ENTRIES; index += 1) {
+    for (let index = 0; index <= maxEntries; index += 1) {
       await writeFile(path.join(dir, `not-a-package-${index}.txt`), "x");
     }
 
-    await expect(findSingleTarballForTest(dir)).rejects.toThrow(
-      `source=artifact scan exceeded ${ARTIFACT_TARBALL_SCAN_MAX_ENTRIES} filesystem entries`,
+    await expect(findSingleTarballForTest(dir, maxEntries)).rejects.toThrow(
+      `source=artifact scan exceeded ${maxEntries} filesystem entries`,
     );
   });
 
@@ -1094,22 +1659,8 @@ describe("resolve-openclaw-package-candidate", () => {
   it("reads the source SHA from packed npm build metadata", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "openclaw-package-build-info-"));
     tempDirs.push(dir);
-    const root = path.join(dir, "package");
-    await mkdir(path.join(root, "dist"), { recursive: true });
-    await writeFile(path.join(root, "package.json"), JSON.stringify({ name: "openclaw" }));
-    await writeFile(
-      path.join(root, "dist", "build-info.json"),
-      JSON.stringify({ commit: "66CE632B9B7C5C7FDD3E66C739687D51638AD6E2" }),
-    );
-    const tarball = path.join(dir, "openclaw.tgz");
-    await new Promise<void>((resolve, reject) => {
-      execFile("tar", ["-czf", tarball, "-C", dir, "package"], (error) => {
-        if (error) {
-          reject(toLintErrorObject(error, "Non-Error rejection"));
-          return;
-        }
-        resolve();
-      });
+    const tarball = await createPackageTarball(dir, {
+      commit: "66CE632B9B7C5C7FDD3E66C739687D51638AD6E2",
     });
 
     await expect(readPackageBuildSourceSha(tarball)).resolves.toBe(
@@ -1117,17 +1668,3 @@ describe("resolve-openclaw-package-candidate", () => {
     );
   });
 });
-
-function toLintErrorObject(value: unknown, fallbackMessage: string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return new Error(value);
-  }
-  const error = new Error(fallbackMessage, { cause: value });
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
-  }
-  return error;
-}

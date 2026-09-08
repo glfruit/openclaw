@@ -77,11 +77,10 @@ func processFileDoc(ctx context.Context, translator docsTranslator, docsRoot, fi
 	}
 
 	output := updatedFront + translatedBody
+	if !sameI18NProtocolMarkers(string(content), output) {
+		return false, "", fmt.Errorf("protocol token leaked in final output: __OC_I18N_")
+	}
 	return false, outputPath, os.WriteFile(outputPath, []byte(output), 0o644)
-}
-
-func formatTaggedDocument(frontMatter, body string) string {
-	return fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s", frontmatterTagStart, frontMatter, frontmatterTagEnd, bodyTagStart, body, bodyTagEnd)
 }
 
 func parseTaggedDocument(text string) (string, string, error) {
@@ -175,12 +174,28 @@ func classifyDocOutput(outputPath string, sourceHash string, targetLang string) 
 	if strings.EqualFold(strings.TrimSpace(targetLang), "en") {
 		return docOutputReady, nil
 	}
+	// Workflow changes can retire public metadata even when source text is unchanged.
+	if extractI18NVersion(frontData, "workflow") != workflowVersion || extractI18NVersion(frontData, "prompt_version") != promptVersion {
+		return docOutputNeedsTranslation, nil
+	}
 
 	postprocessVersion := extractPostprocessVersion(frontData)
 	if strings.EqualFold(postprocessVersion, localizedLinkPostprocessVersion) {
 		return docOutputReady, nil
 	}
 	return docOutputNeedsPostprocess, nil
+}
+
+func extractI18NVersion(frontData map[string]any, field string) int {
+	xi, ok := extractXI18N(frontData)
+	if !ok {
+		return 0
+	}
+	value, ok := xi[field].(int)
+	if !ok {
+		return 0
+	}
+	return value
 }
 
 func extractSourceHash(frontData map[string]any) string {

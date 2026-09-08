@@ -3,18 +3,20 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTempDirTracker } from "../../../helpers/temp-dir.js";
+import { resolveWindowsTaskkillPath } from "../../../../scripts/lib/windows-taskkill.mjs";
+import { useAutoCleanupTempDirTracker } from "../../../helpers/temp-dir.js";
 import {
+  assertInspectDisabled,
   assertInspectLoaded,
   assertUninstalled,
   parseDurationMs,
   testing as probeTesting,
 } from "./plugin-lifecycle-probe-runtime.js";
 
-const tempDirs = createTempDirTracker();
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-function makeTempDir(): string {
-  return tempDirs.make("openclaw-plugin-lifecycle-probe-");
+function expectedTaskkillPath(): string {
+  return resolveWindowsTaskkillPath();
 }
 
 function isProcessRunning(pid: number): boolean {
@@ -38,7 +40,7 @@ async function waitForFile(pathToCheck: string, timeoutMs: number): Promise<void
     if (existsSync(pathToCheck)) {
       return;
     }
-    await sleep(25);
+    await sleep(5);
   }
   throw new Error(`Timed out waiting for ${pathToCheck}`);
 }
@@ -55,11 +57,9 @@ class FakeCommandChild extends EventEmitter {
   }
 }
 
-afterEach(tempDirs.cleanup);
-
 describe("plugin lifecycle matrix probe", () => {
   it("accepts inspect JSON for an enabled loaded plugin", async () => {
-    const dir = makeTempDir();
+    const dir = tempDirs.make("openclaw-plugin-lifecycle-probe-");
     const inspectPath = path.join(dir, "inspect.json");
     writeFileSync(
       inspectPath,
@@ -70,8 +70,34 @@ describe("plugin lifecycle matrix probe", () => {
     expect(() => assertInspectLoaded("lifecycle-claw", inspectPath)).not.toThrow();
   });
 
+  it("accepts inspect JSON for a disabled plugin", async () => {
+    const dir = tempDirs.make("openclaw-plugin-lifecycle-probe-");
+    const inspectPath = path.join(dir, "inspect.json");
+    writeFileSync(
+      inspectPath,
+      `${JSON.stringify({ plugin: { enabled: false, id: "lifecycle-claw", status: "disabled" } })}\n`,
+      "utf8",
+    );
+
+    expect(() => assertInspectDisabled("lifecycle-claw", inspectPath)).not.toThrow();
+  });
+
+  it("rejects disabled inspect JSON that still reports a loaded plugin", async () => {
+    const dir = tempDirs.make("openclaw-plugin-lifecycle-probe-");
+    const inspectPath = path.join(dir, "inspect.json");
+    writeFileSync(
+      inspectPath,
+      `${JSON.stringify({ plugin: { enabled: false, id: "lifecycle-claw", status: "loaded" } })}\n`,
+      "utf8",
+    );
+
+    expect(() => assertInspectDisabled("lifecycle-claw", inspectPath)).toThrow(
+      "expected lifecycle-claw inspect status disabled, got loaded",
+    );
+  });
+
   it("rejects inspect JSON that does not prove the runtime loaded", async () => {
-    const dir = makeTempDir();
+    const dir = tempDirs.make("openclaw-plugin-lifecycle-probe-");
     const inspectPath = path.join(dir, "inspect.json");
     writeFileSync(
       inspectPath,
@@ -85,7 +111,7 @@ describe("plugin lifecycle matrix probe", () => {
   });
 
   it("rejects missing inspect JSON instead of treating it as an empty object", async () => {
-    const dir = makeTempDir();
+    const dir = tempDirs.make("openclaw-plugin-lifecycle-probe-");
     const inspectPath = path.join(dir, "missing.json");
 
     expect(() => assertInspectLoaded("lifecycle-claw", inspectPath)).toThrow(
@@ -94,7 +120,7 @@ describe("plugin lifecycle matrix probe", () => {
   });
 
   it("rejects unreadable config during uninstall proof", async () => {
-    const dir = makeTempDir();
+    const dir = tempDirs.make("openclaw-plugin-lifecycle-probe-");
     const configFile = path.join(dir, ".openclaw", "openclaw.json");
     mkdirSync(path.dirname(configFile), { recursive: true });
     writeFileSync(configFile, "{ malformed\n", "utf8");
@@ -136,12 +162,66 @@ describe("plugin lifecycle matrix probe", () => {
     }
   });
 
+  it("force-kills timed Windows commands with taskkill when graceful taskkill fails", async () => {
+    vi.useFakeTimers();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const child = Object.assign(new FakeCommandChild(), { pid: 12345 });
+      const taskkillImpl = vi
+        .fn()
+        .mockReturnValueOnce({ status: 1 })
+        .mockImplementationOnce(() => {
+          queueMicrotask(() => child.emit("exit", null, "SIGTERM"));
+          return { status: 0 };
+        });
+      const runPromise = probeTesting.runCommand("fake-command", ["install"], {
+        spawnImpl: (() => child) as unknown as typeof import("node:child_process").spawn,
+        taskkillImpl,
+        timeoutKillGraceMs: 100,
+        timeoutMs: 10,
+      });
+      const runError = runPromise.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(taskkillImpl).toHaveBeenNthCalledWith(
+        1,
+        expectedTaskkillPath(),
+        ["/PID", "12345", "/T"],
+        {
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
+      expect(taskkillImpl).toHaveBeenNthCalledWith(
+        2,
+        expectedTaskkillPath(),
+        ["/PID", "12345", "/T", "/F"],
+        {
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
+      expect(child.signals).toEqual([]);
+
+      const error = await runError;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe("fake-command install timed out after 10ms");
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps fallback SIGKILL armed for ignored-stdio descendants", async () => {
     if (process.platform === "win32") {
       return;
     }
 
-    const dir = makeTempDir();
+    const dir = tempDirs.make("openclaw-plugin-lifecycle-probe-");
     const descendantPidPath = path.join(dir, "descendant.pid");
     let descendantPid: number | undefined;
     try {
@@ -161,12 +241,11 @@ describe("plugin lifecycle matrix probe", () => {
         ["--input-type=module", "-e", parentScript],
         {
           env: { ...process.env, OPENCLAW_TEST_DESCENDANT_PID: descendantPidPath },
-          timeoutKillGraceMs: 250,
+          timeoutKillGraceMs: 100,
           timeoutMs: 500,
         },
       );
       await waitForFile(descendantPidPath, 2_000);
-      await sleep(300);
 
       await expect(run).rejects.toThrow(/timed out after 500ms/u);
 

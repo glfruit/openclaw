@@ -1,15 +1,24 @@
+import type { AgentMessage } from "@openclaw/agent-core";
+import { replaceCompactionReplayOwnerContent } from "@openclaw/ai/transports";
 /**
  * Transcript repair helpers for tool-call replay.
  *
  * Normalizes raw tool-call blocks and synthesizes missing tool results without rewriting trusted local payloads.
  */
+import { safeParseJsonRecord } from "@openclaw/normalization-core";
 import {
   hasNonEmptyString as hasNonEmptyStringField,
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
-import type { AgentMessage } from "./runtime/index.js";
+import {
+  classifyToolUseResultPairing,
+  makeMissingToolResult as makePairingMissingToolResult,
+  normalizeLegacyToolResultId,
+  SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY,
+} from "../../packages/agent-core/src/harness/session/tool-result-pairing.js";
+import { isThinkingLikeBlock } from "./thinking-block.js";
 import {
   extractToolCallsFromAssistant,
   extractToolResultId,
@@ -39,14 +48,6 @@ const RAW_TOOL_CALL_BLOCK_TYPES = new Set([
   "tool_use",
   "function_call",
 ]);
-
-function isThinkingLikeBlock(block: unknown): boolean {
-  if (!block || typeof block !== "object") {
-    return false;
-  }
-  const type = (block as { type?: unknown }).type;
-  return type === "thinking" || type === "redacted_thinking";
-}
 
 function isRawToolCallBlock(block: unknown): block is RawToolCallBlock {
   if (!block || typeof block !== "object") {
@@ -81,12 +82,7 @@ function hasPartialJson(
 }
 
 function isCompleteJsonObject(value: string): boolean {
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
-  } catch {
-    return false;
-  }
+  return safeParseJsonRecord(value) !== undefined;
 }
 
 function isFinalizedOpenAIResponsesToolCall(
@@ -189,99 +185,12 @@ function hasSessionsSpawnAttachmentToolCall(content: unknown[]): boolean {
   return false;
 }
 
-const DEFAULT_MISSING_TOOL_RESULT_TEXT =
-  "[openclaw] missing tool result in session history; inserted synthetic error result for transcript repair.";
-const SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY = "openclawSyntheticMissingToolResult";
-
 function makeMissingToolResult(params: {
   toolCallId: string;
   toolName?: string;
-  // OpenAI Responses/Codex replay should match upstream Codex's "aborted"
-  // function_call_output normalization; live coverage in
-  // openai-reasoning-compat.live.test.ts and tool-replay-repair.live.test.ts
-  // sends this repaired history to real models. Other providers keep the older,
-  // explicit OpenClaw diagnostic text unless the caller opts in.
   text?: string;
 }): Extract<AgentMessage, { role: "toolResult" }> {
-  return {
-    role: "toolResult",
-    toolCallId: params.toolCallId,
-    toolName: params.toolName ?? "unknown",
-    content: [
-      {
-        type: "text",
-        text: params.text ?? DEFAULT_MISSING_TOOL_RESULT_TEXT,
-      },
-    ],
-    details: { [SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY]: true },
-    isError: true,
-    timestamp: Date.now(),
-  } as Extract<AgentMessage, { role: "toolResult" }>;
-}
-
-function isSyntheticMissingToolResult(msg: Extract<AgentMessage, { role: "toolResult" }>): boolean {
-  if (!(msg as { isError?: unknown }).isError) {
-    return false;
-  }
-  const details = (msg as { details?: unknown }).details;
-  if (
-    details &&
-    typeof details === "object" &&
-    (details as Record<string, unknown>)[SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY] === true
-  ) {
-    return true;
-  }
-  const content = (msg as { content?: unknown }).content;
-  if (!Array.isArray(content)) {
-    return false;
-  }
-  return content.some(
-    (block: unknown) =>
-      typeof block === "object" &&
-      block !== null &&
-      (block as { type?: string }).type === "text" &&
-      (block as { text?: string }).text === DEFAULT_MISSING_TOOL_RESULT_TEXT,
-  );
-}
-
-function normalizeToolResultName(
-  message: Extract<AgentMessage, { role: "toolResult" }>,
-  fallbackName?: string,
-): Extract<AgentMessage, { role: "toolResult" }> {
-  const rawToolName = (message as { toolName?: unknown }).toolName;
-  const normalizedToolName = normalizeOptionalString(rawToolName);
-  if (normalizedToolName) {
-    if (rawToolName === normalizedToolName) {
-      return message;
-    }
-    return { ...message, toolName: normalizedToolName };
-  }
-
-  const normalizedFallback = normalizeOptionalString(fallbackName);
-  if (normalizedFallback) {
-    return { ...message, toolName: normalizedFallback };
-  }
-
-  if (typeof rawToolName === "string") {
-    return { ...message, toolName: "unknown" };
-  }
-  return message;
-}
-
-function normalizeLegacyToolResultId(
-  message: Extract<AgentMessage, { role: "toolResult" }>,
-  toolCalls: Array<{ id: string; name?: string }>,
-): Extract<AgentMessage, { role: "toolResult" }> {
-  if (extractToolResultId(message) || toolCalls.length !== 1) {
-    return message;
-  }
-  const [toolCall] = toolCalls;
-  const toolResultName = normalizeOptionalString((message as { toolName?: unknown }).toolName);
-  const toolCallName = normalizeOptionalString(toolCall.name);
-  if (toolResultName && toolCallName && toolResultName !== toolCallName) {
-    return message;
-  }
-  return { ...message, toolCallId: toolCall.id, isError: true };
+  return makePairingMissingToolResult(params);
 }
 
 export { makeMissingToolResult };
@@ -305,27 +214,12 @@ type ToolUseResultPairingOptions = {
   missingToolResultPolicy?: MissingToolResultPolicy;
   missingToolResultText?: string;
   replaceSyntheticMissingToolResults?: boolean;
+  // A valid Responses checkpoint may split a call from its later output.
+  // Only that replay owner may retain results that normal repair treats as orphaned.
+  preserveUnframedToolResults?: boolean;
 };
 
-export function stripToolResultDetails(messages: AgentMessage[]): AgentMessage[] {
-  let touched = false;
-  const out: AgentMessage[] = [];
-  for (const msg of messages) {
-    if (!msg || typeof msg !== "object" || (msg as { role?: unknown }).role !== "toolResult") {
-      out.push(msg);
-      continue;
-    }
-    if (!("details" in msg)) {
-      out.push(msg);
-      continue;
-    }
-    const sanitized = { ...(msg as object) } as { details?: unknown };
-    delete sanitized.details;
-    touched = true;
-    out.push(sanitized as unknown as AgentMessage);
-  }
-  return touched ? out : messages;
-}
+export { stripToolResultDetails } from "../shared/model-context-message.js";
 
 function collectFollowingToolResults(
   messages: AgentMessage[],
@@ -345,7 +239,7 @@ function collectFollowingToolResults(
       sawNonToolResult = true;
       continue;
     }
-    if (message.role === "assistant" && assistantHasToolCalls(message)) {
+    if (message.role === "assistant" && extractToolCallsFromAssistant(message).length > 0) {
       break;
     }
     if (message.role === "toolResult") {
@@ -375,10 +269,9 @@ function repairToolCallInputs(
   const preservedThinkingToolCallIds = new Set<string>();
   const priorToolCallIds = new Set<string>();
 
-  for (let index = 0; index < messages.length; index += 1) {
-    const msg = messages[index];
+  for (const [index, msg] of messages.entries()) {
     if (!msg || typeof msg !== "object") {
-      out.push(msg);
+      changed = true;
       continue;
     }
 
@@ -501,7 +394,7 @@ function repairToolCallInputs(
         changed = true;
         continue;
       }
-      const nextMessage = { ...msg, content: nextContent };
+      const nextMessage = replaceCompactionReplayOwnerContent(msg, nextContent);
       for (const toolCall of extractToolCallsFromAssistant(nextMessage)) {
         priorToolCallIds.add(toolCall.id);
       }
@@ -510,7 +403,7 @@ function repairToolCallInputs(
     }
 
     if (messageChanged) {
-      const nextMessage = { ...msg, content: nextContent };
+      const nextMessage = replaceCompactionReplayOwnerContent(msg, nextContent);
       for (const toolCall of extractToolCallsFromAssistant(nextMessage)) {
         priorToolCallIds.add(toolCall.id);
       }
@@ -545,9 +438,26 @@ export function sanitizeToolUseResultPairing(
   return repairToolUseResultPairing(messages, options).messages;
 }
 
+export function sanitizeToolUseResultPairingForModel(
+  messages: AgentMessage[],
+  isOpenAIResponsesApi: boolean,
+  options?: Omit<
+    ToolUseResultPairingOptions,
+    "erroredAssistantResultPolicy" | "missingToolResultText"
+  >,
+): AgentMessage[] {
+  return sanitizeToolUseResultPairing(messages, {
+    erroredAssistantResultPolicy: "drop",
+    // Match upstream Codex history normalization for OpenAI Responses.
+    ...(isOpenAIResponsesApi ? { missingToolResultText: "aborted" } : {}),
+    ...options,
+  });
+}
+
 type ToolUseRepairReport = {
   messages: AgentMessage[];
   added: Array<Extract<AgentMessage, { role: "toolResult" }>>;
+  discarded: AgentMessage[];
   droppedDuplicateCount: number;
   droppedOrphanCount: number;
   moved: boolean;
@@ -561,44 +471,57 @@ function shouldOmitMissingAssistantToolCalls(options?: ToolUseResultPairingOptio
   return options?.missingToolResultPolicy === "omitAssistantToolCall";
 }
 
-function shouldReplaceSyntheticMissingToolResults(options?: ToolUseResultPairingOptions): boolean {
-  return options?.replaceSyntheticMissingToolResults !== false;
-}
-
-function assistantHasToolCalls(message: AgentMessage): boolean {
-  if (!message || typeof message !== "object" || message.role !== "assistant") {
+function isSyntheticMissingToolResultMessage(
+  message: AgentMessage,
+): message is Extract<AgentMessage, { role: "toolResult" }> {
+  if (message.role !== "toolResult" || message.isError !== true) {
     return false;
   }
-  return extractToolCallsFromAssistant(message).length > 0;
+  const details = (message as { details?: unknown }).details;
+  return (
+    !!details &&
+    typeof details === "object" &&
+    (details as Record<string, unknown>)[SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY] === true
+  );
 }
 
-function findLaterMatchingToolResult(params: {
+/**
+ * Keeps persisted synthetic missing-tool-result placeholders stable: once a
+ * synthetic placeholder for an id exists, later real results with the same id
+ * are duplicates rather than replacements. Only used when callers explicitly
+ * disable synthetic replacement (stable replay of already-repaired history).
+ */
+function partitionSyntheticStableMessages(messages: AgentMessage[]): {
   messages: AgentMessage[];
-  startIndex: number;
-  toolCallId: string;
-  toolName?: string;
-  toolCalls: Array<{ id: string; name?: string }>;
-  seenToolResultIds: Set<string>;
-}): Extract<AgentMessage, { role: "toolResult" }> | undefined {
-  for (let index = params.startIndex; index < params.messages.length; index += 1) {
-    const candidate = params.messages[index];
-    if (!candidate || typeof candidate !== "object") {
+  dropped: Array<{ message: AgentMessage; index: number }>;
+} {
+  const syntheticToolCallIds = new Set<string>();
+  const dropped: Array<{ message: AgentMessage; index: number }> = [];
+  const kept: AgentMessage[] = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object" || message.role !== "toolResult") {
+      if (message) {
+        kept.push(message);
+      }
       continue;
     }
-    if (candidate.role === "assistant" && assistantHasToolCalls(candidate)) {
-      break;
-    }
-    if (candidate.role !== "toolResult") {
+    if (isSyntheticMissingToolResultMessage(message)) {
+      const id = extractToolResultId(message);
+      if (id) {
+        syntheticToolCallIds.add(id);
+      }
+      kept.push(message);
       continue;
     }
-    const normalizedLegacyResult = normalizeLegacyToolResultId(candidate, params.toolCalls);
-    const id = extractToolResultId(normalizedLegacyResult);
-    if (!id || id !== params.toolCallId || params.seenToolResultIds.has(id)) {
+    const id = extractToolResultId(message);
+    if (id && syntheticToolCallIds.has(id)) {
+      dropped.push({ message, index });
       continue;
     }
-    return normalizeToolResultName(normalizedLegacyResult, params.toolName);
+    kept.push(message);
   }
-  return undefined;
+  return { messages: kept, dropped };
 }
 
 function omitAssistantToolCallBlocks(
@@ -657,260 +580,112 @@ export function repairToolUseResultPairing(
   // displaced (e.g. after user turns) or duplicated. Repair by:
   // - moving matching toolResult messages directly after their assistant toolCall turn
   // - inserting synthetic error toolResults for missing ids
-  // - dropping duplicate toolResults for the same id (anywhere in the transcript)
-  const out: AgentMessage[] = [];
+  // - dropping duplicate toolResults for the same tool-call occurrence
+  // Provider ids are opaque and can legitimately repeat on later assistant turns.
   const added: Array<Extract<AgentMessage, { role: "toolResult" }>> = [];
-  const seenToolResultIds = new Set<string>();
-  const toolResultPositions = new Map<string, number>();
-  let droppedDuplicateCount = 0;
-  let droppedOrphanCount = 0;
-  let moved = false;
-  let changed = false;
-
-  const pushToolResult = (msg: Extract<AgentMessage, { role: "toolResult" }>) => {
-    const id = extractToolResultId(msg);
-    if (id && seenToolResultIds.has(id)) {
-      const existingIdx = toolResultPositions.get(id);
-      if (existingIdx !== undefined) {
-        const existing = out[existingIdx];
-        if (
-          existing &&
-          shouldReplaceSyntheticMissingToolResults(options) &&
-          isSyntheticMissingToolResult(existing as Extract<AgentMessage, { role: "toolResult" }>) &&
-          !isSyntheticMissingToolResult(msg)
-        ) {
-          out[existingIdx] = msg;
-          const addedIdx = added.findIndex((a) => extractToolResultId(a) === id);
-          if (addedIdx !== -1) {
-            added.splice(addedIdx, 1);
-          }
-          droppedDuplicateCount += 1;
-          changed = true;
-          return;
-        }
-      }
-      droppedDuplicateCount += 1;
-      changed = true;
-      return;
-    }
-    if (id) {
-      seenToolResultIds.add(id);
-      toolResultPositions.set(id, out.length);
-    }
-    out.push(msg);
-  };
-
-  for (let i = 0; i < messages.length; i += 1) {
-    const msg = messages[i];
-    if (!msg || typeof msg !== "object") {
-      out.push(msg);
-      continue;
-    }
-
-    const role = (msg as { role?: unknown }).role;
-    if (role !== "assistant") {
-      // Tool results must only appear directly after the matching assistant tool call turn.
-      // Any "free-floating" toolResult entries in session history can make strict providers
-      // (Anthropic-compatible APIs, MiniMax, Cloud Code Assist) reject the entire request.
-      if (role !== "toolResult") {
-        out.push(msg);
-      } else {
-        droppedOrphanCount += 1;
-        changed = true;
-      }
-      continue;
-    }
-
-    const assistant = msg as Extract<AgentMessage, { role: "assistant" }>;
-
-    let toolCalls = extractToolCallsFromAssistant(assistant);
-    if (toolCalls.length === 0) {
-      out.push(msg);
-      continue;
-    }
-    let assistantForOutput = assistant;
-
-    const toolCallIds = new Set<string>();
-    const toolCallNamesById = new Map<string, string>();
-    for (const toolCall of toolCalls) {
-      toolCallIds.add(toolCall.id);
-      if (typeof toolCall.name === "string") {
-        toolCallNamesById.set(toolCall.id, toolCall.name);
-      }
-    }
-
-    const spanResultsById = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
-    const remainder: AgentMessage[] = [];
-
-    let j = i + 1;
-    for (; j < messages.length; j += 1) {
-      const next = messages[j];
-      if (!next || typeof next !== "object") {
-        remainder.push(next);
-        continue;
-      }
-
-      const nextRole = (next as { role?: unknown }).role;
-      if (nextRole === "assistant") {
-        if (assistantHasToolCalls(next)) {
-          break;
-        }
-        remainder.push(next);
-        continue;
-      }
-
-      if (nextRole === "toolResult") {
-        const toolResult = normalizeLegacyToolResultId(
-          next as Extract<AgentMessage, { role: "toolResult" }>,
-          toolCalls,
-        );
-        const id = extractToolResultId(toolResult);
-        if (id && seenToolResultIds.has(id)) {
-          pushToolResult(normalizeToolResultName(toolResult, toolCallNamesById.get(id)));
-          continue;
-        }
-        if (id && toolCallIds.has(id)) {
-          if (toolResult !== next) {
-            changed = true;
-          }
-          const normalizedToolResult = normalizeToolResultName(
-            toolResult,
-            toolCallNamesById.get(id),
-          );
-          if (normalizedToolResult !== toolResult) {
-            changed = true;
-          }
-          const existingSpan = spanResultsById.get(id);
-          if (!existingSpan) {
-            spanResultsById.set(id, normalizedToolResult);
-          } else if (
-            isSyntheticMissingToolResult(existingSpan) &&
-            !isSyntheticMissingToolResult(normalizedToolResult)
-          ) {
-            spanResultsById.set(id, normalizedToolResult);
-            droppedDuplicateCount += 1;
-            changed = true;
-          } else {
-            droppedDuplicateCount += 1;
-            changed = true;
-          }
-          continue;
-        }
-      }
-
-      // Drop tool results that don't match the current assistant tool calls.
-      if (nextRole !== "toolResult") {
-        remainder.push(next);
-      } else {
-        droppedOrphanCount += 1;
-        changed = true;
-      }
-    }
-
-    const missingToolCallIds = new Set<string>();
-    for (const call of toolCalls) {
-      if (!spanResultsById.has(call.id)) {
-        missingToolCallIds.add(call.id);
-      }
-    }
-
-    if (missingToolCallIds.size > 0 && shouldOmitMissingAssistantToolCalls(options)) {
-      assistantForOutput = omitAssistantToolCallBlocks(assistant, missingToolCallIds);
-      if (assistantForOutput !== assistant) {
-        changed = true;
-      }
-      toolCalls = toolCalls.filter((call) => !missingToolCallIds.has(call.id));
-      if (toolCalls.length === 0) {
-        out.push(assistantForOutput);
-        for (const rem of remainder) {
-          out.push(rem);
-        }
-        i = j - 1;
-        continue;
-      }
-    }
-
-    // Aborted/errored assistant turns should never synthesize missing tool results, but
-    // the replay sanitizer can still legitimately retain real tool results for surviving
-    // tool calls in the same turn after malformed siblings are dropped.
-    const stopReason = (assistant as { stopReason?: string }).stopReason;
-    if (stopReason === "error" || stopReason === "aborted") {
-      if (!shouldDropErroredAssistantResults(options)) {
-        out.push(assistantForOutput);
-        for (const toolCall of toolCalls) {
-          const result = spanResultsById.get(toolCall.id);
-          if (!result) {
-            continue;
-          }
-          pushToolResult(result);
-        }
-      } else if (spanResultsById.size > 0) {
-        changed = true;
-      } else {
-        changed = true;
-      }
-      for (const rem of remainder) {
-        out.push(rem);
-      }
-      i = j - 1;
-      continue;
-    }
-
-    out.push(assistantForOutput);
-
-    if (spanResultsById.size > 0 && remainder.length > 0) {
-      // Preserve real late-arriving results before synthesizing missing siblings;
-      // otherwise parallel tool replay can replace useful output with repair noise.
-      moved = true;
-      changed = true;
-    }
-
-    for (const call of toolCalls) {
-      const existing = spanResultsById.get(call.id);
-      if (existing) {
-        pushToolResult(existing);
-      } else {
-        const laterResult = findLaterMatchingToolResult({
-          messages,
-          startIndex: j,
-          toolCallId: call.id,
-          toolName: call.name,
-          toolCalls,
-          seenToolResultIds,
-        });
-        if (laterResult) {
-          moved = true;
-          changed = true;
-          pushToolResult(laterResult);
-        } else {
-          const missing = makeMissingToolResult({
-            toolCallId: call.id,
-            toolName: call.name,
-            text: options?.missingToolResultText,
-          });
-          added.push(missing);
-          changed = true;
-          pushToolResult(missing);
-        }
-      }
-    }
-
-    for (const rem of remainder) {
-      if (!rem || typeof rem !== "object") {
-        out.push(rem);
-        continue;
-      }
-      out.push(rem);
-    }
-    i = j - 1;
+  const preserveUnframed = options?.preserveUnframedToolResults === true;
+  const syntheticStable =
+    options?.replaceSyntheticMissingToolResults === false
+      ? partitionSyntheticStableMessages(messages)
+      : undefined;
+  const pairing = classifyToolUseResultPairing(syntheticStable?.messages ?? messages, {
+    preserveUnframedToolResults: preserveUnframed,
+  });
+  const { frames } = pairing;
+  let droppedDuplicateCount = pairing.droppedDuplicateCount;
+  let droppedOrphanCount = pairing.droppedOrphanCount;
+  const discarded: Array<{ message: AgentMessage; index: number }> = pairing.droppedResults.map(
+    ({ message, index }) => ({ message, index }),
+  );
+  if (syntheticStable) {
+    droppedDuplicateCount += syntheticStable.dropped.length;
+    discarded.push(...syntheticStable.dropped);
   }
 
-  const changedOrMoved = changed || moved;
+  const out: AgentMessage[] = [];
+  let cursor = 0;
+  const pushUnframedRange = (endIndex: number) => {
+    for (; cursor < endIndex; cursor += 1) {
+      const sourceIndex = cursor;
+      const message = (syntheticStable?.messages ?? messages)[cursor];
+      if (!message || typeof message !== "object") {
+        continue;
+      }
+      if (message.role === "toolResult" && !preserveUnframed) {
+        droppedOrphanCount += 1;
+        discarded.push({ message, index: sourceIndex });
+        continue;
+      }
+      out.push(message);
+    }
+  };
+
+  for (const frame of frames) {
+    pushUnframedRange(frame.startIndex);
+    cursor = frame.endIndex;
+
+    if (!(frame.failed && shouldDropErroredAssistantResults(options))) {
+      // Some strict providers (Kimi K2 family over anthropic-messages) reject
+      // synthetic error results outright; replay for them omits the orphaned
+      // assistant tool-call blocks instead of synthesizing missing results.
+      const omitMissingToolCalls =
+        !frame.failed && shouldOmitMissingAssistantToolCalls(options);
+      let assistantForOutput = frame.assistant;
+      if (omitMissingToolCalls) {
+        const missingToolCallIds = new Set(
+          frame.occurrences
+            .filter((occurrence) => !occurrence.result)
+            .map((occurrence) => occurrence.id),
+        );
+        if (missingToolCallIds.size > 0) {
+          assistantForOutput = omitAssistantToolCallBlocks(frame.assistant, missingToolCallIds);
+        }
+      }
+      out.push(assistantForOutput);
+      for (const occurrence of frame.occurrences) {
+        if (occurrence.result) {
+          out.push(occurrence.result);
+          continue;
+        }
+        if (frame.failed) {
+          continue;
+        }
+        if (omitMissingToolCalls) {
+          // The tool-call block was already omitted from the assistant message.
+          continue;
+        }
+        const missing = makeMissingToolResult({
+          toolCallId: occurrence.id,
+          toolName: occurrence.name,
+          text: options?.missingToolResultText,
+        });
+        occurrence.result = missing;
+        added.push(missing);
+        out.push(missing);
+      }
+    } else {
+      for (const occurrence of frame.occurrences) {
+        if (occurrence.sourceResult) {
+          discarded.push({
+            message: occurrence.sourceResult,
+            index: occurrence.sourceResultIndex ?? messages.indexOf(occurrence.sourceResult),
+          });
+        }
+      }
+    }
+    out.push(...frame.remainder);
+  }
+  pushUnframedRange(messages.length);
+
+  const changed =
+    out.length !== messages.length || out.some((message, index) => message !== messages[index]);
+  discarded.sort((left, right) => left.index - right.index);
   return {
-    messages: changedOrMoved ? out : messages,
+    messages: changed ? out : messages,
     added,
+    discarded: discarded.map(({ message }) => message),
     droppedDuplicateCount,
     droppedOrphanCount,
-    moved: changedOrMoved,
+    moved: changed,
   };
 }

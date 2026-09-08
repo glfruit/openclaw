@@ -279,9 +279,67 @@ describe("runQaDockerUp", () => {
     }
   });
 
+  it("rejects explicit host port collisions before touching Docker", async () => {
+    const calls: string[] = [];
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), "qa-docker-up-"));
+
+    try {
+      await expect(
+        runQaDockerUp(
+          {
+            repoRoot: "/repo/openclaw",
+            outputDir,
+            gatewayPort: 43124,
+            qaLabPort: 43124,
+            skipUiBuild: true,
+            usePrebuiltImage: true,
+          },
+          createHealthyDockerDeps(calls),
+        ),
+      ).rejects.toThrow(
+        "QA Lab gateway and UI host ports must be different. Both resolved to 43124.",
+      );
+
+      expect(calls).toEqual([]);
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects resolved host port collisions before writing the harness", async () => {
+    const outputDir = await mkdtemp(path.join(os.tmpdir(), "qa-docker-up-"));
+    const resolveHostPort = vi.fn(async () => 28001);
+
+    try {
+      await expect(
+        runQaDockerUp(
+          {
+            repoRoot: "/repo/openclaw",
+            outputDir,
+            skipUiBuild: true,
+            usePrebuiltImage: true,
+          },
+          {
+            ...createHealthyDockerDeps([]),
+            resolveHostPortImpl: resolveHostPort,
+          },
+        ),
+      ).rejects.toThrow(
+        "QA Lab gateway and UI host ports must be different. Both resolved to 28001.",
+      );
+
+      await expect(readFile(path.join(outputDir, "docker-compose.qa.yml"), "utf8")).rejects.toThrow(
+        "ENOENT",
+      );
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to the container IP when the host gateway port is unreachable", async () => {
     const calls: string[] = [];
     const fetchCalls: string[] = [];
+    const fetchSignals: AbortSignal[] = [];
     const hostGatewayCancel = vi.fn(async () => {});
     const outputDir = await mkdtemp(path.join(os.tmpdir(), "qa-docker-up-"));
     const repoRoot = path.resolve("/repo/openclaw");
@@ -312,8 +370,11 @@ describe("runQaDockerUp", () => {
             }
             return { stdout: "", stderr: "" };
           },
-          fetchImpl: vi.fn(async (input: string) => {
+          fetchImpl: vi.fn(async (input: string, init?: Pick<RequestInit, "signal">) => {
             fetchCalls.push(input);
+            if (init?.signal) {
+              fetchSignals.push(init.signal);
+            }
             if (input === "http://127.0.0.1:18889/healthz") {
               return { ok: false, body: { cancel: hostGatewayCancel } };
             }
@@ -339,6 +400,7 @@ describe("runQaDockerUp", () => {
         "http://127.0.0.1:18889/healthz",
         "http://192.168.165.4:18789/healthz",
       ]);
+      expect(fetchSignals).toHaveLength(3);
       expect(result.gatewayUrl).toBe("http://192.168.165.4:18789/");
       expect(hostGatewayCancel).toHaveBeenCalledTimes(1);
     } finally {

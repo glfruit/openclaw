@@ -1,22 +1,16 @@
 // Codex tests cover attempt results plugin behavior.
-import type { EmbeddedRunAttemptResult } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { describe, expect, it } from "vitest";
 import {
   buildCodexAppServerPromptTimeoutOutcome,
-  classifyCodexAppServerRecoveryMetadata,
   collectTerminalAssistantText,
   isInvalidCodexImagePayloadError,
   resolveCodexAppServerReplayBlockedReason,
 } from "./attempt-results.js";
+import type { EmbeddedRunAttemptResult } from "./attempt-terminal.js";
 
 function createResult(overrides: Partial<EmbeddedRunAttemptResult> = {}): EmbeddedRunAttemptResult {
   return {
-    aborted: false,
-    externalAbort: false,
-    timedOut: false,
-    idleTimedOut: false,
-    timedOutDuringCompaction: false,
-    timedOutDuringToolExecution: false,
+    terminal: { kind: "ok" },
     sessionIdUsed: "session-1",
     messagesSnapshot: [],
     assistantTexts: [],
@@ -51,171 +45,29 @@ describe("Codex app-server attempt results", () => {
     ).toBe("first \n\nsecond");
   });
 
-  it("builds timeout outcomes from completion and side-effect evidence", () => {
-    expect(
-      buildCodexAppServerPromptTimeoutOutcome({
-        result: createResult(),
-        turnCompletionIdleTimedOut: false,
-      }),
-    ).toBeUndefined();
-    expect(
-      buildCodexAppServerPromptTimeoutOutcome({
-        result: createResult(),
-        turnCompletionIdleTimedOut: true,
-        turnWatchTimeoutKind: "progress",
-      }),
-    ).toBeUndefined();
-    expect(
-      buildCodexAppServerPromptTimeoutOutcome({
-        result: createResult({
-          toolMetas: [{ toolName: "exec" }],
-          replayMetadata: {
-            hadPotentialSideEffects: false,
-            replaySafe: false,
-          },
-        }),
-        turnCompletionIdleTimedOut: true,
-        turnWatchTimeoutKind: "terminal",
-      }),
-    ).toBeUndefined();
-    expect(
-      buildCodexAppServerPromptTimeoutOutcome({
-        result: createResult({
-          itemLifecycle: { startedCount: 0, completedCount: 0, activeCount: 0 },
-        }),
-        turnCompletionIdleTimedOut: true,
-        turnWatchTimeoutKind: "completion",
-      }),
-    ).toEqual({
-      message:
-        "Codex 没有返回完整结束信号；OpenClaw 正在按最新状态恢复，请稍后重试或发送“怎么样了”查看进度。",
-      sideEffectClass: "none",
-      recoveryMode: "safe_fallback",
-    });
-    expect(
-      buildCodexAppServerPromptTimeoutOutcome({
-        result: createResult({
-          replayMetadata: {
-            hadPotentialSideEffects: true,
-            replaySafe: false,
-          },
-        }),
-        turnCompletionIdleTimedOut: true,
-        turnWatchTimeoutKind: "completion",
-      }),
-    ).toEqual({
-      message: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
-      sideEffectClass: "mutating",
-      recoveryMode: "blocked_side_effect",
-      replayInvalid: true,
-      livenessState: "abandoned",
-    });
-    expect(
-      buildCodexAppServerPromptTimeoutOutcome({
-        result: createResult({
-          assistantTexts: ["I am changing the data model now..."],
-        }),
-        turnCompletionIdleTimedOut: true,
-        turnWatchTimeoutKind: "completion",
-      }),
-    ).toEqual({
-      message: "I am changing the data model now...",
-      sideEffectClass: "none",
-      recoveryMode: "safe_fallback",
-      lastAssistantText: "I am changing the data model now...",
-      replayInvalid: true,
-      livenessState: "abandoned",
-    });
-    expect(
-      buildCodexAppServerPromptTimeoutOutcome({
-        result: createResult({
-          toolMetas: [{ toolName: "exec" }],
-          replayMetadata: {
-            hadPotentialSideEffects: false,
-            replaySafe: false,
-          },
-        }),
-        turnCompletionIdleTimedOut: true,
-        turnWatchTimeoutKind: "completion",
-      }),
-    ).toEqual({
-      message: "正在核验刚才执行到哪一步，避免重复执行已经发生的动作。",
-      sideEffectClass: "unknown",
-      recoveryMode: "verify_only",
-      lastToolSummary: "exec",
-      replayInvalid: true,
-      livenessState: "abandoned",
-    });
+  it("does not invent a timeout outcome without a deadline failure", () => {
+    expect(buildCodexAppServerPromptTimeoutOutcome(undefined)).toBeUndefined();
   });
 
-  it("classifies incomplete turn recovery metadata", () => {
-    expect(classifyCodexAppServerRecoveryMetadata(createResult())).toEqual({
-      sideEffectClass: "none",
-      recoveryMode: "safe_fallback",
-    });
+  it.each([
+    {
+      kind: "execution" as const,
+      message:
+        "Codex reached the configured execution time limit. Some work may already have been performed; verify the current state before continuing.",
+    },
+    {
+      kind: "settlement" as const,
+      message:
+        "Codex finished its turn, but OpenClaw could not finish processing the result. Some work may already have been performed; verify the current state before continuing.",
+    },
+  ])("reports the $kind owner and prevents automatic replay", ({ kind, message }) => {
     expect(
-      classifyCodexAppServerRecoveryMetadata(
-        createResult({
-          toolMetas: [{ toolName: "read", meta: "path=README.md" }],
-        }),
-      ),
+      buildCodexAppServerPromptTimeoutOutcome({ kind, elapsedMs: 120_000, timeoutMs: 120_000 }),
     ).toEqual({
-      sideEffectClass: "read_only",
-      recoveryMode: "safe_fallback",
-      lastToolSummary: "read: path=README.md",
+      message,
+      replayInvalid: true,
+      livenessState: "abandoned",
     });
-    expect(
-      classifyCodexAppServerRecoveryMetadata(
-        createResult({
-          toolMetas: [{ toolName: "dispatch_prepare", meta: "label=review" }],
-        }),
-      ),
-    ).toEqual({
-      sideEffectClass: "prepare_only",
-      recoveryMode: "verify_only",
-      lastToolSummary: "dispatch_prepare: label=review",
-    });
-    expect(
-      classifyCodexAppServerRecoveryMetadata(
-        createResult({
-          toolMetas: [{ toolName: "bash", meta: "rg TODO src" }],
-        }),
-      ),
-    ).toEqual({
-      sideEffectClass: "read_only",
-      recoveryMode: "safe_fallback",
-      lastToolSummary: "bash: rg TODO src",
-    });
-    expect(
-      classifyCodexAppServerRecoveryMetadata(
-        createResult({
-          toolMetas: [{ toolName: "bash", meta: "rg TODO src; python scripts/mutate.py" }],
-        }),
-      ),
-    ).toEqual({
-      sideEffectClass: "unknown",
-      recoveryMode: "verify_only",
-      lastToolSummary: "bash: rg TODO src; python scripts/mutate.py",
-    });
-    expect(
-      classifyCodexAppServerRecoveryMetadata(
-        createResult({
-          toolMetas: [{ toolName: "bash", meta: "find . -exec rm {} \\;" }],
-        }),
-      ),
-    ).toEqual({
-      sideEffectClass: "unknown",
-      recoveryMode: "verify_only",
-      lastToolSummary: "bash: find . -exec rm {} \\;",
-    });
-    expect(
-      classifyCodexAppServerRecoveryMetadata(
-        createResult({
-          didSendViaMessagingTool: true,
-          messagingToolSentTexts: ["sent"],
-        }),
-      ).sideEffectClass,
-    ).toBe("external_delivery");
   });
 
   it("classifies replay blocked reasons", () => {
@@ -237,18 +89,18 @@ describe("Codex app-server attempt results", () => {
     expect(
       resolveCodexAppServerReplayBlockedReason(
         createResult({
-          toolMetas: [{ toolName: "bash" }],
-        }),
-      ),
-    ).toBeUndefined();
-    expect(
-      resolveCodexAppServerReplayBlockedReason(
-        createResult({
           replayMetadata: { hadPotentialSideEffects: false, replaySafe: false },
           toolMetas: [{ toolName: "bash" }],
         }),
       ),
     ).toBe("tool_activity");
+    expect(
+      resolveCodexAppServerReplayBlockedReason(
+        createResult({
+          toolMetas: [{ toolName: "bash" }],
+        }),
+      ),
+    ).toBeUndefined();
     expect(
       resolveCodexAppServerReplayBlockedReason(
         createResult({

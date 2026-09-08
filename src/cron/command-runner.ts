@@ -1,6 +1,9 @@
 import { finiteSecondsToTimerSafeMilliseconds } from "@openclaw/normalization-core/number-coercion";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { runCommandWithTimeout } from "../process/exec.js";
+import {
+  buildCronCommandSummary,
+  isCronCommandActionCriticalLine,
+} from "./command-output-summary.js";
 import type { CronRunDiagnostics, CronRunOutcome, CronRunStatus, CronJob } from "./types.js";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60_000;
@@ -16,14 +19,6 @@ function secondsToMs(value: number | undefined): number | undefined {
     return EFFECTIVELY_UNBOUNDED_TIMEOUT_MS;
   }
   return finiteSecondsToTimerSafeMilliseconds(value) ?? undefined;
-}
-
-function formatCommand(argv: string[]): string {
-  return argv.map((arg) => JSON.stringify(arg)).join(" ");
-}
-
-function trimOutput(value: string): string | undefined {
-  return normalizeOptionalString(value);
 }
 
 function splitLegacyCommandLine(input: string): string[] | undefined {
@@ -84,7 +79,7 @@ function resolveCommandArgv(payload: CommandPayload): string[] | undefined {
   if (Array.isArray(payload.argv) && payload.argv.length > 0) {
     return payload.argv;
   }
-  const command = normalizeOptionalString(payload.command);
+  const command = payload.command?.trim();
   if (!command) {
     return undefined;
   }
@@ -158,21 +153,8 @@ function buildLegacyCommandSummary(stdout: string, payload: CommandPayload): str
   }
 }
 
-function buildCommandSummary(params: {
-  stdout: string;
-  stderr: string;
-  payload: CommandPayload;
-}): string | undefined {
-  const legacySummary = buildLegacyCommandSummary(params.stdout, params.payload);
-  if (legacySummary !== undefined) {
-    return trimOutput(legacySummary);
-  }
-  const stdout = trimOutput(params.stdout);
-  const stderr = trimOutput(params.stderr);
-  if (stdout && stderr) {
-    return `stdout:\n${stdout}\n\nstderr:\n${stderr}`;
-  }
-  return stdout ?? stderr;
+function formatCommand(argv: string[]): string {
+  return argv.map((arg) => JSON.stringify(arg)).join(" ");
 }
 
 function commandErrorMessage(params: {
@@ -279,6 +261,7 @@ export async function runCronCommandJob(params: {
       ...(payload.env ? { env: payload.env } : {}),
       ...(noOutputTimeoutMs !== undefined ? { noOutputTimeoutMs } : {}),
       ...(payload.outputMaxBytes !== undefined ? { maxOutputBytes: payload.outputMaxBytes } : {}),
+      preserveOutputLine: isCronCommandActionCriticalLine,
       ...(params.abortSignal ? { signal: params.abortSignal } : {}),
       killProcessTree: true,
     });
@@ -304,10 +287,36 @@ export async function runCronCommandJob(params: {
       error = "successRegex did not match in command output";
     }
     const status: CronRunStatus = error ? "error" : "ok";
-    const summary = buildCommandSummary({ stdout: result.stdout, stderr: result.stderr, payload });
+    const legacySummary = buildLegacyCommandSummary(result.stdout, payload);
+    const summary =
+      legacySummary !== undefined && legacySummary.trim()
+        ? legacySummary.trim()
+        : buildCronCommandSummary({
+            stdout: result.stdout,
+            stderr: result.stderr,
+            preservedStdoutLines: result.preservedStdoutLines,
+            preservedStderrLines: result.preservedStderrLines,
+          });
+    const failureNotificationDetail =
+      result.termination === "timeout"
+        ? ({ kind: "command-timeout", mode: "wall-clock" } as const)
+        : result.termination === "no-output-timeout"
+          ? ({ kind: "command-timeout", mode: "no-output" } as const)
+          : result.termination === "exit" && typeof result.code === "number" && result.code !== 0
+            ? ({ kind: "command-exit", exitCode: result.code } as const)
+            : undefined;
     return {
       status,
       ...(error ? { error } : {}),
+      ...(failureNotificationDetail
+        ? {
+            failureNotificationDetail,
+            errorClassification:
+              failureNotificationDetail.kind === "command-timeout"
+                ? ({ kind: "reason", reason: "timeout" } as const)
+                : ({ kind: "permanent" } as const),
+          }
+        : {}),
       ...(summary ? { summary } : {}),
       diagnostics: buildDiagnostics({
         command,
@@ -325,6 +334,9 @@ export async function runCronCommandJob(params: {
     return {
       status: "error",
       error,
+      ...(err instanceof Error && "code" in err && err.code === "ENOENT"
+        ? { errorClassification: { kind: "permanent" as const } }
+        : {}),
       diagnostics: {
         summary: error,
         entries: [

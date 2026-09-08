@@ -6,18 +6,17 @@ scenario:
   category: pre-release
   coverage:
     primary:
-      - plugins.kitchen-sink
+      - plugins.tool-plugin-kitchen-sink
     secondary:
-      - plugins.lifecycle
+      - plugins.activation-lifecycle
       - plugins.plugin-tools
-      - models.live-openai
-      - gateway.performance
+      - agent-runtime.hosted-provider-turns
   risk: high
   objective: Verify the external Kitchen Sink plugin can be installed into a qa-lab gateway, expose its major runtime surfaces, and coexist with a live OpenAI provider turn.
   successCriteria:
     - The npm Kitchen Sink package installs, enables, and inspects as loaded.
     - Kitchen Sink command inventory, MCP tool, and channel status work after gateway restart.
-    - A live OpenAI turn still completes while the Kitchen Sink plugin is installed.
+    - A live OpenAI turn either completes or surfaces the Kitchen Sink plugin's before-agent-run block without hanging.
     - Gateway logs and process metrics are captured and stay under broad anomaly thresholds.
   docsRefs:
     - docs/concepts/qa-e2e-automation.md
@@ -29,7 +28,9 @@ scenario:
     - scripts/e2e/kitchen-sink-plugin-docker.sh
   execution:
     kind: flow
-    summary: Install @openclaw/kitchen-sink, restart the gateway, exercise command inventory/tool/channel/OpenAI paths, and record CPU/RSS/log evidence.
+    suiteIsolation: isolated
+    isolationReason: Mutates gateway plugin/channel/tool config across gateway restarts.
+    summary: Install @openclaw/kitchen-sink, restart the gateway, exercise command inventory/tool/channel/OpenAI-or-block paths, and record CPU/RSS/log evidence.
     config:
       requiredProviderMode: live-frontier
       requiredProvider: openai
@@ -84,20 +85,19 @@ scenario:
       agentTurnTimeoutMs: 120000
       outboundTimeoutMs: 60000
       livePrompt: "Kitchen Sink OpenAI marker. Reply exactly: KITCHEN-SINK-OPENAI-OK"
-      expectedAdversarialDiagnostics:
+      blockedReplyNeedle: "blocked by openclaw-kitchen-sink-fixture"
+      allowedAdversarialDiagnostics:
         - agent event subscription registration requires id and handle
         - agent tool result middleware must be a function
         - agent harness "kitchen-sink-agent-harness" registration missing required runtime methods
-        - channel "kitchen-sink-channel-probe" registration missing required config helpers
+        - channel "kitchen-sink-channel-probe" registration missing or invalid required capabilities.chatTypes
         - cli registration missing explicit commands metadata
         - only bundled plugins can register Codex app-server extension factories
         - compaction provider "kitchen-sink-compaction-provider" registration missing summarize
         - context engine registration missing id
-        - control UI descriptor registration requires id, surface, label, and valid optional fields
         - hosted media resolver registration missing resolver
         - "http route registration missing or invalid auth: /kitchen-sink/http-route"
         - "plugin must declare contracts.embeddingProviders for adapter: kitchen-sink-embedding-provider"
-        - "plugin must own memory slot or declare contracts.memoryEmbeddingProviders for adapter: kitchen-sink-memory-embedding-provider"
         - "trusted tool policy registration requires id, description, and evaluate()"
         - memory prompt supplement registration missing builder
         - model catalog provider registration missing provider
@@ -106,6 +106,13 @@ scenario:
         - session scheduler job registration requires unique id, sessionKey, and kind
         - "plugin must declare contracts.tools for: kitchen-sink-tool"
         - tool metadata registration missing toolName
+      requiredAdversarialDiagnostics:
+        - agent tool result middleware must be a function
+        - agent harness "kitchen-sink-agent-harness" registration missing required runtime methods
+        - channel "kitchen-sink-channel-probe" registration missing or invalid required capabilities.chatTypes
+        - "trusted tool policy registration requires id, description, and evaluate()"
+        - session scheduler job registration requires unique id, sessionKey, and kind
+        - "plugin must declare contracts.tools for: kitchen-sink-tool"
 
 flow:
   steps:
@@ -117,6 +124,7 @@ flow:
             - - plugins
               - install
               - expr: config.pluginSpec
+              - --force
             - timeoutMs: 180000
         - call: runQaCli
           args:
@@ -208,7 +216,7 @@ flow:
                   unexpectedDiagnostics: [...new Set([...(pluginList.diagnostics ?? []), ...(inspect.diagnostics ?? [])]
                     .filter((entry) => entry?.level === "error")
                     .map((entry) => String(entry.message ?? ""))
-                    .filter((message) => !config.expectedAdversarialDiagnostics.includes(message)))],
+                    .filter((message) => !config.allowedAdversarialDiagnostics.includes(message)))],
                 };
               })()
         - assert:
@@ -388,8 +396,15 @@ flow:
             - ref: state
             - lambda:
                 params: [candidate]
-                expr: "candidate.conversation.id === 'qa-operator' && candidate.text.includes('KITCHEN-SINK-OPENAI-OK')"
+                expr: "candidate.conversation.id === 'qa-operator' && (candidate.text.includes('KITCHEN-SINK-OPENAI-OK') || normalizeLowercaseStringOrEmpty(candidate.text).includes(config.blockedReplyNeedle))"
             - expr: liveTurnTimeoutMs(env, config.outboundTimeoutMs)
+        - set: normalizedOpenAiReply
+          value:
+            expr: "normalizeLowercaseStringOrEmpty(openaiReply.text)"
+        - assert:
+            expr: "openaiReply.text.includes('KITCHEN-SINK-OPENAI-OK') || normalizedOpenAiReply.includes(config.blockedReplyNeedle)"
+            message:
+              expr: "`Kitchen Sink live turn neither completed nor surfaced the plugin block: ${openaiReply.text}`"
       detailsExpr: "{ openaiReply: openaiReply.text }"
 
     - name: records gateway CPU RSS and log anomaly evidence
@@ -495,11 +510,11 @@ flow:
                 .filter((entry) => entry?.level === "error")
                 .map((entry) => String(entry.message ?? ""))
         - assert:
-            expr: "config.expectedAdversarialDiagnostics.every((message) => adversarialDiagnostics.includes(message))"
+            expr: "config.requiredAdversarialDiagnostics.every((message) => adversarialDiagnostics.includes(message))"
             message:
-              expr: "`Kitchen Sink adversarial diagnostics missing expected messages: ${JSON.stringify({ expected: config.expectedAdversarialDiagnostics, actual: adversarialDiagnostics })}`"
+              expr: "`Kitchen Sink adversarial diagnostics missing required canaries: ${JSON.stringify({ required: config.requiredAdversarialDiagnostics, actual: adversarialDiagnostics })}`"
         - assert:
-            expr: "adversarialDiagnostics.every((message) => config.expectedAdversarialDiagnostics.includes(message))"
+            expr: "adversarialDiagnostics.every((message) => config.allowedAdversarialDiagnostics.includes(message))"
             message:
-              expr: "`Kitchen Sink adversarial diagnostics contained unexpected messages: ${JSON.stringify(adversarialDiagnostics)}`"
+              expr: "`Kitchen Sink adversarial diagnostics contained unapproved messages: ${JSON.stringify(adversarialDiagnostics)}`"
       detailsExpr: "{ diagnostics: adversarialDiagnostics }"

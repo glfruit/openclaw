@@ -1,6 +1,7 @@
+import { levenshteinDistance } from "../../shared/levenshtein-distance.js";
 import { formatCliCommand } from "../command-format.js";
-import { getCoreCliCommandNames } from "./core-command-descriptors.js";
-import { getSubCliEntries } from "./subcli-descriptors.js";
+import { getCoreCliCommandNamesCore } from "./core-command-descriptors.js";
+import { getSubCliEntriesCore } from "./subcli-descriptors.js";
 
 const EXPLICIT_COMMAND_ALIASES = new Map<string, string>([
   ["upgrade", "update"],
@@ -15,55 +16,31 @@ function uniqueSortedCommandNames(commands: Iterable<string>): string[] {
   );
 }
 
-export function levenshteinDistance(left: string, right: string): number {
-  if (left === right) {
-    return 0;
-  }
-  if (left.length === 0) {
-    return right.length;
-  }
-  if (right.length === 0) {
-    return left.length;
-  }
-
-  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
-  let current = Array.from<number>({ length: right.length + 1 });
-
-  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
-    current[0] = leftIndex + 1;
-    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
-      const substitutionCost = left[leftIndex] === right[rightIndex] ? 0 : 1;
-      current[rightIndex + 1] = Math.min(
-        current[rightIndex] + 1,
-        previous[rightIndex + 1] + 1,
-        previous[rightIndex] + substitutionCost,
-      );
-    }
-    [previous, current] = [current, previous];
-  }
-
-  return previous[right.length] ?? 0;
-}
-
-export function formatCliCommandSuggestions(input: string): string | undefined {
+export function formatCliCommandSuggestions(
+  input: string,
+  commandPath: readonly string[] = [],
+  candidates?: Iterable<string>,
+): string | undefined {
   const normalizedInput = input.trim().toLowerCase();
   if (!normalizedInput) {
     return undefined;
   }
 
-  const knownCommands = uniqueSortedCommandNames([
-    ...getCoreCliCommandNames(),
-    ...getSubCliEntries().map((entry) => entry.name),
-  ]);
+  const knownCommands = uniqueSortedCommandNames(
+    candidates ??
+      (commandPath.length === 0
+        ? [...getCoreCliCommandNamesCore(), ...getSubCliEntriesCore().map((entry) => entry.name)]
+        : []),
+  );
   const explicitAlias = EXPLICIT_COMMAND_ALIASES.get(normalizedInput);
   if (explicitAlias && knownCommands.includes(explicitAlias)) {
-    return formatCliSuggestionLines([explicitAlias]);
+    return formatCliSuggestionLines([explicitAlias], commandPath);
   }
   const suggestions = findCliCommandSuggestions(normalizedInput, knownCommands);
   if (suggestions.length === 0) {
     return undefined;
   }
-  return formatCliSuggestionLines(suggestions);
+  return formatCliSuggestionLines(suggestions, commandPath);
 }
 
 function findCliCommandSuggestions(input: string, candidates: readonly string[]): string[] {
@@ -78,9 +55,13 @@ function findCliCommandSuggestions(input: string, candidates: readonly string[])
     .map(({ command }) => command);
 }
 
-function formatCliSuggestionLines(suggestions: readonly string[]): string {
+function formatCliSuggestionLines(
+  suggestions: readonly string[],
+  commandPath: readonly string[],
+): string {
+  const commandPrefix = ["openclaw", ...commandPath].join(" ");
   const commandLines = suggestions
-    .map((command) => `  ${formatCliCommand(`openclaw ${command}`)}`)
+    .map((command) => `  ${formatCliCommand(`${commandPrefix} ${command}`)}`)
     .join("\n");
   return `Did you mean this?\n${commandLines}`;
 }
