@@ -803,6 +803,31 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.assistantTexts).toEqual(["final answer"]);
   });
 
+  it("surfaces declined native tool turns as a terminal tool error", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "commandExecution",
+          id: "cmd-1",
+          command: "/bin/zsh -lc 'openclaw --version'",
+          cwd: "/Users/gorin/.openclaw",
+          status: "declined",
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.assistantTexts).toStrictEqual([]);
+    expect(result.lastToolError).toMatchObject({
+      toolName: "bash",
+      error: "codex native tool blocked",
+      mutatingAction: true,
+    });
+  });
+
   it("ignores notifications for other turns", async () => {
     const projector = await createProjector();
 
